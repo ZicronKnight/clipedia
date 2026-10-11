@@ -3,12 +3,9 @@
 import { useRef, useState } from 'react';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
-// Todo el motor vive ahora en /public (tu disco D). Cero dependencia de CDNs externos.
 const CORE_JS = '/ffmpeg-core.js';
 const CORE_WASM = '/ffmpeg-core.wasm';
 
-// Carga la versión UMD de FFmpeg directo en el navegador,
-// esquivando a Turbopack, que no digiere el build ESM de la librería.
 function loadFFmpegLib(): Promise<any> {
   return new Promise((resolve, reject) => {
     const w = window as any;
@@ -59,8 +56,9 @@ export default function Converter() {
     setStatus('Cargando librería FFmpeg local (1/3)...');
     const { FFmpeg } = await loadFFmpegLib();
     const ff = new FFmpeg();
-    ff.on('progress', ({ progress: p }) => setProgress(p));
-    ff.on('log', ({ message }) => setLastLog(message));
+    // AQUÍ ESTÁ EL FIX: le decimos a TS que el evento es 'any' para que no se queje
+    ff.on('progress', (event: any) => setProgress(event.progress));
+    ff.on('log', (event: any) => setLastLog(event.message));
     setStatus('Cargando núcleo local (2/3)...');
     const coreURL = await toBlobURL(CORE_JS, 'text/javascript');
     setStatus('Cargando motor wasm local (3/3, ~32 MB)...');
