@@ -16,7 +16,6 @@ export default function DebugPage() {
     setUrl(supabaseUrl);
     setKey(supabaseKey ? `${supabaseKey.substring(0, 20)}...` : 'NO DEFINIDA');
 
-    // Intentar conectar
     const supabase = createClient();
     supabase
       .from('clips')
