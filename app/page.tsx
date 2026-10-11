@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import Converter from '@/components/Converter';
 import Gallery from '@/components/Gallery';
 import AuthUI from '@/components/AuthUI';
@@ -28,7 +29,18 @@ export default function Home() {
           <Converter />
         </div>
       </section>
+
+      <footer className="border-t border-slate-800 py-8 text-center">
+        <div className="mb-4 flex justify-center gap-6 text-sm text-slate-500">
+          <Link href="/plus" className="hover:text-cyan-400 transition-colors">Clipedia Plus</Link>
+          <Link href="/terms" className="hover:text-cyan-400 transition-colors">Términos</Link>
+          <Link href="/privacy" className="hover:text-cyan-400 transition-colors">Privacidad</Link>
+        </div>
+        <p className="text-xs text-slate-600">
+          © {new Date().getFullYear()} Clipedia. Todos los derechos reservados. 
+          Contacto: soporte@clipedia.net
+        </p>
+      </footer>
     </main>
   );
 }
-// Trigger deploy v2
