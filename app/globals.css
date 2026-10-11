@@ -1,20 +1,18 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
-  --background: #020617; /* slate-950 (fondo oscuro) */
-  --foreground: #f8fafc; /* slate-50 (texto claro) */
+  --background: #020617;
+  --foreground: #f8fafc;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Suavizar scroll y selección */
 ::selection {
-  background: #06b6d4; /* cyan-500 */
+  background: #06b6d4;
   color: #000;
 }
