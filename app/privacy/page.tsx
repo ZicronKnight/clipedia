@@ -12,7 +12,7 @@ export default function PrivacyPage() {
           <h2 className="mt-6 text-xl font-semibold text-white">2. Conversión de archivos</h2>
           <p>Nuestra herramienta de conversión de video/audio funciona 100% en tu navegador (client-side). Tus archivos <strong>nunca</strong> se suben a nuestros servidores, garantizando tu privacidad total.</p>
           <h2 className="mt-6 text-xl font-semibold text-white">3. Contacto</h2>
-          <p>Si tienes dudas sobre tu privacidad, puedes escribirnos a: <span className="text-cyan-400">soporte@clipedia.net</span> (o tu correo real).</p>
+          <p>Si tienes dudas sobre tu privacidad, puedes escribirnos a: <span className="text-cyan-400">zicron@gmail.com</span>.</p>
         </div>
         <div className="mt-8">
           <Link href="/" className="text-cyan-400 underline hover:text-cyan-300">← Volver al inicio</Link>
