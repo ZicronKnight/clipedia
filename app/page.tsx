@@ -3,33 +3,122 @@ import Converter from '@/components/Converter';
 import Gallery from '@/components/Gallery';
 import AuthUI from '@/components/AuthUI';
 
+export const metadata = {
+  title: 'Clipedia — B-Roll royalty-free generado por IA',
+  description:
+    'Clips royalty-free y herramientas de video que procesan todo en tu navegador. Nada se sube a ningún servidor.',
+};
+
 export default function Home() {
   return (
-    <main className="min-h-screen bg-slate-950">
-      <header className="flex justify-end p-4">
-        <AuthUI />
+    <main className="min-h-screen bg-slate-950 text-white">
+      {/* ===== HEADER FLOTANTE ===== */}
+      <header className="sticky top-0 z-50 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <Link href="/" className="flex items-center gap-2">
+            <img
+              src="/logo/monogram.png"
+              alt="Clipedia"
+              className="h-9 w-9 object-contain"
+            />
+            <span className="text-xl font-bold text-white">
+              Clipedia <span className="text-cyan-400">.net</span>
+            </span>
+          </Link>
+          <nav className="hidden items-center gap-8 text-sm font-medium text-slate-400 md:flex">
+            <a href="#gallery" className="transition-colors hover:text-cyan-400">Galería</a>
+            <a href="#converter" className="transition-colors hover:text-cyan-400">Convertidor</a>
+            <Link href="/plus" className="transition-colors hover:text-cyan-400">Plus</Link>
+          </nav>
+          <AuthUI />
+        </div>
       </header>
 
-      <div className="mx-auto max-w-6xl px-8 pb-8">
-        <h1 className="mb-2 text-center text-5xl font-black text-white">
-          Clipedia<span className="text-cyan-400">.net</span>
-        </h1>
-        <p className="text-center text-xl text-slate-400">
-          B-Roll de IA + Convertidor de Video. Todo en tu navegador, 100% privado.
-        </p>
-      </div>
-
-      <section className="border-t border-slate-800 py-16">
-        <Gallery />
-      </section>
-
-      <section className="border-t border-slate-800 py-16">
-        <div className="mx-auto max-w-xl px-8">
-          <h2 className="mb-8 text-center text-3xl font-bold text-white">Convertidor Gratis</h2>
-          <Converter />
+      {/* ===== HERO ===== */}
+      <section className="border-b border-slate-800/50 bg-gradient-to-b from-slate-900/50 to-slate-950 py-16 text-center">
+        <div className="mx-auto max-w-4xl px-6">
+          <h1 className="mb-4 text-5xl font-black tracking-tight md:text-6xl">
+            B-Roll de{' '}
+            <span className="bg-gradient-to-r from-cyan-400 to-violet-500 bg-clip-text text-transparent">
+              IA
+            </span>{' '}
+            + Convertidor
+          </h1>
+          <p className="mx-auto max-w-2xl text-lg text-slate-400">
+            Todo en tu navegador. 100% privado. Sin subir tus archivos a ningún servidor.
+          </p>
+          <div className="mt-8 flex flex-wrap justify-center gap-4">
+            <Link
+              href="/plus"
+              className="rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 px-6 py-3 font-bold text-black transition-transform hover:scale-105"
+            >
+              Ver plan Plus
+            </Link>
+            <a
+              href="#converter"
+              className="rounded-xl border border-slate-700 bg-slate-900 px-6 py-3 font-bold text-white transition-colors hover:border-cyan-400 hover:text-cyan-400"
+            >
+              Convertir video gratis
+            </a>
+          </div>
         </div>
       </section>
 
+      {/* ===== LAYOUT DE DOS COLUMNAS ===== */}
+      <div className="mx-auto max-w-7xl px-6 py-12">
+        <div className="grid gap-12 lg:grid-cols-[1fr_380px]">
+          {/* COLUMNA IZQUIERDA: Galería */}
+          <section id="gallery">
+            <div className="mb-8 flex items-center justify-between">
+              <div>
+                <h2 className="text-3xl font-bold text-white">Biblioteca de Clips IA</h2>
+                <p className="mt-1 text-slate-400">Clips royalty-free listos para tus proyectos</p>
+              </div>
+              <Link
+                href="/plus"
+                className="hidden rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-400 transition-colors hover:bg-cyan-400/20 sm:block"
+              >
+                Ver plan Plus →
+              </Link>
+            </div>
+            <Gallery />
+          </section>
+
+          {/* COLUMNA DERECHA: Conversor sticky */}
+          <aside id="converter" className="lg:sticky lg:top-24 lg:self-start">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-2xl shadow-cyan-900/10">
+              <h2 className="mb-1 text-xl font-bold text-white">Convertidor</h2>
+              <p className="mb-6 text-sm text-slate-400">Video y audio, en tu navegador</p>
+              <Converter />
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      {/* ===== FOOTER PROMO ===== */}
+      <section className="border-t border-slate-800">
+        <div className="bg-gradient-to-r from-cyan-500/10 via-violet-500/10 to-cyan-500/10 py-10">
+          <div className="mx-auto flex max-w-4xl flex-col items-center justify-between gap-4 px-6 text-center md:flex-row md:text-left">
+            <div>
+              <h3 className="text-2xl font-black text-white">
+                Descargá clips en{' '}
+                <span className="bg-gradient-to-r from-cyan-400 to-violet-500 bg-clip-text text-transparent">
+                  1080p y 4K
+                </span>
+              </h3>
+              <p className="mt-1 text-slate-400">Con Clipedia Plus, sin límites.</p>
+            </div>
+            <Link
+              href="/plus"
+              className="rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 px-6 py-3 font-bold text-black transition-transform hover:scale-105"
+            >
+              Activar Clipedia Plus →
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* ===== FOOTER LEGAL ===== */}
       <footer className="border-t border-slate-800 py-8 text-center">
         <div className="mb-4 flex justify-center gap-6 text-sm text-slate-500">
           <Link href="/plus" className="hover:text-cyan-400 transition-colors">Clipedia Plus</Link>
@@ -37,7 +126,7 @@ export default function Home() {
           <Link href="/privacy" className="hover:text-cyan-400 transition-colors">Privacidad</Link>
         </div>
         <p className="text-xs text-slate-600">
-          © {new Date().getFullYear()} Clipedia. Todos los derechos reservados. 
+          © {new Date().getFullYear()} Clipedia. Todos los derechos reservados.{' '}
           Contacto: soporte@clipedia.net
         </p>
       </footer>

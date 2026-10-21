@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
 const CORE_JS = '/ffmpeg-core.js';
@@ -27,7 +27,7 @@ const VIDEO_FORMATS = [
 const VIDEO_RESOLUTIONS = [
   { id: 480, label: '480p', plus: false },
   { id: 720, label: '720p (máx. del plan gratis)', plus: false },
-  { id: 1080, label: '1080p 🔒 Clipedia Plus', plus: true },
+  { id: 1080, label: '1080p  Clipedia Plus', plus: true },
   { id: 2160, label: '4K 🔒 Clipedia Plus', plus: true },
 ];
 const AUDIO_FORMATS = [
@@ -50,13 +50,13 @@ export default function Converter() {
   const [lastLog, setLastLog] = useState('');
   const [outUrl, setOutUrl] = useState<string | null>(null);
   const [outName, setOutName] = useState('');
+  const [isDragging, setIsDragging] = useState(false); // Nuevo estado para drag & drop
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function load() {
     setStatus('Cargando librería FFmpeg local (1/3)...');
     const { FFmpeg } = await loadFFmpegLib();
     const ff = new FFmpeg();
-    // AQUÍ ESTÁ EL FIX: le decimos a TS que el evento es 'any' para que no se queje
     ff.on('progress', (event: any) => setProgress(event.progress));
     ff.on('log', (event: any) => setLastLog(event.message));
     setStatus('Cargando núcleo local (2/3)...');
@@ -126,13 +126,41 @@ export default function Converter() {
     }
   }
 
+  // Funciones para Drag & Drop
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      setFile(e.dataTransfer.files[0]);
+      setOutUrl(null);
+    }
+  }
+
   const selectCls = 'w-full rounded-xl bg-slate-800 px-4 py-3 text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400';
 
   return (
     <div className="mx-auto max-w-xl space-y-6 p-8">
+      {/* Zona de Drag & Drop */}
       <div
         onClick={() => inputRef.current?.click()}
-        className="cursor-pointer rounded-2xl border-2 border-dashed border-slate-600 p-10 text-center hover:border-cyan-400"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-200 ${
+          isDragging 
+            ? 'border-cyan-400 bg-cyan-400/10 scale-[1.02]' 
+            : 'border-slate-600 hover:border-cyan-400'
+        }`}
       >
         <input
           ref={inputRef}
@@ -142,27 +170,32 @@ export default function Converter() {
           onChange={(e) => { setFile(e.target.files?.[0] ?? null); setOutUrl(null); }}
         />
         {file ? (
-          <p className="text-cyan-300">{file.name} <span className="text-slate-400">({(file.size / 1048576).toFixed(1)} MB)</span></p>
+          <p className="text-cyan-300 font-medium">{file.name} <span className="text-slate-400">({(file.size / 1048576).toFixed(1)} MB)</span></p>
         ) : (
-          <p className="text-slate-300">Arrastrá o hacé clic para elegir tu archivo</p>
+          <div className="space-y-2">
+            <p className="text-slate-300">Arrastrá o hacé clic para elegir tu archivo</p>
+            <p className="text-xs text-slate-500">MP4, MOV, MKV, MP3, WAV, etc.</p>
+          </div>
         )}
       </div>
 
+      {/* Botones de modo */}
       <div className="flex gap-3">
         <button
           onClick={() => setMode('video')}
-          className={`flex-1 rounded-xl py-3 ${mode === 'video' ? 'bg-cyan-500 text-black' : 'bg-slate-800 text-slate-300'}`}
+          className={`flex-1 rounded-xl py-3 text-sm font-medium transition-colors ${mode === 'video' ? 'bg-cyan-500 text-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
         >
-          🎬 Convertir video
+          🎬 Video
         </button>
         <button
           onClick={() => setMode('audio')}
-          className={`flex-1 rounded-xl py-3 ${mode === 'audio' ? 'bg-cyan-500 text-black' : 'bg-slate-800 text-slate-300'}`}
+          className={`flex-1 rounded-xl py-3 text-sm font-medium transition-colors ${mode === 'audio' ? 'bg-cyan-500 text-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
         >
-          🎵 Extraer audio
+          🎵 Audio
         </button>
       </div>
 
+      {/* Selectores de formato */}
       {mode === 'video' ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <select value={videoFormat} onChange={(e) => setVideoFormat(e.target.value)} className={selectCls}>
@@ -186,27 +219,30 @@ export default function Converter() {
         </select>
       )}
 
+      {/* Botón de conversión */}
       <button
         onClick={convert}
         disabled={!file || busy}
-        className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 py-4 font-bold text-black disabled:opacity-40"
+        className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 py-4 font-bold text-black transition-transform hover:scale-[1.01] disabled:opacity-40 disabled:hover:scale-100"
       >
         {busy ? `Procesando... ${(progress * 100).toFixed(0)}%` : 'Convertir GRATIS'}
       </button>
 
+      {/* Estados y Logs */}
       {status && <p className="text-center text-sm text-slate-400">{status}</p>}
       {busy && lastLog && (
         <p className="truncate text-center font-mono text-[11px] text-slate-600">{lastLog}</p>
       )}
 
+      {/* Resultado y Descarga */}
       {outUrl && (
         <div className="space-y-3 rounded-xl bg-slate-800 p-4 text-center">
-          <a href={outUrl} download={outName} className="block rounded-lg bg-green-500 py-3 font-bold text-black">
+          <a href={outUrl} download={outName} className="block rounded-lg bg-green-500 py-3 font-bold text-black transition-opacity hover:opacity-90">
             ⬇️ Descargar {outName}
           </a>
           <p className="text-xs text-slate-400">
             ¿Necesitás 1080p/4K, WAV/FLAC o convertir 20 archivos a la vez?{' '}
-            <span className="font-bold text-cyan-300">Conocé Clipedia Plus →</span>
+            <a href="/plus" className="font-bold text-cyan-300 hover:underline">Conocé Clipedia Plus →</a>
           </p>
         </div>
       )}
