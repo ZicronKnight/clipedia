@@ -39,10 +39,9 @@ export default function Home() {
         <div className="mx-auto max-w-4xl px-6">
           <h1 className="mb-4 text-5xl font-black tracking-tight md:text-6xl">
             B-Roll de{' '}
-            <span className="bg-gradient-to-r from-cyan-400 to-violet-500 bg-clip-text text-transparent">
-              IA
-            </span>{' '}
-            + Convertidor
+             <span className="bg-gradient-to-r from-cyan-400 to-violet-500 bg-clip-text text-transparent">
+              IA + Convertidor
+            </span>
           </h1>
           <p className="mx-auto max-w-2xl text-lg text-slate-400">
             Todo en tu navegador. 100% privado. Sin subir tus archivos a ningún servidor.
@@ -85,11 +84,19 @@ export default function Home() {
           </section>
 
           {/* COLUMNA DERECHA: Conversor sticky */}
-          <aside id="converter" className="lg:sticky lg:top-24 lg:self-start">
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-2xl shadow-cyan-900/10">
-              <h2 className="mb-1 text-xl font-bold text-white">Convertidor</h2>
-              <p className="mb-6 text-sm text-slate-400">Video y audio, en tu navegador</p>
-              <Converter />
+                    <aside id="converter" className="lg:sticky lg:top-24 lg:self-start">
+            <div className="rounded-2xl bg-gradient-to-br from-cyan-400/70 via-slate-700 to-fuchsia-500/70 p-[1px] shadow-2xl shadow-cyan-900/20">
+              <div className="relative overflow-hidden rounded-2xl bg-slate-900/95 p-6">
+                {/* Manchas de luz (aurora) */}
+                <div className="pointer-events-none absolute -left-16 -top-16 h-44 w-44 rounded-full bg-cyan-400/25 blur-3xl" />
+                <div className="pointer-events-none absolute -bottom-16 -right-16 h-44 w-44 rounded-full bg-fuchsia-500/25 blur-3xl" />
+                <div className="pointer-events-none absolute -right-20 top-1/3 h-40 w-40 rounded-full bg-violet-500/20 blur-3xl" />
+                <h2 className="relative mb-1 text-xl font-bold text-white">Convertidor</h2>
+                <p className="relative mb-6 text-sm text-slate-400">Video y audio, en tu navegador</p>
+                <div className="relative">
+                  <Converter />
+                </div>
+              </div>
             </div>
           </aside>
         </div>

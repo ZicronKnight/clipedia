@@ -1,10 +1,15 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { createClient } from '@/lib/supabase';
 
 const CORE_JS = '/ffmpeg-core.js';
 const CORE_WASM = '/ffmpeg-core.wasm';
+
+// Durante la beta privada todo está desbloqueado para cuentas LOGUEADAS.
+// Al lanzamiento: poner false y el plan real se lee de la tabla subscriptions.
+const BETA_PLUS_UNLOCK = true;
 
 function loadFFmpegLib(): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -26,15 +31,15 @@ const VIDEO_FORMATS = [
 ];
 const VIDEO_RESOLUTIONS = [
   { id: 480, label: '480p', plus: false },
-  { id: 720, label: '720p (máx. del plan gratis)', plus: false },
-  { id: 1080, label: '1080p  Clipedia Plus', plus: true },
-  { id: 2160, label: '4K 🔒 Clipedia Plus', plus: true },
+  { id: 720, label: '720p', plus: false },
+  { id: 1080, label: '1080p', plus: true },
+  { id: 2160, label: '4K', plus: true },
 ];
 const AUDIO_FORMATS = [
   { id: 'mp3', label: 'MP3 128kbps', plus: false },
-  { id: 'wav', label: 'WAV sin compresión 🔒 Clipedia Plus', plus: true },
-  { id: 'flac', label: 'FLAC lossless 🔒 Clipedia Plus', plus: true },
-  { id: 'm4a', label: 'M4A 192kbps 🔒 Clipedia Plus', plus: true },
+  { id: 'wav', label: 'WAV sin compresión', plus: true },
+  { id: 'flac', label: 'FLAC lossless', plus: true },
+  { id: 'm4a', label: 'M4A 192kbps', plus: true },
 ];
 
 export default function Converter() {
@@ -50,8 +55,63 @@ export default function Converter() {
   const [lastLog, setLastLog] = useState('');
   const [outUrl, setOutUrl] = useState<string | null>(null);
   const [outName, setOutName] = useState('');
-  const [isDragging, setIsDragging] = useState(false); // Nuevo estado para drag & drop
+  const [isDragging, setIsDragging] = useState(false);
+  const [isPlus, setIsPlus] = useState(false);
+  const [srcRes, setSrcRes] = useState<{ w: number; h: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const supabase = createClient();
+
+  // ===== ¿El usuario es Plus? (logueado + (beta unlock O suscripción activa)) =====
+  useEffect(() => {
+    let alive = true;
+    async function refreshPlan() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { if (alive) setIsPlus(false); return; } // Sin sesión = plan gratis, aunque sea beta
+      if (BETA_PLUS_UNLOCK) { if (alive) setIsPlus(true); return; } // Beta: regalo para cuentas logueadas
+      const { data: sub } = await supabase
+        .from('subscriptions')
+        .select('plan,status')
+        .eq('user_id', user.id)
+        .single();
+      if (alive) setIsPlus(!!sub && sub.plan === 'plus' && sub.status === 'active');
+    }
+    refreshPlan();
+    const { data: listener } = supabase.auth.onAuthStateChange(() => refreshPlan());
+    return () => { alive = false; listener.subscription.unsubscribe(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Si perdés el Plus con una opción pro seleccionada, volvemos al default free
+  useEffect(() => {
+    if (isPlus) return;
+    if (videoRes === 1080 || videoRes === 2160) setVideoRes(720);
+    if (audioFormat !== 'mp3') setAudioFormat('mp3');
+  }, [isPlus, videoRes, audioFormat]);
+
+  // ===== Medir el origen (para el aviso de upscale) =====
+  function probeSource(f: File) {
+    const url = URL.createObjectURL(f);
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => { setSrcRes({ w: v.videoWidth, h: v.videoHeight }); URL.revokeObjectURL(url); };
+    v.onerror = () => { setSrcRes(null); URL.revokeObjectURL(url); };
+    v.src = url;
+  }
+  function pickFile(f: File | null) {
+    setFile(f);
+    setOutUrl(null);
+    setSrcRes(null);
+    if (f) probeSource(f);
+  }
+
+  function resLabel(r: { id: number; label: string; plus: boolean }) {
+    if (r.plus) return isPlus ? r.label : `${r.label} 🔒 Clipedia Plus`;
+    if (r.id === 720 && !isPlus) return '720p (máx. del plan gratis)';
+    return r.label;
+  }
+  function audioLabel(f: { id: string; label: string; plus: boolean }) {
+    return f.plus && !isPlus ? `${f.label} 🔒 Clipedia Plus` : f.label;
+  }
 
   async function load() {
     setStatus('Cargando librería FFmpeg local (1/3)...');
@@ -63,7 +123,7 @@ export default function Converter() {
     const coreURL = await toBlobURL(CORE_JS, 'text/javascript');
     setStatus('Cargando motor wasm local (3/3, ~32 MB)...');
     const wasmURL = await toBlobURL(CORE_WASM, 'application/wasm');
-    setStatus('Arrancando el motor de conversión...');
+    setStatus('Arrancando motor de conversión...');
     await ff.load({ coreURL, wasmURL });
     setFfmpeg(ff);
     return ff;
@@ -85,7 +145,6 @@ export default function Converter() {
 
       let args: string[];
       let outExt: string;
-
       if (mode === 'audio') {
         outExt = audioFormat;
         if (audioFormat === 'mp3') {
@@ -104,10 +163,11 @@ export default function Converter() {
         setOutName(`${base}_clipedia.gif`);
       } else {
         outExt = videoFormat;
-        args = ['-i', inName, '-vf', `scale=-2:'min(${videoRes},ih)'`, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', `output.${outExt}`];
+        // Escala por lado corto (funciona para landscape y vertical), con lanczos.
+        // Permite upscale si el usuario elige una resolución mayor al origen.
+        args = ['-i', inName, '-vf', `scale='if(gte(iw,ih),-2,${videoRes})':'if(gte(iw,ih),${videoRes},-2)':flags=lanczos`, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', `output.${outExt}`];
         setOutName(`${base}_clipedia_${videoRes}p.${outExt}`);
       }
-
       setStatus('Convirtiendo en TU máquina (nada se sube a internet 🔒)...');
       await ff.exec(args);
       const data = await ff.readFile(`output.${outExt}`);
@@ -126,23 +186,20 @@ export default function Converter() {
     }
   }
 
-  // Funciones para Drag & Drop
+  // ===== Drag & Drop =====
   function handleDragOver(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(true);
   }
-
   function handleDragLeave(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
   }
-
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setFile(e.dataTransfer.files[0]);
-      setOutUrl(null);
+      pickFile(e.dataTransfer.files[0]);
     }
   }
 
@@ -156,18 +213,14 @@ export default function Converter() {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-200 ${
-          isDragging 
-            ? 'border-cyan-400 bg-cyan-400/10 scale-[1.02]' 
-            : 'border-slate-600 hover:border-cyan-400'
-        }`}
+        className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-200 ${isDragging ? 'border-cyan-400 bg-cyan-400/10 scale-[1.02]' : 'border-slate-600 hover:border-cyan-400'}`}
       >
         <input
           ref={inputRef}
           type="file"
           accept="video/*,audio/*"
           className="hidden"
-          onChange={(e) => { setFile(e.target.files?.[0] ?? null); setOutUrl(null); }}
+          onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
         />
         {file ? (
           <p className="text-cyan-300 font-medium">{file.name} <span className="text-slate-400">({(file.size / 1048576).toFixed(1)} MB)</span></p>
@@ -178,6 +231,13 @@ export default function Converter() {
           </div>
         )}
       </div>
+
+      {/* Badge de plan */}
+      {isPlus && (
+        <p className="text-center text-[11px] font-semibold text-cyan-300">
+          {BETA_PLUS_UNLOCK ? '🎁 Beta privada: todas las calidades y formatos desbloqueados' : '✨ Clipedia Plus activo: calidad total desbloqueada'}
+        </p>
+      )}
 
       {/* Botones de modo */}
       <div className="flex gap-3">
@@ -206,7 +266,7 @@ export default function Converter() {
           {videoFormat !== 'gif' && (
             <select value={videoRes} onChange={(e) => setVideoRes(Number(e.target.value))} className={selectCls}>
               {VIDEO_RESOLUTIONS.map((r) => (
-                <option key={r.id} value={r.id} disabled={r.plus}>{r.label}</option>
+                <option key={r.id} value={r.id} disabled={r.plus && !isPlus}>{resLabel(r)}</option>
               ))}
             </select>
           )}
@@ -214,9 +274,16 @@ export default function Converter() {
       ) : (
         <select value={audioFormat} onChange={(e) => setAudioFormat(e.target.value)} className={selectCls}>
           {AUDIO_FORMATS.map((f) => (
-            <option key={f.id} value={f.id} disabled={f.plus}>{f.label}</option>
+            <option key={f.id} value={f.id} disabled={f.plus && !isPlus}>{audioLabel(f)}</option>
           ))}
         </select>
+      )}
+
+      {/* Aviso de upscale por interpolación */}
+      {mode === 'video' && videoFormat !== 'gif' && srcRes && videoRes > Math.min(srcRes.w, srcRes.h) && (
+        <p className="text-center text-[11px] text-amber-300">
+          ⚠️ Tu origen es {Math.min(srcRes.w, srcRes.h)}p: la salida {videoRes}p se escala por interpolación (más tamaño, no más detalle real).
+        </p>
       )}
 
       {/* Botón de conversión */}
@@ -234,16 +301,18 @@ export default function Converter() {
         <p className="truncate text-center font-mono text-[11px] text-slate-600">{lastLog}</p>
       )}
 
-      {/* Resultado y Descarga */}
+      {/* Resultado y descarga */}
       {outUrl && (
         <div className="space-y-3 rounded-xl bg-slate-800 p-4 text-center">
           <a href={outUrl} download={outName} className="block rounded-lg bg-green-500 py-3 font-bold text-black transition-opacity hover:opacity-90">
             ⬇️ Descargar {outName}
           </a>
-          <p className="text-xs text-slate-400">
-            ¿Necesitás 1080p/4K, WAV/FLAC o convertir 20 archivos a la vez?{' '}
-            <a href="/plus" className="font-bold text-cyan-300 hover:underline">Conocé Clipedia Plus →</a>
-          </p>
+          {!isPlus && (
+            <p className="text-xs text-slate-400">
+              ¿Necesitás 1080p/4K, WAV/FLAC o convertir por lotes?{' '}
+              <a href="/plus" className="font-bold text-cyan-300 hover:underline">Conocé Clipedia Plus →</a>
+            </p>
+          )}
         </div>
       )}
     </div>
