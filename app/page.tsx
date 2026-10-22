@@ -57,9 +57,9 @@ export default function Home() {
           {/* Columna de texto */}
           <div className="text-center lg:text-left">
             <h1 className="mb-4 text-5xl font-black tracking-tight md:text-6xl">
-              B-Roll de{' '}
+              Clips B-Roll{' '}
               <span className="bg-gradient-to-r from-cyan-400 via-sky-400 to-violet-500 bg-clip-text text-transparent">
-                IA + Convertidor
+                + Convertidor + Editor
               </span>
             </h1>
             <p className="mx-auto max-w-xl text-lg text-slate-400 lg:mx-0">
@@ -72,12 +72,12 @@ export default function Home() {
               >
                 Ver plan Plus
               </Link>
-              <a
-                href="#converter"
+              <Link
+                href="/studio"
                 className="rounded-xl border border-slate-700 bg-slate-900/70 px-6 py-3 font-bold text-white transition-colors hover:border-cyan-400 hover:text-cyan-400"
               >
-                Convertidor de video gratis
-              </a>
+                Edita tu video con Clipedia Studio
+              </Link>
             </div>
           </div>
 
