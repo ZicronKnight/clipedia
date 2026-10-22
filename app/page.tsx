@@ -34,31 +34,63 @@ export default function Home() {
         </div>
       </header>
 
-      {/* ===== HERO ===== */}
-      <section className="border-b border-slate-800/50 bg-gradient-to-b from-slate-900/50 to-slate-950 py-16 text-center">
-        <div className="mx-auto max-w-4xl px-6">
-          <h1 className="mb-4 text-5xl font-black tracking-tight md:text-6xl">
-            B-Roll de{' '}
-             <span className="bg-gradient-to-r from-cyan-400 to-violet-500 bg-clip-text text-transparent">
-              IA + Convertidor
-            </span>
-          </h1>
-          <p className="mx-auto max-w-2xl text-lg text-slate-400">
-            Todo en tu navegador. 100% privado. Sin subir tus archivos a ningún servidor.
-          </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-4">
-            <Link
-              href="/plus"
-              className="rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 px-6 py-3 font-bold text-black transition-transform hover:scale-105"
-            >
-              Ver plan Plus
-            </Link>
-            <a
-              href="#converter"
-              className="rounded-xl border border-slate-700 bg-slate-900 px-6 py-3 font-bold text-white transition-colors hover:border-cyan-400 hover:text-cyan-400"
-            >
-              Convertir video gratis
-            </a>
+            {/* ===== HERO ===== */}
+      <section className="relative overflow-hidden border-b border-slate-800/50">
+        {/* Aurora de fondo (CSS puro, peso cero) */}
+        <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+          <div className="absolute -left-32 -top-32 h-[28rem] w-[28rem] rounded-full bg-cyan-500/20 blur-3xl" />
+          <div className="absolute -right-40 top-10 h-[32rem] w-[32rem] rounded-full bg-violet-600/25 blur-3xl" />
+          <div className="absolute -bottom-40 left-1/3 h-[30rem] w-[30rem] rounded-full bg-fuchsia-600/15 blur-3xl" />
+          <div className="absolute left-1/2 top-1/4 h-64 w-64 rounded-full bg-cyan-400/10 blur-2xl" />
+          {/* Partículas con pulso suave */}
+          <div className="absolute left-[12%] top-[30%] h-1 w-1 animate-pulse rounded-full bg-cyan-300/70 [animation-duration:3s]" />
+          <div className="absolute left-[22%] top-[65%] h-1.5 w-1.5 rounded-full bg-violet-300/60" />
+          <div className="absolute left-[45%] top-[20%] h-1 w-1 animate-pulse rounded-full bg-fuchsia-300/60 [animation-duration:4s]" />
+          <div className="absolute left-[70%] top-[70%] h-1 w-1 rounded-full bg-cyan-200/60" />
+          <div className="absolute left-[85%] top-[35%] h-1.5 w-1.5 animate-pulse rounded-full bg-violet-200/50 [animation-duration:5s]" />
+          <div className="absolute left-[60%] top-[50%] h-1 w-1 rounded-full bg-cyan-300/50" />
+          {/* Velo de contraste detrás del texto */}
+          <div className="absolute inset-0 bg-gradient-to-r from-slate-950/70 via-slate-950/30 to-transparent" />
+        </div>
+
+        <div className="relative mx-auto grid max-w-7xl items-center gap-12 px-6 py-20 lg:grid-cols-2 lg:py-28">
+          {/* Columna de texto */}
+          <div className="text-center lg:text-left">
+            <h1 className="mb-4 text-5xl font-black tracking-tight md:text-6xl">
+              B-Roll de{' '}
+              <span className="bg-gradient-to-r from-cyan-400 via-sky-400 to-violet-500 bg-clip-text text-transparent">
+                IA + Convertidor
+              </span>
+            </h1>
+            <p className="mx-auto max-w-xl text-lg text-slate-400 lg:mx-0">
+              Todo en tu navegador. 100% privado. Sin subir tus archivos a ningún servidor.
+            </p>
+            <div className="mt-8 flex flex-wrap justify-center gap-4 lg:justify-start">
+              <Link
+                href="/plus"
+                className="rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 px-6 py-3 font-bold text-black transition-transform hover:scale-105"
+              >
+                Ver plan Plus
+              </Link>
+              <a
+                href="#converter"
+                className="rounded-xl border border-slate-700 bg-slate-900/70 px-6 py-3 font-bold text-white transition-colors hover:border-cyan-400 hover:text-cyan-400"
+              >
+                Convertidor de video gratis
+              </a>
+            </div>
+          </div>
+
+          {/* Columna de arte (oculta en mobile) */}
+          <div className="relative hidden lg:block">
+            <img
+              src="/hero/hero-art.webp"
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              fetchPriority="high"
+              className="pointer-events-none relative z-10 ml-auto w-full max-w-xl select-none drop-shadow-[0_0_45px_rgba(139,92,246,0.35)]"
+            />
           </div>
         </div>
       </section>
