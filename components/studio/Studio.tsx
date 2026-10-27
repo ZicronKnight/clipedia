@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import { toBlobURL } from '@ffmpeg/util';
 import { putAsset, getAsset, saveProject, loadProject, clearProject, StoredProject } from '@/lib/projectStore';
-import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles } from './icons';
+import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles, IconPlayCorel, IconPauseCorel, Icon480p } from './icons';
 
 type TransitionType =
   | 'none' | 'fade' | 'dissolve' | 'fadeblack' | 'fadewhite' | 'fadegrays' | 'fadefast' | 'fadeslow'
@@ -63,7 +63,17 @@ const PREVIEW_PROXY_HEIGHT = 360;
 const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 const UI_HZ = IS_MOBILE ? 15 : 30;
 const proxyUrlMap = new Map<string, string>();
-function previewSrc(c: Clip) { return (IS_MOBILE && proxyUrlMap.get(c.assetId)) || c.url; }
+function initialProxies(): boolean {
+  if (typeof window === 'undefined') return IS_MOBILE;
+  try {
+    const saved = window.localStorage.getItem('clipedia:proxies');
+    if (saved === 'on') return true;
+    if (saved === 'off') return false;
+  } catch (e) {}
+  return IS_MOBILE;
+}
+let proxiesEnabled = initialProxies();
+function previewSrc(c: Clip) { return (proxiesEnabled && proxyUrlMap.get(c.assetId)) || c.url; }
 
 const TRANSITION_TYPES: { id: TransitionType; label: string; icon: string }[] = [
   { id: 'none', label: 'Sin transición', icon: '⊘' },
@@ -377,6 +387,8 @@ export default function Studio() {
   const [previewTransitions, setPreviewTransitions] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
 const [importOpen, setImportOpen] = useState(false);
+const [proxiesOn, setProxiesOn] = useState(false);
+  useEffect(() => { setProxiesOn(proxiesEnabled); }, []);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -554,7 +566,7 @@ const [importOpen, setImportOpen] = useState(false);
           const blob = c.assetId ? await getAsset(c.assetId) : null;
           if (!blob) { missing++; continue; }
           c.url = URL.createObjectURL(blob);
-                    if (IS_MOBILE && c.assetId && !proxyUrlMap.has(c.assetId)) {
+                    if (proxiesEnabled && c.assetId && !proxyUrlMap.has(c.assetId)) {
             const pb = await getAsset(`proxy:v2:${c.assetId}`);
             if (pb) proxyUrlMap.set(c.assetId, URL.createObjectURL(pb));
             else enqueueProxy(c.assetId, c.url);
@@ -1058,7 +1070,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     try { await ff.deleteFile('pin.mp4'); await ff.deleteFile('pout.mp4'); } catch (e) {}
   }
   function enqueueProxy(assetId: string, url: string) {
-    if (!IS_MOBILE) return;
+    if (!proxiesEnabled) return;
     if (proxyUrlMap.has(assetId) || proxyQueueRef.current.some((q) => q.assetId === assetId)) return;
     proxyQueueRef.current.push({ assetId, url });
     if (!proxyRunningRef.current) void processProxyQueue();
@@ -1068,8 +1080,9 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     const total = proxyQueueRef.current.length;
     let done = 0;
     try {
-      while (proxyQueueRef.current.length > 0) {
-        const item = proxyQueueRef.current.shift()!;
+          while (proxyQueueRef.current.length > 0) {
+      if (!proxiesEnabled) break;
+      const item = proxyQueueRef.current.shift()!;
         showToast(`⚡ Generando proxy 480p ${done + 1}/${total}...`, 'info', 2500);
         await renderProxy(item.assetId, item.url);
         done += 1;
@@ -1247,6 +1260,20 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     setAudioTracks((prev) => [...prev, track]);
     updateClip(clip.id, { muted: true });
     showToast('🎵 Audio separado en la pista de audio', 'info');
+  }
+
+  function toggleProxies() {
+    const next = !proxiesOn;
+    setProxiesOn(next);
+    proxiesEnabled = next;
+    try { window.localStorage.setItem('clipedia:proxies', next ? 'on' : 'off'); } catch (e) {}
+    if (next) {
+      clipsRef.current.forEach((c) => enqueueProxy(c.assetId, c.url));
+      showToast('⚡ Proxies activados: el preview usará las versiones 480p', 'info');
+    } else {
+      showToast('🎥 Proxies desactivados: el preview decodifica el original. Si sentís tirones, reactivá.', 'warn', 5000);
+    }
+    setProxyVersion((v) => v + 1);
   }
 
   function cycleRatio() {
@@ -1941,9 +1968,9 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       <input ref={imageInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageUpload} />
       <input ref={audioInputRef} type="file" accept="audio/*" multiple className="hidden" onChange={handleAudioUpload} />
       {audioTracks.map((track) => (<AudioElement key={track.id} track={track} onReady={registerAudio} onCleanup={unregisterAudio} />))}
-            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[96px_1fr_320px] lg:gap-4">
+            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[96px_1fr_320px] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4">
         {/* ===== RAIL LATERAL (solo desktop) ===== */}
-        <aside className="hidden shrink-0 flex-row gap-2 rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:flex-col lg:gap-2">
+        <aside className="hidden shrink-0 flex-row gap-2 rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:flex-col lg:gap-2 lg:order-1">
           <button onClick={() => fileInputRef.current?.click()} title="Agregar video"
             className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-lg py-3.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-cyan-300 lg:flex-none">
             <IconVideo className="h-6 w-7" />
@@ -1965,7 +1992,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
             <span className="text-[11px] font-semibold">+ Audio</span>
           </button>
         </aside>
-                       <div ref={previewBoxRef} className="relative h-44 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-black sm:h-64 lg:h-auto lg:min-h-0">
+                       <div ref={previewBoxRef} className="relative h-44 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-black sm:h-64 lg:h-auto lg:min-h-0 lg:order-2">
           <div ref={wrapperRef} className="relative h-full w-full">
             {stage && stage.width > 0 && (
               <div ref={stageRef} className="absolute overflow-hidden bg-black" style={{ left: stage.left, top: stage.top, width: stage.width, height: stage.height }}>
@@ -2031,7 +2058,61 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
             </button>
           )}
         </div>
-               <div className="flex shrink-0 flex-col gap-2 lg:min-h-0 lg:flex-1 lg:gap-4">
+
+{/* ===== BARRA DE TRANSPORTE ===== */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 px-2 py-1.5 lg:order-4 lg:col-span-3 lg:gap-2 lg:px-3 lg:py-2">
+        {/* Cluster móvil: tiempo + play gigante + saltos */}
+                                <div className="flex w-full items-center gap-1.5 lg:hidden">
+          <button onClick={togglePlay} disabled={projectDuration === 0} className="relative z-10 -my-4 h-14 w-14 shrink-0 transition-transform active:scale-95 disabled:opacity-40" title={playing ? 'Pausar' : 'Reproducir'}>
+            {playing ? <IconPauseCorel className="h-full w-full drop-shadow-[0_6px_16px_rgba(131,58,236,0.45)]" /> : <IconPlayCorel className="h-full w-full drop-shadow-[0_6px_16px_rgba(131,58,236,0.45)]" />}
+          </button>
+          <button onClick={() => seek(0)} disabled={projectDuration === 0} className="flex shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 disabled:opacity-40" title="Ir al inicio"><IconSkipBack className="h-3.5 w-3.5" /></button>
+          <button onClick={() => seek(projectDuration)} disabled={projectDuration === 0} className="flex shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 disabled:opacity-40" title="Ir al final"><IconSkipForward className="h-3.5 w-3.5" /></button>
+          <div className="min-w-0 flex-1 truncate whitespace-nowrap rounded-lg bg-slate-800 px-2 py-1.5 text-center font-mono text-[11px] tabular-nums text-cyan-300"><span ref={tcMobileRef}>00:00.0</span> <span className="text-slate-500">/ {formatTime(projectDuration)}</span></div>
+          <button onClick={toggleProxies}
+            className={`flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-[10px] font-bold transition-colors ${proxiesOn ? 'border-violet-400/60 bg-violet-500/15 text-violet-200' : 'border-slate-700 bg-slate-900 text-slate-400'}`}
+            title={proxiesOn ? 'Desactivar proxies 480p' : 'Activar proxies 480p'}>
+            <Icon480p className="h-4 w-3.5 shrink-0" />
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${proxiesOn ? 'bg-green-400' : 'bg-slate-500'}`} />
+            <span className="hidden min-[400px]:inline">Proxies</span>
+          </button>
+        </div>
+                        <button onClick={() => seek(0)} disabled={projectDuration === 0} className="hidden items-center justify-center rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex" title="Ir al inicio"><IconSkipBack className="h-4 w-4" /></button>
+        <button onClick={togglePlay} disabled={projectDuration === 0} className="relative z-10 -my-5 hidden h-16 w-16 shrink-0 items-center justify-center transition-transform hover:scale-[1.04] active:scale-95 disabled:opacity-40 lg:flex" title={playing ? 'Pausar' : 'Reproducir'}>
+{playing ? <IconPauseCorel className="h-full w-full drop-shadow-[0_6px_16px_rgba(131,58,236,0.45)]" /> : <IconPlayCorel className="h-full w-full drop-shadow-[0_6px_16px_rgba(131,58,236,0.45)]" />}
+</button>
+                <div className="hidden rounded-lg bg-slate-800 px-3 py-2 font-mono text-sm text-cyan-300 lg:block"><span ref={tcDesktopRef}>00:00.0</span> <span className="text-slate-500">/ {formatTime(projectDuration)}</span></div>
+        <div className="mx-1 hidden h-6 w-px bg-slate-700 lg:block" />
+        <div className="hidden items-center gap-0.5 rounded-lg border border-slate-700 bg-slate-900/50 p-1 lg:flex">
+          {(Object.keys(RATIO_PRESETS) as AspectRatio[]).map((r) => (
+            <button key={r} onClick={() => setExportSettings((s) => ({ ...s, ratio: r }))} disabled={exporting}
+              className={`rounded px-2 py-1 text-xs font-bold transition ${exportSettings.ratio === r ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
+              title={RATIO_PRESETS[r].label}>{r}</button>
+          ))}
+        </div>
+        <div className="hidden items-center gap-0.5 rounded-lg border border-slate-700 bg-slate-900/50 p-1 lg:flex">
+                    <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'adaptar' }))} disabled={exporting}
+            className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-bold transition ${exportSettings.fit === 'adaptar' ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
+            title="El video entra completo (letterbox)"><IconFit className="h-3.5 w-3.5" /> Adaptar</button>
+          <button onClick={() => { setExportSettings((s) => ({ ...s, fit: 'recortar' })); showToast('✂️ Modo Recortar: arrastrá el video en el preview para reencuadrar', 'info'); }} disabled={exporting}
+            className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-bold transition ${exportSettings.fit === 'recortar' ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
+            title="El video cubre todo el canvas (recorta sobrantes)"><IconCrop className="h-3.5 w-3.5" /> Recortar</button>
+        </div>
+        <div className="mx-1 hidden h-6 w-px bg-slate-700 lg:block" />
+                <button onClick={undo} disabled={historyPast.current.length === 0} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex" title="Deshacer (Ctrl+Z)"><IconUndo className="h-4 w-4" /> Deshacer</button>
+        <button onClick={redo} disabled={historyFuture.current.length === 0} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex" title="Rehacer (Ctrl+Shift+Z)"><IconRedo className="h-4 w-4" /> Rehacer</button>
+        <button onClick={splitAtPlayhead} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex"><IconScissors className="h-4 w-4" /> Dividir</button>
+        <button onClick={deleteSelected} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-red-400 hover:text-red-400 disabled:opacity-40 lg:flex"><IconTrash className="h-4 w-4" /> Eliminar</button>
+       <div className="hidden flex-1 lg:block" />
+        <button onClick={togglePreviewTransitions} disabled={clips.length < 2}
+          className={`hidden items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors lg:flex ${previewTransitions ? (previewRenderStatus.rendering ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-green-400 bg-green-500/20 text-green-200') : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-violet-400 hover:text-violet-300'} disabled:opacity-40`}
+          title="Previsualizar las transiciones con render real del solape. Se desactiva solo si editás la pista de video.">
+          <span className={`inline-block h-2.5 w-2.5 rounded-full ${previewTransitions ? (previewRenderStatus.rendering ? 'animate-pulse bg-amber-400' : 'bg-green-400') : 'bg-red-500'}`} />
+                              {previewTransitions && previewRenderStatus.rendering ? <><IconSparkles className="h-4 w-4 animate-pulse" /> Render {previewPercent}%</> : <><IconSparkles className="h-4 w-4" /> Previsualizar transiciones</>}
+        </button>
+      </div>
+
+               <div className="flex shrink-0 flex-col gap-2 lg:min-h-0 lg:flex-1 lg:gap-4 lg:order-3">
           {/* Toggle de propiedades (solo móvil) */}
           <button onClick={() => setPropsOpen((v) => !v)} className="flex shrink-0 items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm font-bold text-slate-200 lg:hidden">
             <span>🎛 Propiedades{selectedClip || selectedImage || selectedText || selectedAudio ? ' · elemento seleccionado' : ''}</span>
@@ -2149,84 +2230,48 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
           </aside>
         </div>
       </div>
-      {/* ===== BARRA DE TRANSPORTE ===== */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 px-2 py-1.5 lg:gap-2 lg:px-3 lg:py-2">
-        {/* Cluster móvil: tiempo + play gigante + saltos */}
-                <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_1fr] items-center gap-2 lg:hidden">
-                    <div className="truncate whitespace-nowrap rounded-lg bg-slate-800 px-2 py-2 font-mono text-xs text-cyan-300"><span ref={tcMobileRef}>00:00.0</span> <span className="text-slate-500">/ {formatTime(projectDuration)}</span></div>
-                    <button onClick={togglePlay} disabled={projectDuration === 0} className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-violet-500 text-black shadow-lg shadow-cyan-500/30 transition-transform active:scale-95 disabled:opacity-40" title={playing ? 'Pausar' : 'Reproducir'}>{playing ? <IconPause className="h-6 w-6" /> : <IconPlay className="h-6 w-6" />}</button>
-          <div className="flex items-center justify-end gap-1.5">
-            <button onClick={() => seek(0)} disabled={projectDuration === 0} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-200 disabled:opacity-40" title="Ir al inicio"><IconSkipBack className="h-4 w-4" /></button>
-            <button onClick={() => seek(projectDuration)} disabled={projectDuration === 0} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-200 disabled:opacity-40" title="Ir al final"><IconSkipForward className="h-4 w-4" /></button>
-          </div>
+      
+            {/* ===== TARJETA DE HERRAMIENTAS MÓVIL (3 grupos funcionales) ===== */}
+      <div className="flex shrink-0 gap-1.5 lg:hidden">
+        <div className="flex flex-[3] rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+          <button onClick={cycleRatio} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800">
+            <span className="flex h-5 w-full items-center justify-center"><span className="rounded border border-slate-600 px-1.5 font-mono text-[9px] leading-none">{exportSettings.ratio}</span></span>
+            <span className="w-full truncate leading-none">Relación</span>
+          </button>
+          <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'adaptar' }))} className={`flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold hover:bg-slate-800 ${exportSettings.fit === 'adaptar' ? 'text-cyan-300' : 'text-slate-300'}`}>
+            <span className="flex h-5 w-full items-center justify-center"><IconFit className="h-5 w-5" /></span>
+            <span className="w-full truncate leading-none">Adaptar</span>
+          </button>
+          <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'recortar' }))} className={`flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold hover:bg-slate-800 ${exportSettings.fit === 'recortar' ? 'text-cyan-300' : 'text-slate-300'}`}>
+            <span className="flex h-5 w-full items-center justify-center"><IconCrop className="h-5 w-5" /></span>
+            <span className="w-full truncate leading-none">Recortar</span>
+          </button>
         </div>
-                <button onClick={() => seek(0)} disabled={projectDuration === 0} className="hidden rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:block" title="Ir al inicio"><IconSkipBack className="h-4 w-4" /></button>
-        <button onClick={togglePlay} disabled={projectDuration === 0} className="hidden items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 py-2 text-sm font-bold text-black transition-transform hover:scale-[1.03] disabled:opacity-40 lg:flex">{playing ? <><IconPause className="h-4 w-4" /> Pausar</> : <><IconPlay className="h-4 w-4" /> Reproducir</>}</button>
-                <div className="hidden rounded-lg bg-slate-800 px-3 py-2 font-mono text-sm text-cyan-300 lg:block"><span ref={tcDesktopRef}>00:00.0</span> <span className="text-slate-500">/ {formatTime(projectDuration)}</span></div>
-        <div className="mx-1 hidden h-6 w-px bg-slate-700 lg:block" />
-        <div className="hidden items-center gap-0.5 rounded-lg border border-slate-700 bg-slate-900/50 p-1 lg:flex">
-          {(Object.keys(RATIO_PRESETS) as AspectRatio[]).map((r) => (
-            <button key={r} onClick={() => setExportSettings((s) => ({ ...s, ratio: r }))} disabled={exporting}
-              className={`rounded px-2 py-1 text-xs font-bold transition ${exportSettings.ratio === r ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
-              title={RATIO_PRESETS[r].label}>{r}</button>
-          ))}
+        <div className="flex flex-[4] rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+          <button onClick={undo} disabled={historyPast.current.length === 0} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
+            <span className="flex h-5 w-full items-center justify-center"><IconUndo className="h-5 w-5" /></span>
+            <span className="w-full truncate leading-none">Deshacer</span>
+          </button>
+          <button onClick={redo} disabled={historyFuture.current.length === 0} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
+            <span className="flex h-5 w-full items-center justify-center"><IconRedo className="h-5 w-5" /></span>
+            <span className="w-full truncate leading-none">Rehacer</span>
+          </button>
+          <button onClick={splitAtPlayhead} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
+            <span className="flex h-5 w-full items-center justify-center"><IconScissors className="h-5 w-5" /></span>
+            <span className="w-full truncate leading-none">Dividir</span>
+          </button>
+          <button onClick={deleteSelected} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
+            <span className="flex h-5 w-full items-center justify-center"><IconTrash className="h-5 w-5" /></span>
+            <span className="w-full truncate leading-none">Eliminar</span>
+          </button>
         </div>
-        <div className="hidden items-center gap-0.5 rounded-lg border border-slate-700 bg-slate-900/50 p-1 lg:flex">
-                    <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'adaptar' }))} disabled={exporting}
-            className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-bold transition ${exportSettings.fit === 'adaptar' ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
-            title="El video entra completo (letterbox)"><IconFit className="h-3.5 w-3.5" /> Adaptar</button>
-          <button onClick={() => { setExportSettings((s) => ({ ...s, fit: 'recortar' })); showToast('✂️ Modo Recortar: arrastrá el video en el preview para reencuadrar', 'info'); }} disabled={exporting}
-            className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-bold transition ${exportSettings.fit === 'recortar' ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
-            title="El video cubre todo el canvas (recorta sobrantes)"><IconCrop className="h-3.5 w-3.5" /> Recortar</button>
+        <div className="flex shrink-0 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+          <button onClick={togglePreviewTransitions} disabled={clips.length < 2} className={`flex min-w-0 flex-col items-center gap-1 rounded-lg px-0.5 py-1.5 text-[9px] font-semibold hover:bg-slate-800 disabled:opacity-40 ${previewTransitions ? 'text-green-300' : 'text-slate-300'}`}>
+            <span className="flex h-5 w-full items-center justify-center"><span className={`inline-block h-2.5 w-2.5 rounded-full ${previewTransitions ? (previewRenderStatus.rendering ? 'animate-pulse bg-amber-400' : 'bg-green-400') : 'bg-red-500'}`} /></span>
+            <span className="w-full truncate leading-none">{previewRenderStatus.rendering ? `${previewPercent}%` : 'Transiciones'}</span>
+          </button>
         </div>
-        <div className="mx-1 hidden h-6 w-px bg-slate-700 lg:block" />
-                <button onClick={undo} disabled={historyPast.current.length === 0} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex" title="Deshacer (Ctrl+Z)"><IconUndo className="h-4 w-4" /> Deshacer</button>
-        <button onClick={redo} disabled={historyFuture.current.length === 0} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex" title="Rehacer (Ctrl+Shift+Z)"><IconRedo className="h-4 w-4" /> Rehacer</button>
-        <button onClick={splitAtPlayhead} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400 disabled:opacity-40 lg:flex"><IconScissors className="h-4 w-4" /> Dividir</button>
-        <button onClick={deleteSelected} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="hidden items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-red-400 hover:text-red-400 disabled:opacity-40 lg:flex"><IconTrash className="h-4 w-4" /> Eliminar</button>
-        <div className="flex-1" />
-        <button onClick={togglePreviewTransitions} disabled={clips.length < 2}
-          className={`hidden items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors lg:flex ${previewTransitions ? (previewRenderStatus.rendering ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-green-400 bg-green-500/20 text-green-200') : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-violet-400 hover:text-violet-300'} disabled:opacity-40`}
-          title="Previsualizar las transiciones con render real del solape. Se desactiva solo si editás la pista de video.">
-          <span className={`inline-block h-2.5 w-2.5 rounded-full ${previewTransitions ? (previewRenderStatus.rendering ? 'animate-pulse bg-amber-400' : 'bg-green-400') : 'bg-red-500'}`} />
-                              {previewTransitions && previewRenderStatus.rendering ? <><IconSparkles className="h-4 w-4 animate-pulse" /> Render {previewPercent}%</> : <><IconSparkles className="h-4 w-4" /> Previsualizar transiciones</>}
-        </button>
       </div>
-      {/* ===== TARJETA DE HERRAMIENTAS MÓVIL ===== */}
-                  <div className="grid shrink-0 grid-cols-[repeat(7,minmax(0,1fr))_minmax(0,1.6fr)] gap-0 rounded-xl border border-slate-800 bg-slate-900/60 p-1 lg:hidden">
-     <button onClick={cycleRatio} className="flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold text-slate-300 hover:bg-slate-800">
-       <span className="flex h-4 w-full items-center justify-center"><span className="rounded border border-slate-600 px-1 font-mono text-[8px] leading-none">{exportSettings.ratio}</span></span>
-       <span className="w-full truncate leading-none">Relación</span>
-     </button>
-     <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'adaptar' }))} className={`flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold hover:bg-slate-800 ${exportSettings.fit === 'adaptar' ? 'text-cyan-300' : 'text-slate-300'}`}>
-       <span className="flex h-4 w-full items-center justify-center"><IconFit className="h-3.5 w-3.5" /></span>
-       <span className="w-full truncate leading-none">Adaptar</span>
-     </button>
-     <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'recortar' }))} className={`flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold hover:bg-slate-800 ${exportSettings.fit === 'recortar' ? 'text-cyan-300' : 'text-slate-300'}`}>
-       <span className="flex h-4 w-full items-center justify-center"><IconCrop className="h-3.5 w-3.5" /></span>
-       <span className="w-full truncate leading-none">Recortar</span>
-     </button>
-     <button onClick={undo} disabled={historyPast.current.length === 0} className="flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
-       <span className="flex h-4 w-full items-center justify-center"><IconUndo className="h-3.5 w-3.5" /></span>
-       <span className="w-full truncate leading-none">Deshacer</span>
-     </button>
-     <button onClick={redo} disabled={historyFuture.current.length === 0} className="flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
-       <span className="flex h-4 w-full items-center justify-center"><IconRedo className="h-3.5 w-3.5" /></span>
-       <span className="w-full truncate leading-none">Rehacer</span>
-     </button>
-     <button onClick={splitAtPlayhead} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
-       <span className="flex h-4 w-full items-center justify-center"><IconScissors className="h-3.5 w-3.5" /></span>
-       <span className="w-full truncate leading-none">Dividir</span>
-     </button>
-     <button onClick={deleteSelected} disabled={!selectedClip && !selectedImage && !selectedText && !selectedAudio} className="flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-40">
-       <span className="flex h-4 w-full items-center justify-center"><IconTrash className="h-3.5 w-3.5" /></span>
-       <span className="w-full truncate leading-none">Eliminar</span>
-     </button>
-     <button onClick={togglePreviewTransitions} disabled={clips.length < 2} className={`flex min-w-0 flex-col items-center gap-1 rounded-md py-1 text-[8px] font-semibold hover:bg-slate-800 disabled:opacity-40 ${previewTransitions ? 'text-green-300' : 'text-slate-300'}`}>
-       <span className="flex h-4 w-full items-center justify-center"><span className={`inline-block h-2 w-2 rounded-full ${previewTransitions ? (previewRenderStatus.rendering ? 'animate-pulse bg-amber-400' : 'bg-green-400') : 'bg-red-500'}`} /></span>
-       <span className="w-full truncate leading-none">{previewRenderStatus.rendering ? `${previewPercent}%` : 'Transiciones'}</span>
-     </button>
-   </div>
       {/* ===== TIMELINE CON ZOOM ===== */}
       <div className="relative flex min-h-[15rem] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 lg:flex-none lg:shrink-0">
                 <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/90 p-1 shadow-lg backdrop-blur lg:right-3 lg:top-3">
