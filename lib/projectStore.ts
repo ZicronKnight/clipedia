@@ -3,13 +3,14 @@
 // Nada de esto sale del navegador: coherente con el manifiesto de privacidad.
 
 export type StoredProject = {
-  version: 1;
+  version: number;
   savedAt: number;
-  settings: any;
-  clips: any[];
-  imageOverlays: any[];
-  textOverlays: any[];
-  audioTracks: any[];
+  settings?: ExportSettings;
+  clips?: any[];
+  imageOverlays?: any[];
+  textOverlays?: any[];
+  audioTracks?: any[];
+  videoOverlays?: any[];
 };
 
 const DB_NAME = 'clipedia-studio';

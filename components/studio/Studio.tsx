@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import { toBlobURL } from '@ffmpeg/util';
 import { putAsset, getAsset, saveProject, loadProject, clearProject, StoredProject } from '@/lib/projectStore';
-import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles, IconPlayCorel, IconPauseCorel, Icon480p } from './icons';
+import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles, IconPlayCorel, IconPauseCorel, Icon480p, IconSuperponer } from './icons';
 
 type TransitionType =
   | 'none' | 'fade' | 'dissolve' | 'fadeblack' | 'fadewhite' | 'fadegrays' | 'fadefast' | 'fadeslow'
@@ -30,6 +30,15 @@ type ImageOverlay = {
   id: string; assetId: string; name: string; url: string; start: number; end: number;
   x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270; fadeIn: number; fadeOut: number;
 };
+
+type OverlayShape = 'none' | 'round' | 'circle';
+type VideoOverlay = {
+id: string; assetId: string; name: string; url: string;
+start: number; end: number; offset: number;
+x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270;
+fadeIn: number; fadeOut: number; muted: boolean; shape: OverlayShape; hasAudio?: boolean; srcW?: number; srcH?: number;
+};
+
 type TextOverlay = {
   id: string; text: string; start: number; end: number; x: number; y: number; size: number; bold: boolean;
   font: 'sans' | 'serif' | 'mono' | 'roboto' | 'playfair' | 'montserrat' | 'opensans' | 'lato' | 'oswald' | 'raleway' | 'poppins' | 'merriweather' | 'nunito';
@@ -62,6 +71,29 @@ const HISTORY_LIMIT = 60;
 const PREVIEW_PROXY_HEIGHT = 360;
 const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 const UI_HZ = IS_MOBILE ? 15 : 30;
+
+// ===== GENERADOR DE MÁSCARAS DE FORMA PARA OVERLAYS =====
+async function generateShapeMask(shape: OverlayShape, width: number, height: number): Promise<Blob | null> {
+const canvas = document.createElement('canvas');
+canvas.width = width; canvas.height = height;
+const ctx = canvas.getContext('2d');
+if (!ctx) return null;
+ctx.clearRect(0, 0, width, height);
+ctx.fillStyle = 'white';
+if (shape === 'circle') {
+ctx.beginPath(); ctx.arc(width / 2, height / 2, Math.min(width, height) / 2, 0, Math.PI * 2); ctx.fill();
+} else {
+const r = Math.min(width, height) * 0.1;
+ctx.beginPath();
+ctx.moveTo(r, 0); ctx.lineTo(width - r, 0); ctx.quadraticCurveTo(width, 0, width, r);
+ctx.lineTo(width, height - r); ctx.quadraticCurveTo(width, height, width - r, height);
+ctx.lineTo(r, height); ctx.quadraticCurveTo(0, height, 0, height - r);
+ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0);
+ctx.closePath(); ctx.fill();
+}
+return new Promise((resolve) => { canvas.toBlob((b) => resolve(b), 'image/png'); });
+}
+
 const proxyUrlMap = new Map<string, string>();
 function initialProxies(): boolean {
   if (typeof window === 'undefined') return IS_MOBILE;
@@ -286,7 +318,7 @@ async function captureFilmstrip(url: string, duration: number): Promise<string[]
 
 type TrimDrag = { id: string; edge: 'start' | 'end'; startX: number; origStart: number; origEnd: number };
 type MoveDrag = { id: string; startX: number; active: boolean };
-type OverlayTimeDrag = { id: string; type: 'text' | 'image' | 'audio'; mode: 'move' | 'start' | 'end'; startX: number; origStart: number; origEnd: number; origDuration?: number; origOffset?: number };
+type OverlayTimeDrag = { id: string; type: 'text' | 'image' | 'audio' | 'video'; mode: 'move' | 'start' | 'end'; startX: number; origStart: number; origEnd: number; origDuration?: number; origOffset?: number };
 type PanDrag = { id: string; startX: number; startY: number; origX: number; origY: number };
 type Toast = { id: number; msg: string; kind: 'info' | 'warn' };
 type StageRect = { left: number; top: number; width: number; height: number };
@@ -345,6 +377,74 @@ function ClipFilmstrip({ clip }: { clip: Clip }) {
   );
 }
 
+function TransitionPickerModal({ clip, onCancel, onApply }: { clip: Clip; onCancel: () => void; onApply: (type: TransitionType, duration: number) => void }) {
+  const [picked, setPicked] = useState<TransitionType>(clip.transition?.type ?? 'none');
+  const [dur, setDur] = useState<number>(clip.transition?.duration || 0.5);
+  const [missing, setMissing] = useState<string[]>([]);
+  const gridRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+    const box = gridRef.current;
+    if (!box) return;
+    box.querySelectorAll('video').forEach((v) => {
+      if (v.dataset.tid === picked) v.play().catch(() => {});
+      else { v.pause(); v.currentTime = 0; }
+    });
+  }, [picked]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+  return (
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm" onClick={onCancel}>
+      <div className="flex max-h-[86vh] w-[min(94vw,30rem)] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl shadow-cyan-500/10" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+          <h2 className="text-sm font-black text-white">Transiciones</h2>
+          <button onClick={onCancel} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white" title="Cerrar">✕</button>
+        </div>
+        <div ref={gridRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-3">
+          {TRANSITION_TYPES.map((t) => {
+            const isPicked = picked === t.id;
+            const noVideo = missing.includes(t.id);
+            return (
+              <button key={t.id} onClick={() => setPicked(t.id)}
+                onMouseEnter={(e) => { const v = e.currentTarget.querySelector('video'); if (v) v.play().catch(() => {}); }}
+                onMouseLeave={(e) => { const v = e.currentTarget.querySelector('video'); if (v && picked !== t.id) { v.pause(); v.currentTime = 0; } }}
+                className="group flex flex-col gap-1.5 outline-none">
+                <div className={`relative overflow-hidden rounded-lg border-2 transition-all ${isPicked ? 'border-slate-200/90 shadow-lg shadow-slate-200/20 ring-2 ring-slate-200/40' : 'border-slate-700/60 group-hover:border-slate-500'}`}>
+                  {noVideo ? (
+                    <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900 text-2xl">{t.icon}</div>
+                  ) : (
+                    <video data-tid={t.id} src={`/transitions/${t.id}.mp4`} muted loop playsInline preload="metadata"
+                      onError={() => setMissing((m) => (m.includes(t.id) ? m : [...m, t.id]))}
+                      className="aspect-video w-full object-cover" />
+                  )}
+                </div>
+                <span className={`truncate text-center text-[11px] font-semibold ${isPicked ? 'text-cyan-300' : 'text-slate-400 group-hover:text-slate-200'}`}>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="space-y-3 border-t border-slate-800 bg-slate-950/60 px-4 py-3">
+          <div>
+            <div className="mb-1 flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-300">Duración</span>
+              <span className="font-mono font-bold text-cyan-300">{dur.toFixed(1)}s</span>
+            </div>
+            <input type="range" min={0.1} max={2} step={0.1} value={dur} disabled={picked === 'none'}
+              onChange={(e) => setDur(Number(e.target.value))}
+              className="w-full accent-cyan-400 disabled:opacity-40" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onCancel} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-bold text-slate-200 transition-colors hover:border-slate-500">Cancelar</button>
+            <button onClick={() => onApply(picked, picked === 'none' ? 0 : dur)} className="flex-1 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2.5 text-sm font-black text-white transition-transform hover:scale-[1.02] active:scale-95">Aceptar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AudioElement({ track, onReady, onCleanup }: { track: AudioTrack; onReady: (id: string, el: HTMLAudioElement) => void; onCleanup: (id: string) => void }) {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
@@ -363,6 +463,8 @@ export default function Studio() {
   const [imageOverlays, setImageOverlays] = useState<ImageOverlay[]>([]);
   const [textOverlays, setTextOverlays] = useState<TextOverlay[]>([]);
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [videoOverlays, setVideoOverlays] = useState<VideoOverlay[]>([]);
+  const [selectedVoId, setSelectedVoId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -383,7 +485,7 @@ export default function Studio() {
   const [stage, setStage] = useState<StageRect | null>(null);
   const [histVersion, setHistVersion] = useState(0);
   const [pps, setPps] = useState(DEFAULT_PPS);
-  const [transitionPicker, setTransitionPicker] = useState<{ clipIndex: number; x: number; y: number } | null>(null);
+  const [transitionPicker, setTransitionPicker] = useState<number | null>(null);
   const [previewTransitions, setPreviewTransitions] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
 const [importOpen, setImportOpen] = useState(false);
@@ -399,6 +501,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const voInputRef = useRef<HTMLInputElement>(null);
   const rafRef = useRef(0);
   const lastTsRef = useRef(0);
   const playheadRef = useRef(0);
@@ -406,6 +509,8 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const imageOverlaysRef = useRef<ImageOverlay[]>([]);
   const textOverlaysRef = useRef<TextOverlay[]>([]);
   const audioTracksRef = useRef<AudioTrack[]>([]);
+  const videoOverlaysRef = useRef<VideoOverlay[]>([]);
+  const voElementsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const projectDurationRef = useRef(0);
   const playingRef = useRef(false);
@@ -414,7 +519,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const trimDragRef = useRef<TrimDrag | null>(null);
   const moveDragRef = useRef<MoveDrag | null>(null);
   const overlayTimeDragRef = useRef<OverlayTimeDrag | null>(null);
-  const overlayPosDragRef = useRef<{ type: 'text' | 'image'; id: string } | null>(null);
+  const overlayPosDragRef = useRef<{ type: 'text' | 'image' | 'video'; id: string } | null>(null);
   const panDragRef = useRef<PanDrag | null>(null);
   const historyPast = useRef<string[]>([]);
   const historyFuture = useRef<string[]>([]);
@@ -454,6 +559,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
   imageOverlaysRef.current = imageOverlays;
   textOverlaysRef.current = textOverlays;
   audioTracksRef.current = audioTracks;
+  videoOverlaysRef.current = videoOverlays;
   playingRef.current = playing;
   ppsRef.current = pps;
   previewTransitionsRef.current = previewTransitions;
@@ -466,6 +572,15 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const resInfo = RESOLUTION_PRESETS[exportSettings.resolution];
   const fmtInfo = FORMAT_PRESETS[exportSettings.format];
   const qualInfo = QUALITY_PRESETS[exportSettings.quality];
+
+// Duración real de la mezcla de una transición (independiente del modo preview):
+// es exactamente lo que el xfade del export funde (cola de A + cabeza de B).
+const blendLen = (i: number): number => {
+  if (i < 0 || i >= clips.length - 1) return 0;
+  const tr = clips[i].transition;
+  if (!tr || tr.type === 'none') return 0;
+  return clamp(tr.duration, 0, Math.min(effLen(clips[i]), effLen(clips[i + 1])));
+};
 
   // ===== GEOMETRÍA DE TIMELINE (comprimida en modo preview de transiciones) =====
   const dAfter = (i: number): number => {
@@ -484,8 +599,9 @@ const [proxiesOn, setProxiesOn] = useState(false);
     videoTotal,
     audioTracks.reduce((a, t) => Math.max(a, t.start + t.duration), 0),
     imageOverlays.reduce((a, t) => Math.max(a, t.end), 0),
-    textOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
-  );
+    textOverlays.reduce((a, t) => Math.max(a, t.end), 0),
+videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
+);
   useEffect(() => { projectDurationRef.current = projectDuration; }, [projectDuration]);
 
   const prevRatioRef = useRef<AspectRatio>('16:9');
@@ -497,6 +613,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
     const sy = newR.h / oldR.h;
     setImageOverlays((prev) => prev.map((img) => ({ ...img, x: img.x * sx, y: img.y * sy, size: img.size * sx })));
     setTextOverlays((prev) => prev.map((txt) => ({ ...txt, x: txt.x * sx, y: txt.y * sy, size: Math.round(txt.size * sx) })));
+    setVideoOverlays((prev) => prev.map((vo) => ({ ...vo, x: vo.x * sx, y: vo.y * sy, size: vo.size * sx })));
     prevRatioRef.current = exportSettings.ratio;
   }, [exportSettings.ratio]);
 
@@ -588,11 +705,19 @@ const [proxiesOn, setProxiesOn] = useState(false);
           if (decoded) audioDataMap.set(a.id, { channelData: decoded.channelData, sampleRate: decoded.sampleRate });
           ra.push(a);
         }
+const rv: VideoOverlay[] = [];
+for (const vo of proj.videoOverlays || []) {
+  const blob = vo.assetId ? await getAsset(vo.assetId) : null;
+  if (!blob) { missing++; continue; }
+  vo.url = URL.createObjectURL(blob);
+  rv.push(vo);
+}
+
         const rt: TextOverlay[] = proj.textOverlays || [];
         if (cancelled) return;
-        if (rc.length || ri.length || rt.length || ra.length || missing) {
+        if (rc.length || ri.length || rt.length || ra.length || rv.length || missing) {
           applyingRef.current = true;
-          setClips(rc); setImageOverlays(ri); setTextOverlays(rt); setAudioTracks(ra);
+          setClips(rc); setImageOverlays(ri); setTextOverlays(rt); setAudioTracks(ra); setVideoOverlays(rv);
           if (proj.settings) setExportSettings((s) => ({ ...s, ...proj.settings }));
           setTimeout(() => { applyingRef.current = false; }, 80);
           showToast(missing ? `📂 Proyecto restaurado (${missing} elemento(s) sin archivo local)` : '📂 Proyecto restaurado desde tu navegador', 'info');
@@ -604,10 +729,10 @@ const [proxiesOn, setProxiesOn] = useState(false);
   }, []);
 
   // ===== HISTORIA (UNDO/REDO) =====
-  const snapshotOf = (c: Clip[], i: ImageOverlay[], t: TextOverlay[], a: AudioTrack[]) => JSON.stringify([c, i, t, a]);
+  const snapshotOf = (c: Clip[], i: ImageOverlay[], t: TextOverlay[], a: AudioTrack[], v: VideoOverlay[]) => JSON.stringify([c, i, t, a, v]);
   useEffect(() => {
     if (applyingRef.current) return;
-    const snap = snapshotOf(clips, imageOverlays, textOverlays, audioTracks);
+    const snap = snapshotOf(clips, imageOverlays, textOverlays, audioTracks, videoOverlays);
     if (snap === lastSnapshotRef.current) return;
     const timer = setTimeout(() => {
       if (applyingRef.current) return;
@@ -619,12 +744,12 @@ const [proxiesOn, setProxiesOn] = useState(false);
       setHistVersion((v) => v + 1);
     }, 400);
     return () => clearTimeout(timer);
-  }, [clips, imageOverlays, textOverlays, audioTracks]);
+  }, [clips, imageOverlays, textOverlays, audioTracks, videoOverlays]);
 
   const applySnapshot = useCallback((s: string) => {
     applyingRef.current = true;
-    const [c, i, t, a] = JSON.parse(s);
-    setClips(c); setImageOverlays(i); setTextOverlays(t); setAudioTracks(a);
+    const [c, i, t, a, v] = JSON.parse(s);
+    setClips(c); setImageOverlays(i); setTextOverlays(t); setAudioTracks(a); setVideoOverlays(v || []);
     lastSnapshotRef.current = s;
     setHistVersion((v) => v + 1);
     setTimeout(() => { applyingRef.current = false; }, 80);
@@ -646,11 +771,11 @@ const [proxiesOn, setProxiesOn] = useState(false);
   useEffect(() => {
     const t = setTimeout(() => {
       if (applyingRef.current) return;
-      const proj: StoredProject = { version: 1, savedAt: Date.now(), settings: exportSettings, clips, imageOverlays, textOverlays, audioTracks };
+      const proj: StoredProject = { version: 1, savedAt: Date.now(), settings: exportSettings, clips, imageOverlays, textOverlays, audioTracks, videoOverlays };
       saveProject(proj).catch((e) => console.error('[Autosave] Error guardando:', e));
     }, 1200);
     return () => clearTimeout(t);
-  }, [clips, imageOverlays, textOverlays, audioTracks, exportSettings]);
+  }, [clips, imageOverlays, textOverlays, audioTracks, videoOverlays, exportSettings]);
 
   // ===== MODO PREVIEW DE TRANSICIONES: huella digital de la pista de video =====
   const fp = clips.map((c) => `${c.id}:${c.trimStart.toFixed(3)}:${c.trimEnd.toFixed(3)}:${c.speed}`).join('|');
@@ -838,6 +963,15 @@ const [proxiesOn, setProxiesOn] = useState(false);
     if (previewTransitionsRef.current) showToast('✨ Transición aplicada — renderizando preview…', 'info', 2600);
     else showToast('✨ Transición aplicada — presioná "Previsualizar transiciones" para verla', 'info', 4200);
   }
+
+  function applyPickedTransition(clipIndex: number, type: TransitionType, duration: number) {
+    const actual = clips[clipIndex]?.transition;
+    const cambioReal = actual?.type !== type || (type !== 'none' && (actual?.duration || 0.5) !== duration);
+    setClips((prev) => prev.map((c, i) => (i === clipIndex ? { ...c, transition: { type, duration: type === 'none' ? 0 : duration } } : c)));
+    setTransitionPicker(null);
+    if (cambioReal) notifyTransitionApplied();
+  }
+
         function cancelPreviewRenders() {
     previewRunIdRef.current += 1; // invalida el run en vuelo
     if (previewFFRef.current) { try { previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
@@ -931,6 +1065,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
   const selectedImage = imageOverlays.find((t) => t.id === selectedImageId) ?? null;
   const selectedText = textOverlays.find((t) => t.id === selectedTextId) ?? null;
   const selectedAudio = audioTracks.find((t) => t.id === selectedAudioId) ?? null;
+  const selectedVo = videoOverlays.find((v) => v.id === selectedVoId) ?? null;
 
   let previewAlpha = 1;
   if (activeClip) {
@@ -980,12 +1115,13 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
         if (selectedAudioId) { e.preventDefault(); setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudioId)); setSelectedAudioId(null); }
         else if (selectedImageId) { e.preventDefault(); setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImageId)); setSelectedImageId(null); }
         else if (selectedTextId) { e.preventDefault(); setTextOverlays((prev) => prev.filter((a) => a.id !== selectedTextId)); setSelectedTextId(null); }
+else if (selectedVoId) { e.preventDefault(); setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVoId)); setSelectedVoId(null); }
         else if (selectedId) { e.preventDefault(); setClips((prev) => prev.filter((c) => c.id !== selectedId)); setSelectedId(null); }
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, selectedAudioId, selectedImageId, selectedTextId, undo, redo]);
+  }, [selectedId, selectedAudioId, selectedImageId, selectedTextId, selectedVoId, undo, redo]);
 
   useEffect(() => {
     if (playheadRef.current > projectDurationRef.current) seek(projectDurationRef.current);
@@ -1037,6 +1173,24 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       } else { if (!audio.paused) audio.pause(); }
     });
   }, [playhead, playing, audioTracks]);
+
+// ===== SYNC DE CAPAS DE VIDEO: cada <video> sigue al playhead dentro de su ventana =====
+useEffect(() => {
+const isPlaying = playingRef.current;
+const t = playheadRef.current;
+videoOverlaysRef.current.forEach((vo) => {
+const el = voElementsRef.current.get(vo.id);
+if (!el) return;
+const active = t >= vo.start && t <= vo.end;
+if (active) {
+const target = vo.offset + (t - vo.start);
+if (Math.abs(el.currentTime - target) > 0.5) el.currentTime = target;
+el.muted = vo.muted;
+if (isPlaying && el.paused) el.play().catch(() => {});
+else if (!isPlaying && !el.paused) el.pause();
+} else if (!el.paused) el.pause();
+});
+}, [playhead, playing, videoOverlays]);
 
  const proxyToastRef = useRef(false);
 
@@ -1312,17 +1466,19 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
   function updateImageOverlay(id: string, patch: Partial<ImageOverlay>) { setImageOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
   function updateTextOverlay(id: string, patch: Partial<TextOverlay>) { setTextOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
-  function selectOnly(id: string, type: 'clip' | 'image' | 'text' | 'audio') {
-    setSelectedId(type === 'clip' ? id : null); setSelectedImageId(type === 'image' ? id : null);
-    setSelectedTextId(type === 'text' ? id : null); setSelectedAudioId(type === 'audio' ? id : null);
-  }
+function updateVideoOverlay(id: string, patch: Partial<VideoOverlay>) { setVideoOverlays((prev) => prev.map((v) => (v.id === id ? { ...v, ...patch } : v))); }
+  function selectOnly(id: string, type: 'clip' | 'image' | 'text' | 'audio' | 'video') {
+setSelectedId(type === 'clip' ? id : null); setSelectedImageId(type === 'image' ? id : null);
+setSelectedTextId(type === 'text' ? id : null); setSelectedAudioId(type === 'audio' ? id : null);
+setSelectedVoId(type === 'video' ? id : null);
+}
   function selectAndSeek(id: string) { selectOnly(id, 'clip'); }
 
   function newProject() {
     if (!window.confirm('¿Empezar un proyecto nuevo? Se descarta el actual (y su autoguardado).')) return;
     applyingRef.current = true;
-    setClips([]); setImageOverlays([]); setTextOverlays([]); setAudioTracks([]);
-    setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null);
+    setClips([]); setImageOverlays([]); setTextOverlays([]); setAudioTracks([]); setVideoOverlays([]);
+setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
     setPlayhead(0); playheadRef.current = 0;
     historyPast.current = []; historyFuture.current = []; lastSnapshotRef.current = '';
     setHistVersion((v) => v + 1);
@@ -1382,6 +1538,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     if (selectedAudioId) { setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudioId)); setSelectedAudioId(null); }
     else if (selectedImageId) { setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImageId)); setSelectedImageId(null); }
     else if (selectedTextId) { setTextOverlays((prev) => prev.filter((a) => a.id !== selectedTextId)); setSelectedTextId(null); }
+else if (selectedVoId) { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVoId)); setSelectedVoId(null); }
     else if (selectedId) { setClips((prev) => prev.filter((c) => c.id !== selectedId)); setSelectedId(null); }
   }
 
@@ -1452,12 +1609,13 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     updateClip(d.id, { cropX: clamp(d.origX + dcx, 0, 1), cropY: clamp(d.origY + dcy, 0, 1) });
   }
   function endPanDrag() { panDragRef.current = null; }
-  function startOverlayTimeDrag(e: React.PointerEvent, id: string, type: 'text' | 'image' | 'audio', mode: OverlayTimeDrag['mode']) {
+  function startOverlayTimeDrag(e: React.PointerEvent, id: string, type: 'text' | 'image' | 'audio' | 'video', mode: OverlayTimeDrag['mode']) {
     e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); selectOnly(id, type);
     let origStart = 0; let origEnd = 0; let origDuration = 0; let origOffset = 0;
     if (type === 'text') { const t = textOverlaysRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.end; } }
     else if (type === 'image') { const t = imageOverlaysRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.end; } }
-    else { const t = audioTracksRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.start + t.duration; origDuration = t.duration; origOffset = t.offset; } }
+    else if (type === 'audio') { const t = audioTracksRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.start + t.duration; origDuration = t.duration; origOffset = t.offset; } }
+else { const t = videoOverlaysRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.end; origDuration = t.end - t.start; origOffset = t.offset; } }
     overlayTimeDragRef.current = { id, type, mode, startX: e.clientX, origStart, origEnd, origDuration, origOffset };
   }
   function moveOverlayTimeDrag(e: React.PointerEvent) {
@@ -1474,17 +1632,24 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       else if (d.mode === 'start') patch.start = Math.max(d.origStart + delta, 0);
       else patch.end = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN);
       updateImageOverlay(d.id, patch);
-    } else {
+    } else if (d.type === 'audio') {
       const track = audioTracksRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<AudioTrack> = {};
       const origDur = d.origDuration || track.duration; const origOff = d.origOffset ?? track.offset;
       if (d.mode === 'move') patch.start = Math.max(d.origStart + delta, 0);
       else if (d.mode === 'start') { const newTimelineStart = Math.max(d.origStart + delta, 0); const trimmedAmount = newTimelineStart - d.origStart; if (origDur - trimmedAmount > MIN_OVERLAY_LEN) { patch.start = newTimelineStart; patch.duration = origDur - trimmedAmount; patch.offset = origOff + trimmedAmount; } }
       else { const newEnd = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN); patch.duration = Math.max(newEnd - d.origStart, MIN_OVERLAY_LEN); }
-      updateAudioTrack(d.id, patch);
-    }
+updateAudioTrack(d.id, patch);
+} else {
+const track = videoOverlaysRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<VideoOverlay> = {};
+const origDur = d.origDuration || (track.end - track.start); const origOff = d.origOffset ?? track.offset;
+if (d.mode === 'move') { const dur = d.origEnd - d.origStart; const ns = Math.max(d.origStart + delta, 0); patch.start = ns; patch.end = ns + dur; }
+else if (d.mode === 'start') { const newTimelineStart = Math.max(d.origStart + delta, 0); const trimmedAmount = newTimelineStart - d.origStart; if (origDur - trimmedAmount > MIN_OVERLAY_LEN) { patch.start = newTimelineStart; patch.end = newTimelineStart + (origDur - trimmedAmount); patch.offset = origOff + trimmedAmount; } }
+else { patch.end = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN); }
+updateVideoOverlay(d.id, patch);
+}
   }
   function endOverlayTimeDrag() { overlayTimeDragRef.current = null; }
-  function startOverlayPosDrag(e: React.PointerEvent, type: 'text' | 'image', id: string) {
+  function startOverlayPosDrag(e: React.PointerEvent, type: 'text' | 'image' | 'video', id: string) {
     e.stopPropagation(); e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
     selectOnly(id, type);
     overlayPosDragRef.current = { type, id };
@@ -1505,11 +1670,32 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     const absX = clamp(pt.u, 0, REF_WIDTH);
     const absY = clamp(pt.v, 0, REF_HEIGHT);
     if (overlayPosDragRef.current.type === 'text') updateTextOverlay(overlayPosDragRef.current.id, { x: absX, y: absY });
-    else updateImageOverlay(overlayPosDragRef.current.id, { x: absX, y: absY });
+    else if (overlayPosDragRef.current.type === 'image') updateImageOverlay(overlayPosDragRef.current.id, { x: absX, y: absY });
+else updateVideoOverlay(overlayPosDragRef.current.id, { x: absX, y: absY });
   }
   function endOverlayPosDrag() { overlayPosDragRef.current = null; }
   function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) { const files = e.target.files; if (!files || files.length === 0) return; addFiles(files); e.target.value = ''; }
   function handleAudioUpload(e: React.ChangeEvent<HTMLInputElement>) { const files = e.target.files; if (!files || files.length === 0) return; addFiles(files); e.target.value = ''; }
+
+async function handleVoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+const files = e.target.files; if (!files || files.length === 0) return;
+for (const f of Array.from(files)) {
+const url = URL.createObjectURL(f);
+const meta = await probeVideoMeta(url);
+if (meta.duration <= 0) continue;
+const assetId = uid();
+try { await putAsset(assetId, f); } catch (err) { console.error('[Autosave] No se pudo guardar el asset:', err); }
+const dur = Math.min(5, meta.duration);
+const voAudio = await decodeAudioBlob(f);
+const vo: VideoOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + dur, offset: 0, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 35, rotate: 0, fadeIn: 0, fadeOut: 0, muted: true, shape: 'none', hasAudio: !!voAudio, srcW: meta.width || 16, srcH: meta.height || 9 };
+setVideoOverlays((prev) => [...prev, vo]);
+setSelectedVoId(vo.id);
+if (/\.mov$/i.test(f.name)) showToast('🎞️ Capa agregada: los .mov con canal alpha NO se ven transparentes en este navegador. Para transparencia real, usá WebM VP9 con alpha.', 'warn', 7000);
+else showToast('🎞️ Capa de superposición agregada (WebM VP9 con alpha = transparencia real)', 'info');
+}
+e.target.value = '';
+}
+
   function addTextOverlay() {
     const newOverlay: TextOverlay = { id: uid(), text: 'Tu texto aquí', start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 72, bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0 };
     setTextOverlays((prev) => [...prev, newOverlay]); setSelectedTextId(newOverlay.id);
@@ -1544,6 +1730,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       const coreURL = await toBlobURL('/ffmpeg-core.js', 'text/javascript');
       const wasmURL = await toBlobURL('/ffmpeg-core.wasm', 'application/wasm');
       await ff.load({ coreURL, wasmURL });
+
       const loadedFontFiles = new Set<string>();
       const fontPaths = new Set<string>();
       textOverlays.forEach((txt) => { fontPaths.add(FONT_VARIANTS[txt.font].regular); fontPaths.add(FONT_VARIANTS[txt.font].bold); });
@@ -1569,10 +1756,35 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       };
       for (let i = 0; i < clips.length; i++) inputFiles.push(await writeFsFile(`v${i}.mp4`, clips[i].url));
       for (let i = 0; i < imageOverlays.length; i++) inputFiles.push(`LOOP:${await writeFsFile(`img${i}.png`, imageOverlays[i].url)}`);
+for (let i = 0; i < videoOverlays.length; i++) inputFiles.push(await writeFsFile(`vo${i}.webm`, videoOverlays[i].url));
+
+const voMaskIdx: (number | null)[] = [];
+for (let i = 0; i < videoOverlays.length; i++) {
+const vo = videoOverlays[i];
+if (vo.shape !== 'none') {
+const sW = vo.srcW || 16; const sH = vo.srcH || 9;
+const mW = Math.max(2, Math.round((vo.size / 100) * REF_WIDTH));
+const mH = Math.max(2, 2 * Math.round((mW * sH / sW) / 2));
+const maskBlob = await generateShapeMask(vo.shape, mW, mH);
+if (maskBlob) {
+const mname = `vomask${i}.png`;
+await ff.writeFile(mname, new Uint8Array(await maskBlob.arrayBuffer()));
+inputFiles.push(mname);
+voMaskIdx.push(inputFiles.length - 1);
+continue;
+}
+}
+voMaskIdx.push(null);
+}
+const maskCount = voMaskIdx.filter((x) => x !== null).length;
+
+
+
       for (let i = 0; i < audioTracks.length; i++) {
         const ext = audioTracks[i].url.includes('blob') ? 'mp4' : 'mp3';
         inputFiles.push(await writeFsFile(`a${i}.${ext}`, audioTracks[i].url));
       }
+
       const targetW = Math.round(REF_WIDTH * resInfo.factor);
       const targetH = Math.round(REF_HEIGHT * resInfo.factor);
       let filterComplex = '';
@@ -1645,6 +1857,34 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
         currentVideoLabel = `img${i}_out`;
       });
 
+for (let i = 0; i < videoOverlays.length; i++) {
+const vo = videoOverlays[i];
+const voInputIdx = clips.length + imageOverlays.length + i;
+const sW = vo.srcW || 16; const sH = vo.srcH || 9;
+const voWidth = Math.max(2, Math.round((vo.size / 100) * REF_WIDTH));
+const voHeight = Math.max(2, 2 * Math.round((voWidth * sH / sW) / 2));
+const dur = vo.end - vo.start;
+let fades = '';
+if (vo.fadeIn > 0) fades += `fade=t=in:st=0:d=${vo.fadeIn}:alpha=1,`;
+if (vo.fadeOut > 0) fades += `fade=t=out:st=${Math.max(dur - vo.fadeOut, 0)}:d=${vo.fadeOut}:alpha=1,`;
+let vrot = '';
+if (vo.rotate === 90) vrot = 'transpose=1,';
+else if (vo.rotate === 180) vrot = 'hflip,vflip,';
+else if (vo.rotate === 270) vrot = 'transpose=2,';
+const mi = voMaskIdx[i];
+if (mi !== null && mi !== undefined) {
+// ORDEN DEFINITIVO: forma (alphamerge) → rotación → fades de alpha ENCIMA
+// de la máscara (alphamerge reemplaza el alpha, así que los fades van después).
+filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba[vo${i}_rgb];`;
+filterComplex += `[${mi}:v]format=gray[mask${i}g];`;
+filterComplex += `[vo${i}_rgb][mask${i}g]alphamerge,${vrot}${fades}setpts=PTS+${vo.start}/TB[vo${i}_f];`;
+} else {
+filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${vo.start}/TB[vo${i}_f];`;
+}
+filterComplex += `[${currentVideoLabel}][vo${i}_f]overlay=x=${vo.x}-overlay_w/2:y=${vo.y}-overlay_h/2:eof_action=pass:enable='between(t,${vo.start},${vo.end})'[vo${i}_out];`;
+currentVideoLabel = `vo${i}_out`;
+}
+
       let finalVideoLabel = currentVideoLabel;
       textOverlays.forEach((txt, i) => {
         const variant = FONT_VARIANTS[txt.font];
@@ -1697,7 +1937,8 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       if (clips.length > 0) audioLabels.push(prevAudioLabel);
       audioTracks.forEach((aud, i) => {
         if (!aud.muted) {
-          const audInputIdx = clips.length + imageOverlays.length + i;
+          const maskCount = voMaskIdx.filter((x) => x !== null).length;
+const audInputIdx = clips.length + imageOverlays.length + videoOverlays.length + maskCount + i;
           const delay = aud.start * 1000;
           let afades = '';
           if (aud.fadeIn > 0) afades += `,afade=t=in:st=0:d=${aud.fadeIn}`;
@@ -1706,6 +1947,16 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
           audioLabels.push(`sa${i}`);
         }
       });
+
+videoOverlays.forEach((vo, i) => {
+if (!vo.muted && vo.hasAudio !== false) {
+const voIdx = clips.length + imageOverlays.length + i;
+const delay = vo.start * 1000;
+filterComplex += `[${voIdx}:a]atrim=${vo.offset}:${vo.offset + (vo.end - vo.start)},asetpts=PTS-STARTPTS,adelay=${delay}|${delay},volume=1.0[va${i}];`;
+audioLabels.push(`va${i}`);
+}
+});
+
       let finalAudioLabel = 'outa';
       if (audioLabels.length > 0) {
         const amixInputs = audioLabels.map(l => `[${l}]`).join('');
@@ -1878,46 +2129,15 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
     document.body
   ) : null;
 
-  // Picker flotante de transiciones
-  const transitionPickerUI = transitionPicker ? createPortal(
-    <div className="fixed inset-0 z-[150]" onClick={() => setTransitionPicker(null)}>
-            <div className={`absolute max-h-[70vh] w-[min(92vw,28rem)] overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-2xl ${typeof window !== 'undefined' && window.innerWidth < 1024 ? 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2' : ''}`}
-        style={typeof window !== 'undefined' && window.innerWidth < 1024 ? undefined : { left: transitionPicker.x, top: transitionPicker.y }}
-        onClick={(e) => e.stopPropagation()}>
-        <p className="text-xs font-bold text-cyan-300 mb-2">✨ Transición al siguiente clip</p>
-        <div className="grid grid-cols-3 gap-1.5">
-          {TRANSITION_TYPES.map((t) => (
-            <button key={t.id}
-              onClick={() => {
-                const cambioReal = clips[transitionPicker.clipIndex]?.transition?.type !== t.id;
-                setClips((prev) => prev.map((c, i) => i === transitionPicker.clipIndex ? { ...c, transition: { type: t.id, duration: t.id === 'none' ? 0 : (c.transition?.duration || 0.5) } } : c));
-                setTransitionPicker(null);
-                if (cambioReal) notifyTransitionApplied();
-              }}
-              className={`rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${
-                clips[transitionPicker.clipIndex]?.transition?.type === t.id
-                  ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
-                  : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-600'
-              }`}>
-              <span className="text-base">{t.icon}</span>
-              <div className="text-[10px] mt-0.5">{t.label}</div>
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 pt-2 border-t border-slate-700">
-          <label className="block text-[10px] text-slate-400 mb-1">Duración: {(clips[transitionPicker.clipIndex]?.transition?.duration || 0.5).toFixed(1)}s</label>
-          <input type="range" min={0.1} max={2} step={0.1}
-            value={clips[transitionPicker.clipIndex]?.transition?.duration || 0.5}
-            onChange={(e) => {
-              const dur = Number(e.target.value);
-              setClips((prev) => prev.map((c, i) => i === transitionPicker.clipIndex ? { ...c, transition: { type: c.transition?.type || 'fade', duration: dur } } : c));
-            }}
-            className="w-full accent-cyan-400" />
-        </div>
-      </div>
-    </div>,
-    document.body
-  ) : null;
+  // Picker showroom de transiciones (mockup de la fundadora, 28/10)
+const transitionPickerUI = transitionPicker !== null && clips[transitionPicker] ? createPortal(
+  <TransitionPickerModal
+    clip={clips[transitionPicker]}
+    onCancel={() => setTransitionPicker(null)}
+    onApply={(type, duration) => applyPickedTransition(transitionPicker, type, duration)}
+  />,
+  document.body
+) : null;
 
   return (
         <div className="flex flex-col gap-2 p-2 lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:overflow-hidden lg:p-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
@@ -1940,11 +2160,12 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
         </button>
       </div>
       {importOpen && (
-        <div className="grid shrink-0 grid-cols-4 gap-1.5 lg:hidden">
+        <div className="grid shrink-0 grid-cols-5 gap-1.5 lg:hidden">
           <button onClick={() => { setImportOpen(false); fileInputRef.current?.click(); }} className="flex flex-col items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/60 px-2 py-2.5 text-[10px] font-semibold text-slate-200 hover:border-cyan-400 hover:text-cyan-300"><IconVideo className="h-5 w-6" />Video</button>
           <button onClick={() => { setImportOpen(false); imageInputRef.current?.click(); }} className="flex flex-col items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/60 px-2 py-2.5 text-[10px] font-semibold text-slate-200 hover:border-pink-400 hover:text-pink-300"><IconImage className="h-5 w-5" />Imagen</button>
           <button onClick={() => { setImportOpen(false); addTextOverlay(); }} className="flex flex-col items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/60 px-2 py-2.5 text-[10px] font-semibold text-slate-200 hover:border-fuchsia-400 hover:text-fuchsia-300"><IconText className="h-5 w-5" />Texto</button>
           <button onClick={() => { setImportOpen(false); audioInputRef.current?.click(); }} className="flex flex-col items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/60 px-2 py-2.5 text-[10px] font-semibold text-slate-200 hover:border-green-400 hover:text-green-300"><IconAudio className="h-5 w-5" />Audio</button>
+<button onClick={() => { setImportOpen(false); voInputRef.current?.click(); }} className="flex flex-col items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/60 px-1 py-2.5 text-[10px] font-semibold text-slate-200 hover:border-amber-400 hover:text-amber-300"><IconSuperponer className="h-5 w-5" />Superponer</button>
         </div>
       )}
       {exportModal}
@@ -1967,31 +2188,37 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
       <input ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }} />
       <input ref={imageInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageUpload} />
       <input ref={audioInputRef} type="file" accept="audio/*" multiple className="hidden" onChange={handleAudioUpload} />
+<input ref={voInputRef} type="file" accept="video/*" multiple className="hidden" onChange={handleVoUpload} />
       {audioTracks.map((track) => (<AudioElement key={track.id} track={track} onReady={registerAudio} onCleanup={unregisterAudio} />))}
-            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[96px_1fr_320px] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4">
+            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_320px] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4">
         {/* ===== RAIL LATERAL (solo desktop) ===== */}
-        <aside className="hidden shrink-0 flex-row gap-2 rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:flex-col lg:gap-2 lg:order-1">
-          <button onClick={() => fileInputRef.current?.click()} title="Agregar video"
-            className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-lg py-3.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-cyan-300 lg:flex-none">
-            <IconVideo className="h-6 w-7" />
-            <span className="text-[11px] font-semibold">+ Video</span>
-          </button>
-          <button onClick={() => imageInputRef.current?.click()} title="Agregar imagen"
-            className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-lg py-3.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-pink-300 lg:flex-none">
-            <IconImage className="h-6 w-6" />
-            <span className="text-[11px] font-semibold">+ Imagen</span>
-          </button>
-          <button onClick={addTextOverlay} title="Agregar texto"
-            className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-lg py-3.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-fuchsia-300 lg:flex-none">
-            <IconText className="h-6 w-6" />
-            <span className="text-[11px] font-semibold">+ Texto</span>
-          </button>
-          <button onClick={() => audioInputRef.current?.click()} title="Agregar audio"
-            className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-lg py-3.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-green-300 lg:flex-none">
-            <IconAudio className="h-6 w-6" />
-            <span className="text-[11px] font-semibold">+ Audio</span>
-          </button>
-        </aside>
+<aside className="hidden shrink-0 flex-row gap-2 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:min-h-0 lg:flex-col lg:gap-1 lg:order-1">
+<button onClick={() => fileInputRef.current?.click()} title="Agregar video"
+className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg py-1.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-cyan-300">
+<IconVideo className="h-[clamp(16px,2.6vh,26px)] w-[clamp(16px,2.6vh,26px)] shrink-0" />
+<span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Video</span>
+</button>
+<button onClick={() => imageInputRef.current?.click()} title="Agregar imagen"
+className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg py-1.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-pink-300">
+<IconImage className="h-[clamp(16px,2.6vh,26px)] w-[clamp(16px,2.6vh,26px)] shrink-0" />
+<span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Imagen</span>
+</button>
+<button onClick={addTextOverlay} title="Agregar texto"
+className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg py-1.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-fuchsia-300">
+<IconText className="h-[clamp(16px,2.6vh,26px)] w-[clamp(16px,2.6vh,26px)] shrink-0" />
+<span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Texto</span>
+</button>
+<button onClick={() => audioInputRef.current?.click()} title="Agregar audio"
+className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg py-1.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-green-300">
+<IconAudio className="h-[clamp(16px,2.6vh,26px)] w-[clamp(16px,2.6vh,26px)] shrink-0" />
+<span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Audio</span>
+</button>
+<button onClick={() => voInputRef.current?.click()} title="Superponer: agregá una capa de video"
+className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg py-1.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-amber-300">
+<IconSuperponer className="h-[clamp(16px,2.6vh,26px)] w-[clamp(16px,2.6vh,26px)] shrink-0" />
+<span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Superponer</span>
+</button>
+</aside>
                        <div ref={previewBoxRef} className="relative h-44 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-black sm:h-64 lg:h-auto lg:min-h-0 lg:order-2">
           <div ref={wrapperRef} className="relative h-full w-full">
             {stage && stage.width > 0 && (
@@ -2031,6 +2258,24 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
                       </p>
                     </div>
                   )}
+{videoOverlays.map((vo) => {
+const inWin = playhead >= vo.start && playhead <= vo.end;
+const wl = vo.end - vo.start; const liw = playhead - vo.start;
+let voAlpha = 1;
+if (vo.fadeIn > 0 && liw < vo.fadeIn) voAlpha = Math.max(liw / vo.fadeIn, 0);
+if (vo.fadeOut > 0 && liw > wl - vo.fadeOut) voAlpha = Math.max((wl - liw) / vo.fadeOut, 0);
+const voClip = vo.shape === 'circle' ? 'circle(closest-side at 50% 50%)' : vo.shape === 'round' ? 'inset(0 round 10%)' : undefined;
+return (
+<div key={vo.id} onPointerDown={(e) => startOverlayPosDrag(e, 'video', vo.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag} onPointerCancel={endOverlayPosDrag}
+className="pointer-events-auto absolute cursor-move touch-none select-none"
+style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${vo.rotate}deg)`, opacity: voAlpha, visibility: inWin ? 'visible' : 'hidden', clipPath: voClip }}
+title="Arrastrá para mover la superposición">
+<video ref={(el) => { if (el) voElementsRef.current.set(vo.id, el); else voElementsRef.current.delete(vo.id); }}
+src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-events-none h-auto w-full" />
+</div>
+);
+})}
+
                 </div>
               </div>
             )}
@@ -2051,7 +2296,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
               <p className="mt-1 text-[10px] text-slate-400">Hasta que cada transición esté lista, el preview muestra cortes limpios.</p>
             </div>
           )}
-          {clips.length === 0 && imageOverlays.length === 0 && audioTracks.length === 0 && (
+          {clips.length === 0 && imageOverlays.length === 0 && audioTracks.length === 0 && videoOverlays.length === 0 && (
             <button onClick={() => fileInputRef.current?.click()} className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-500 transition-colors hover:text-cyan-300">
               <p className="text-lg font-semibold">Arrastrá tus videos, imágenes o audios acá</p>
               <p className="text-sm">Videos → pista de video · Imágenes → pista de imagen · Audios → pista de audio</p>
@@ -2138,7 +2383,7 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
           </div>
                     <aside className={`${propsOpen ? 'block' : 'hidden'} space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4 lg:block lg:min-h-0 lg:flex-1 lg:overflow-y-auto`}>
             <div><h2 className="text-lg font-bold text-white">Propiedades</h2><p className="mt-1 text-xs text-slate-400">Seleccioná un elemento en la timeline para editarlo.</p></div>
-            {selectedClip && !selectedImage && !selectedText && !selectedAudio && (
+            {selectedClip && !selectedImage && !selectedText && !selectedAudio && !selectedVo && (
               <div className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clip: <span className="normal-case text-cyan-300">{selectedClip.name}</span></p>
                 <div className="grid grid-cols-2 gap-2">
@@ -2162,25 +2407,8 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
                   title={!selectedClip.hasAudio ? 'Este video no tiene audio' : 'Alternar entre audio integrado y pista separada'}>
                   {audioTracks.some((t) => t.sourceVideoId === selectedClip.id) ? '🎵 Audio separado del video (reintegrar)' : '🎵 Separar audio de video'}
                 </button>
-                {clips.findIndex((c) => c.id === selectedClip.id) < clips.length - 1 && (
-                  <div className="space-y-2 rounded-lg border border-violet-500/30 bg-violet-500/10 p-2">
-                    <p className="text-[11px] font-semibold text-violet-200">✨ Transición al siguiente clip</p>
-                    <select
-                      value={selectedClip.transition?.type || 'none'}
-                      onChange={(e) => { const cambioReal = selectedClip.transition?.type !== e.target.value; updateClip(selectedClip.id, { transition: { type: e.target.value as TransitionType, duration: selectedClip.transition?.duration || 0.5 } }); if (cambioReal) notifyTransitionApplied(); }}
-                      className="w-full rounded-lg bg-slate-800 px-2 py-1.5 text-xs text-slate-200 outline-none focus:ring-2 focus:ring-violet-400">
-                      {TRANSITION_TYPES.map((t) => (
-                        <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
-                      ))}
-                    </select>
-                    <label className="block select-none text-xs text-slate-400">Duración: {(selectedClip.transition?.duration || 0.5).toFixed(1)}s
-                      <input type="range" min={0.1} max={2} step={0.1}
-                        value={selectedClip.transition?.duration || 0.5}
-                        onChange={(e) => updateClip(selectedClip.id, { transition: { type: selectedClip.transition?.type || 'fade', duration: Number(e.target.value) } })}
-                        className="mt-1 w-full accent-violet-400" />
-                    </label>
-                  </div>
-                )}
+              
+                
               </div>
             )}
             {selectedImage && (
@@ -2224,7 +2452,32 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
                 <button onClick={() => { setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudio.id)); setSelectedAudioId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar audio</button>
               </div>
             )}
-            {!selectedClip && !selectedImage && !selectedText && !selectedAudio && (
+
+{selectedVo && (
+<div className="space-y-3">
+<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Superposición: <span className="normal-case text-amber-300">{selectedVo.name}</span></p>
+<label className="block select-none text-xs text-slate-400">Tamaño: {selectedVo.size}%<input type="range" min={5} max={150} step={1} value={selectedVo.size} onChange={(e) => updateVideoOverlay(selectedVo.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+<button onClick={() => updateVideoOverlay(selectedVo.id, { rotate: ((selectedVo.rotate + 90) % 360) as VideoOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-amber-400 hover:text-amber-400">⟲ Rotar capa ({selectedVo.rotate}°)</button>
+<div>
+<p className="mb-1 text-[11px] font-semibold text-amber-200">Marco (efecto de forma)</p>
+<div className="grid grid-cols-3 gap-1.5">
+{(['none', 'round', 'circle'] as OverlayShape[]).map((sh) => (
+<button key={sh} onClick={() => updateVideoOverlay(selectedVo.id, { shape: sh })}
+className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${selectedVo.shape === sh ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600'}`}>
+{sh === 'none' ? 'Rect' : sh === 'round' ? 'Redondeado' : 'Círculo'}
+</button>
+))}
+</div>
+</div>
+<label className="block select-none text-xs text-slate-400">Fade in (opacidad): {selectedVo.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeIn} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+<label className="block select-none text-xs text-slate-400">Fade out (opacidad): {selectedVo.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeOut} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+<button onClick={() => updateVideoOverlay(selectedVo.id, { muted: !selectedVo.muted })} disabled={selectedVo.hasAudio === false} className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${selectedVo.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'}`}>{selectedVo.muted ? '🔇 Sin audio (click para activar)' : '🔊 Con audio'}</button>
+<p className="text-[11px] leading-relaxed text-slate-500"> De {selectedVo.start.toFixed(1)}s a {selectedVo.end.toFixed(1)}s · empieza en {selectedVo.offset.toFixed(1)}s del archivo</p>
+<button onClick={() => { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVo.id)); setSelectedVoId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar capa</button>
+</div>
+)}
+
+            {!selectedClip && !selectedImage && !selectedText && !selectedAudio && !selectedVo && (
               <p className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-4 text-center text-xs text-slate-500">Hacé clic en un bloque de la timeline para ver sus propiedades acá.</p>
             )}
           </aside>
@@ -2309,6 +2562,20 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
               {textOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">T Pista de texto — hacé clic en "+ Texto"</div>)}
               <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">T</div>
             </div>
+
+<div className="relative mt-2 h-12 rounded-lg bg-slate-800/20 lg:h-9">
+{videoOverlays.map((vo) => {
+const isSelected = vo.id === selectedVoId; const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
+return (<div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'border-amber-400/60 bg-amber-500/10'}`} title="Arrastrá para mover · bordes para recortar">
+<p className="relative z-10 truncate text-[10px] font-semibold text-amber-200 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
+<div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
+<div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
+</div>);
+})}
+{videoOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Capa de superposición — agregá un video con "+ Superponer"</div>)}
+<div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">S</div>
+</div>
+
             <div className="relative mt-1.5 h-16 rounded-lg bg-slate-800/40 lg:mt-2 lg:h-20">
               {clips.map((c, i) => {
                 const hasTransition = c.transition && c.transition.type !== 'none' && i < clips.length - 1;
@@ -2316,29 +2583,42 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
                   <React.Fragment key={c.id}>
                     <div onPointerDown={(e) => startMoveDrag(e, c)} onPointerMove={moveMoveDrag} onPointerUp={endMoveDrag} onPointerCancel={endMoveDrag} style={{ left: videoStarts[i] * pps, width: Math.max(effLen(c) * pps - 2, 8) }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 py-1 ${draggingId === c.id ? 'cursor-grabbing border-cyan-300 bg-cyan-500/30 opacity-60 ring-2 ring-cyan-300' : c.id === selectedId ? 'cursor-grab border-violet-400 bg-violet-500/20 ring-1 ring-violet-400' : i === activeIndex ? 'cursor-grab border-cyan-400 bg-cyan-500/20' : 'cursor-grab border-slate-600 bg-gradient-to-br from-cyan-500/10 to-violet-500/10'}`}>
                                             <ClipFilmstrip clip={c} />
-                      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-950/25 to-slate-950/70" />
+<div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-950/25 to-slate-950/70" />
+{blendLen(i) > 0 && (
+  <div className="pointer-events-none absolute bottom-0 right-0 top-0 border-l border-dashed border-violet-300/70"
+    style={{ width: `${(blendLen(i) / effLen(c)) * 100}%`, background: 'repeating-linear-gradient(-45deg, rgba(167,139,250,0.38) 0 5px, rgba(167,139,250,0.10) 5px 10px)' }} />
+)}
+{blendLen(i - 1) > 0 && (
+  <div className="pointer-events-none absolute bottom-0 left-0 top-0 border-r border-dashed border-cyan-300/70"
+    style={{ width: `${(blendLen(i - 1) / effLen(c)) * 100}%`, background: 'repeating-linear-gradient(-45deg, rgba(34,211,238,0.32) 0 5px, rgba(34,211,238,0.10) 5px 10px)' }} />
+)}
                       <p className="relative truncate text-xs font-semibold text-cyan-200 drop-shadow">{c.name}{c.muted && ' 🔇'}</p>
                       <p className="relative text-[10px] text-slate-400 drop-shadow">{effLen(c).toFixed(1)}s{c.speed !== 1 && ` · ${c.speed}x`}{c.rotate !== 0 && ` · ${c.rotate}°`}</p>
                       <div onPointerDown={(e) => startTrimDrag(e, c, 'start')} onPointerMove={moveTrimDrag} onPointerUp={endTrimDrag} onPointerCancel={endTrimDrag} className="absolute bottom-0 left-0 top-0 w-2 cursor-ew-resize touch-none bg-cyan-400/40 transition-colors hover:bg-cyan-400" title="Recortar inicio" />
                       <div onPointerDown={(e) => startTrimDrag(e, c, 'end')} onPointerMove={moveTrimDrag} onPointerUp={endTrimDrag} onPointerCancel={endTrimDrag} className="absolute bottom-0 right-0 top-0 w-2 cursor-ew-resize touch-none bg-cyan-400/40 transition-colors hover:bg-cyan-400" title="Recortar final" />
                     </div>
                     {i < clips.length - 1 && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const rect = (e.target as HTMLElement).getBoundingClientRect();
-                          setTransitionPicker({ clipIndex: i, x: Math.min(rect.right + 8, window.innerWidth - 420), y: Math.max(rect.top - 260, 8) });
-                        }}
-                        className={`absolute top-1/2 z-20 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border-2 text-xs font-bold transition-all hover:scale-125 ${
-                          hasTransition
-                            ? 'border-violet-400 bg-violet-500 text-white shadow-lg shadow-violet-500/50'
-                            : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-violet-400 hover:text-violet-400'
-                        }`}
-                        style={{ left: videoStarts[i + 1] * pps - 12 }}
-                        title={hasTransition ? `Transición: ${c.transition?.type}` : 'Agregar transición'}>
-                        <IconSparkles className="h-3 w-3" />
-                      </button>
-                    )}
+<div className="absolute z-20" style={{ left: videoStarts[i + 1] * pps - 12, top: '50%' }}>
+<button
+onClick={(e) => {
+e.stopPropagation();
+setTransitionPicker(i);
+}}
+className={`flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border-2 text-xs font-bold transition-all hover:scale-125 ${
+hasTransition
+? 'border-violet-300 bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/60 ring-2 ring-violet-400/40'
+: 'border-slate-600 bg-slate-800 text-slate-400 hover:border-violet-400 hover:text-violet-400'
+}`}
+title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.type)?.label || c.transition?.type} · clic para editar` : 'Agregar transición'}>
+<IconSparkles className="h-3 w-3" />
+</button>
+{hasTransition && pps >= 20 && (
+<span className="pointer-events-none absolute left-1/2 top-3.5 w-max max-w-[84px] -translate-x-1/2 truncate rounded-md border border-violet-400/40 bg-slate-950/90 px-1.5 py-0.5 text-center text-[8px] font-semibold text-violet-200 backdrop-blur-sm">
+{TRANSITION_TYPES.find((t) => t.id === c.transition?.type)?.label || c.transition?.type}
+</span>
+)}
+</div>
+)}
                   </React.Fragment>
                 );
               })}
