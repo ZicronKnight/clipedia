@@ -24,6 +24,7 @@ type Clip = {
   rotate: 0 | 90 | 180 | 270; speed: number; fadeIn: number; fadeOut: number; muted: boolean;
   cropX: number; cropY: number;
   hasAudio?: boolean;
+  filter?: FilterType;
   transition?: { type: TransitionType; duration: number };
 };
 type ImageOverlay = {
@@ -46,7 +47,7 @@ type TextOverlay = {
 };
 type AudioTrack = {
   id: string; assetId: string; name: string; url: string; duration: number; offset: number; start: number;
-  volume: number; fadeIn: number; fadeOut: number; muted: boolean; peaks: number[]; sourceVideoId?: string;
+  volume: number; fadeIn: number; fadeOut: number; muted: boolean; peaks: number[]; sourceVideoId?: string; released?: boolean;
 };
 type AspectRatio = '16:9' | '9:16' | '1:1' | '4:3';
 type Resolution = '480p' | '720p' | '1080p' | '4K';
@@ -93,6 +94,9 @@ ctx.closePath(); ctx.fill();
 }
 return new Promise((resolve) => { canvas.toBlob((b) => resolve(b), 'image/png'); });
 }
+
+const previewLogs: string[] = [];
+const snippetAudioMap = new Map<string, boolean>();
 
 const proxyUrlMap = new Map<string, string>();
 function initialProxies(): boolean {
@@ -176,6 +180,57 @@ const QUALITY_PRESETS: Record<Quality, { preset: string; crf264: number; crfVp9:
   balanced: { preset: 'medium', crf264: 23, crfVp9: 32, bitrate: '192k', label: 'Equilibrada', desc: 'Recomendada' },
   high: { preset: 'slow', crf264: 18, crfVp9: 24, bitrate: '320k', label: 'Alta calidad', desc: 'Entrega final' },
 };
+
+type FilterType = 'none' | 'cinematic' | 'vlog' | 'retro' | 'life' | 'night' | 'portrait' | 'food' | 'mood' | 'cool' | 'warm' | 'dreamy' | 'film' | 'bw' | 'invert';
+type FilterSpec = { b?: number; c?: number; s?: number; sep?: number; g?: number; h?: number; inv?: boolean; blur?: number };
+const FILTERS: { id: FilterType; label: string; desc: string; spec: FilterSpec }[] = [
+{ id: 'none', label: 'Sin filtro', desc: 'Sin alterar.', spec: {} },
+{ id: 'cinematic', label: 'Cinemático', desc: 'Colores tipo película, contraste dramático.', spec: { c: 1.25, s: 0.85, b: 0.95, sep: 0.15 } },
+{ id: 'vlog', label: 'Vlog', desc: 'Colores vivos y aspecto limpio para contenido diario.', spec: { b: 1.06, c: 1.05, s: 1.18 } },
+{ id: 'retro', label: 'Retro / Vintage', desc: 'Tonos antiguos, efecto cámara vieja.', spec: { sep: 0.45, c: 0.92, s: 0.82, b: 1.05 } },
+{ id: 'life', label: 'Life / Lifestyle', desc: 'Colores cálidos y naturales.', spec: { s: 1.12, c: 1.05, b: 1.02, sep: 0.06 } },
+{ id: 'night', label: 'Night', desc: 'Mejora escenas oscuras o nocturnas.', spec: { b: 0.82, c: 1.28, s: 0.85, h: 8 } },
+{ id: 'portrait', label: 'Portrait', desc: 'Pensado para rostros y selfies.', spec: { b: 1.05, c: 0.98, s: 1.04, blur: 1.2 } },
+{ id: 'food', label: 'Food', desc: 'Realza colores de comida y bebidas.', spec: { s: 1.25, c: 1.08, b: 1.05, sep: 0.08 } },
+{ id: 'mood', label: 'Mood', desc: 'Atmósfera fría y melancólica.', spec: { s: 0.72, c: 1.1, b: 0.95, h: 15 } },
+{ id: 'cool', label: 'Cool', desc: 'Tonos azulados y modernos.', spec: { sep: 0.28, h: 160, s: 1.05, b: 1.02 } },
+{ id: 'warm', label: 'Warm', desc: 'Colores anaranjados y acogedores.', spec: { sep: 0.3, s: 1.1, b: 1.03 } },
+{ id: 'dreamy', label: 'Dreamy', desc: 'Brillo suave, aspecto etéreo.', spec: { b: 1.08, c: 0.94, s: 1.1, blur: 3.5 } },
+{ id: 'film', label: 'Film', desc: 'Imita cámaras analógicas y fotografía clásica.', spec: { c: 1.15, s: 0.9, sep: 0.12, b: 0.98, blur: 0.5 } },
+{ id: 'bw', label: 'Blanco y Negro', desc: 'Deja el video en escala de grises.', spec: { g: 1, c: 1.1 } },
+{ id: 'invert', label: 'Invertido', desc: 'Invierte los colores.', spec: { inv: true } },
+];
+const FILTER_MAP: Record<string, FilterSpec> = {};
+FILTERS.forEach((f) => { FILTER_MAP[f.id] = f.spec; });
+// Emisor CSS (preview): mismo orden de operaciones que el emisor FFmpeg → paridad
+function specToCss(sp: FilterSpec, scale: number): string {
+const p: string[] = [];
+if (sp.b !== undefined && sp.b !== 1) p.push(`brightness(${sp.b})`);
+if (sp.c !== undefined && sp.c !== 1) p.push(`contrast(${sp.c})`);
+if (sp.s !== undefined && sp.s !== 1) p.push(`saturate(${sp.s})`);
+if (sp.sep) p.push(`sepia(${sp.sep})`);
+if (sp.g) p.push(`grayscale(${sp.g})`);
+if (sp.h) p.push(`hue-rotate(${sp.h}deg)`);
+if (sp.inv) p.push('invert(1)');
+if (sp.blur) p.push(`blur(${(sp.blur * scale).toFixed(2)}px)`);
+return p.join(' ') || 'none';
+}
+// Emisor FFmpeg (export): matrices idénticas al spec CSS de sepia/grayscale
+function specToFF(sp: FilterSpec): string {
+const f: string[] = [];
+if (sp.b !== undefined && sp.b !== 1) f.push(`colorchannelmixer=rr=${sp.b}:gg=${sp.b}:bb=${sp.b}`);
+const eq: string[] = [];
+if (sp.c !== undefined && sp.c !== 1) eq.push(`contrast=${sp.c}`);
+if (sp.s !== undefined && sp.s !== 1) eq.push(`saturation=${sp.s}`);
+if (eq.length) f.push(`eq=${eq.join(':')}`);
+if (sp.sep) { const q = sp.sep; f.push(`colorchannelmixer=rr=${(1 - 0.607 * q).toFixed(4)}:rg=${(0.769 * q).toFixed(4)}:rb=${(0.189 * q).toFixed(4)}:gr=${(0.349 * q).toFixed(4)}:gg=${(1 - 0.314 * q).toFixed(4)}:gb=${(0.168 * q).toFixed(4)}:br=${(0.272 * q).toFixed(4)}:bg=${(0.534 * q).toFixed(4)}:bb=${(1 - 0.869 * q).toFixed(4)}`); }
+if (sp.g) { const q = sp.g; f.push(`colorchannelmixer=rr=${(1 - 0.7874 * q).toFixed(4)}:rg=${(0.7152 * q).toFixed(4)}:rb=${(0.0722 * q).toFixed(4)}:gr=${(0.2126 * q).toFixed(4)}:gg=${(1 - 0.2848 * q).toFixed(4)}:gb=${(0.0722 * q).toFixed(4)}:br=${(0.2126 * q).toFixed(4)}:bg=${(0.7152 * q).toFixed(4)}:bb=${(1 - 0.9278 * q).toFixed(4)}`); }
+if (sp.h) f.push(`hue=h=${sp.h}`);
+if (sp.inv) f.push('negate');
+if (sp.blur) f.push(`gblur=sigma=${sp.blur}`);
+return f.join(',');
+}
+
 const FONT_STACKS: Record<TextOverlay['font'], string> = {
   sans: '"Roboto", sans-serif', serif: '"Merriweather", serif', mono: '"Source Code Pro", monospace',
   roboto: '"Roboto", sans-serif', playfair: '"Playfair Display", serif', montserrat: '"Montserrat", sans-serif',
@@ -546,6 +601,9 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const previewInFlightRef = useRef<number | null>(null);
   const previewProgCtxRef = useRef<{ d: number; active: boolean; startedAt: number }>({ d: 1, active: false, startedAt: 0 });
   const snippetProgressRef = useRef(0);
+  const snippetReadyForRef = useRef<string>('');
+  const handoffClipRef = useRef<string>('');
+  const handoffReadyRef = useRef(false);
   const progressSeenRef = useRef(false);
   const [, setProgressTick] = useState(0);
   const [previewRenderStatus, setPreviewRenderStatus] = useState<{ rendering: boolean; done: number; total: number }>({ rendering: false, done: 0, total: 0 });
@@ -584,7 +642,10 @@ const blendLen = (i: number): number => {
 
   // ===== GEOMETRÍA DE TIMELINE (comprimida en modo preview de transiciones) =====
   const dAfter = (i: number): number => {
-    if (!previewTransitions || i < 0 || i >= clips.length - 1) return 0;
+// GEOMETRÍA CANÓNICA (29/10): la compresión por transiciones ya no depende
+// del modo 🟢: la timeline muestra SIEMPRE el solape real que el export
+// produce, y el audio vinculado vive en ese mismo espacio de tiempo.
+if (i < 0 || i >= clips.length - 1) return 0;
     const tr = clips[i].transition;
     if (!tr || tr.type === 'none') return 0;
     return clamp(tr.duration, 0, Math.min(effLen(clips[i]), effLen(clips[i + 1])));
@@ -595,9 +656,24 @@ const blendLen = (i: number): number => {
   const videoTotal = clips.length ? videoStarts[clips.length - 1] + effLen(clips[clips.length - 1]) : 0;
   videoStartsRef.current = videoStarts;
 
-  const projectDuration = Math.max(
-    videoTotal,
-    audioTracks.reduce((a, t) => Math.max(a, t.start + t.duration), 0),
+// ===== AUDIO VINCULADO (imantado al clip): geometría derivada =====
+const linkedInfo = (track: AudioTrack): { idx: number; start: number; duration: number; offset: number; speed: number } | null => {
+if (!track.sourceVideoId || track.released) return null;
+const idx = clips.findIndex((c) => c.id === track.sourceVideoId);
+if (idx < 0) return null;
+const c = clips[idx];
+return { idx, start: videoStarts[idx], duration: effLen(c), offset: c.trimStart, speed: c.speed };
+};
+const trackGeom = (track: AudioTrack) => linkedInfo(track) ?? { idx: -1, start: track.start, duration: track.duration, offset: track.offset, speed: 1 };
+const crossFades = (track: AudioTrack): { dIn: number; dOut: number } => {
+const li = linkedInfo(track);
+if (!li) return { dIn: 0, dOut: 0 };
+return { dIn: li.idx > 0 ? blendLen(li.idx - 1) : 0, dOut: blendLen(li.idx) };
+};
+
+const projectDuration = Math.max(
+videoTotal,
+audioTracks.reduce((a, t) => { const g = trackGeom(t); return Math.max(a, g.start + g.duration); }, 0),
     imageOverlays.reduce((a, t) => Math.max(a, t.end), 0),
     textOverlays.reduce((a, t) => Math.max(a, t.end), 0),
 videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
@@ -670,6 +746,56 @@ videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
     setPps(clamp(cur * factor, MIN_PPS, MAX_PPS));
   }
 
+// ===== PINCH-TO-ZOOM TÁCTIL (2 dedos, anclado al punto medio) =====
+const pinchRef = useRef<{ dist: number; pps: number; timeAtMid: number; lastMidY: number } | null>(null);
+const pinchHintRef = useRef(false);
+useEffect(() => {
+const container = timelineScrollRef.current;
+if (!container) return;
+const distOf = (e: TouchEvent) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+const midOf = (e: TouchEvent) => {
+const rect = container.getBoundingClientRect();
+return { x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top };
+};
+const onStart = (e: TouchEvent) => {
+if (e.touches.length !== 2) return;
+// El pinch manda: cancelamos cualquier drag de 1 dedo en vuelo
+endTrimDrag(); endMoveDrag(); endOverlayTimeDrag(); endPanDrag(); endOverlayPosDrag();
+scrubbingRef.current = false;
+setDraggingId(null);
+const cur = ppsRef.current;
+const mid = midOf(e);
+pinchRef.current = { dist: distOf(e), pps: cur, timeAtMid: (mid.x + container.scrollLeft) / cur, lastMidY: mid.y };
+if (!pinchHintRef.current) { pinchHintRef.current = true; showToast('🤏 Pinch = zoom · dos dedos arrastrando = pan vertical', 'info', 2600); }
+e.preventDefault();
+};
+const onMove = (e: TouchEvent) => {
+const p = pinchRef.current;
+if (!p || e.touches.length !== 2) return;
+e.preventDefault();
+const mid = midOf(e);
+// Pan vertical: el punto medio que se desplaza mueve las pistas (mapa táctil)
+container.scrollTop -= mid.y - p.lastMidY;
+p.lastMidY = mid.y;
+// Zoom por separación de dedos, anclado al tiempo bajo el punto medio
+const factor = distOf(e) / Math.max(p.dist, 1);
+pendingAnchorRef.current = { time: p.timeAtMid, offsetX: mid.x };
+setPps(clamp(p.pps * factor, MIN_PPS, MAX_PPS));
+};
+const onEnd = (e: TouchEvent) => { if (e.touches.length < 2) pinchRef.current = null; };
+container.addEventListener('touchstart', onStart, { passive: false });
+container.addEventListener('touchmove', onMove, { passive: false });
+container.addEventListener('touchend', onEnd);
+container.addEventListener('touchcancel', onEnd);
+return () => {
+container.removeEventListener('touchstart', onStart);
+container.removeEventListener('touchmove', onMove);
+container.removeEventListener('touchend', onEnd);
+container.removeEventListener('touchcancel', onEnd);
+};
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
   // ===== RESTAURAR AUTOSAVE =====
   useEffect(() => {
     let cancelled = false;
@@ -701,9 +827,10 @@ videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
           const blob = a.assetId ? await getAsset(a.assetId) : null;
           if (!blob) { missing++; continue; }
           a.url = URL.createObjectURL(blob);
-          const decoded = await decodeAudioBlob(blob);
-          if (decoded) audioDataMap.set(a.id, { channelData: decoded.channelData, sampleRate: decoded.sampleRate });
-          ra.push(a);
+const decoded = await decodeAudioBlob(blob);
+if (decoded) audioDataMap.set(a.id, { channelData: decoded.channelData, sampleRate: decoded.sampleRate });
+if (a.sourceVideoId && a.released === undefined) a.released = true; // separados viejos = liberados
+ra.push(a);
         }
 const rv: VideoOverlay[] = [];
 for (const vo of proj.videoOverlays || []) {
@@ -711,6 +838,18 @@ for (const vo of proj.videoOverlays || []) {
   if (!blob) { missing++; continue; }
   vo.url = URL.createObjectURL(blob);
   rv.push(vo);
+}
+
+// MIGRACIÓN 29/10: clips viejos con audio integrado pasan a audio vinculado
+for (const c of rc) {
+if (c.hasAudio === false) continue;
+if (ra.some((t) => t.sourceVideoId === c.id)) continue;
+const dec = await extractAudioFromVideo(c.url);
+if (!dec) continue;
+const trackId = uid();
+audioDataMap.set(trackId, { channelData: dec.channelData, sampleRate: dec.sampleRate });
+ra.push({ id: trackId, assetId: c.assetId, name: `Audio de ${c.name}`, url: c.url, duration: c.duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: getPeaksForSegment(trackId, 0, c.duration), sourceVideoId: c.id, released: false });
+c.muted = true;
 }
 
         const rt: TextOverlay[] = proj.textOverlays || [];
@@ -800,20 +939,12 @@ for (const vo of proj.videoOverlays || []) {
     const d = clamp(tr.duration, 0, Math.min(effLen(a), effLen(b)));
     if (d <= 0) return null;
     const pw = Math.max(2, Math.round((REF_WIDTH * (PREVIEW_PROXY_HEIGHT / REF_HEIGHT)) / 2) * 2);
-    return [a.id, a.trimStart.toFixed(2), a.trimEnd.toFixed(2), a.speed, a.rotate, a.cropX.toFixed(2), a.cropY.toFixed(2), a.fadeOut.toFixed(1),
-      b.id, b.trimStart.toFixed(2), b.trimEnd.toFixed(2), b.speed, b.rotate, b.cropX.toFixed(2), b.cropY.toFixed(2), b.fadeIn.toFixed(1),
-      type, d.toFixed(2), pw, PREVIEW_PROXY_HEIGHT, exportSettings.fit].join('|');
-  }
-  function cacheSet(key: string, url: string) {
-    const cache = previewCacheRef.current;
-    if (cache.has(key)) URL.revokeObjectURL(cache.get(key)!);
-    cache.set(key, url);
-    while (cache.size > 24) {
-      const oldest = cache.keys().next().value as string;
-      URL.revokeObjectURL(cache.get(oldest)!);
-      cache.delete(oldest);
-    }
-  }
+    return [a.id, a.trimStart.toFixed(2), a.trimEnd.toFixed(2), a.speed, a.rotate, a.cropX.toFixed(2), a.cropY.toFixed(2), a.fadeOut.toFixed(1), a.filter || 'none',
+b.id, b.trimStart.toFixed(2), b.trimEnd.toFixed(2), b.speed, b.rotate, b.cropX.toFixed(2), b.cropY.toFixed(2), b.fadeIn.toFixed(1), b.filter || 'none',
+type, d.toFixed(2), pw, PREVIEW_PROXY_HEIGHT, exportSettings.fit, a.muted ? 1 : 0, a.hasAudio === false ? 1 : 0, b.muted ? 1 : 0, b.hasAudio === false ? 1 : 0].join('|');
+  
+}
+
   async function getPreviewFF() {
     if (previewFFRef.current) return previewFFRef.current;
     const { FFmpeg } = await loadFFmpegLib();
@@ -833,6 +964,7 @@ for (const vo of proj.videoOverlays || []) {
       snippetProgressRef.current = clamp(secs / Math.max(ctx.d, 0.1), 0, 1);
       progressSeenRef.current = true;
     });
+ff.on('log', ({ message }: any) => { previewLogs.push(String(message)); if (previewLogs.length > 300) previewLogs.shift(); console.log('[FFmpeg Preview]', message); });
     previewFFRef.current = ff;
     return ff;
   }
@@ -856,19 +988,37 @@ for (const vo of proj.videoOverlays || []) {
     const bEnd = Math.min(b.trimStart + d * b.speed, b.trimEnd);
     const aFadeOut = a.fadeOut > 0 ? `,fade=t=out:st=${Math.max(d - a.fadeOut, 0)}:d=${Math.min(a.fadeOut, d)}` : '';
     const bFadeIn = b.fadeIn > 0 ? `,fade=t=in:st=0:d=${Math.min(b.fadeIn, d)}` : '';
-    const filterComplex =
-      `[0:v]trim=${aStart}:${a.trimEnd},setpts=(PTS-STARTPTS)/${a.speed},${rotFor(a)}fps=30,${fitFor(a)}${aFadeOut}[pa];` +
-      `[1:v]trim=${b.trimStart}:${bEnd},setpts=(PTS-STARTPTS)/${b.speed},${rotFor(b)}fps=30,${fitFor(b)}${bFadeIn}[pb];` +
-      `[pa][pb]xfade=transition=${type}:duration=${d}:offset=0[finalv]`;
+    const fA = specToFF(FILTER_MAP[a.filter || 'none'] || {});
+const fB = specToFF(FILTER_MAP[b.filter || 'none'] || {});
+// El audio de la ventana lo llevan las PISTAS VINCULADAS con su crossfade
+// triangular (paridad con el export). El snippet vuelve a ser video puro:
+// wasm más liviano en móvil (decisión de la fundadora, 29/10).
+const audioChain = '';
+const filterComplex =
+`[0:v]trim=${aStart}:${a.trimEnd},setpts=(PTS-STARTPTS)/${a.speed},${rotFor(a)}fps=30,${fitFor(a)}${fA ? ',' + fA : ''}${aFadeOut}[pa];` +
+`[1:v]trim=${b.trimStart}:${bEnd},setpts=(PTS-STARTPTS)/${b.speed},${rotFor(b)}fps=30,${fitFor(b)}${fB ? ',' + fB : ''}${bFadeIn}[pb];` +
+audioChain +
+`[pa]format=yuv420p[pan];[pb]format=yuv420p[pbn];[pan][pbn]xfade=transition=${type}:duration=${d}:offset=0[finalv]`;
     await ff.writeFile('pa.mp4', new Uint8Array(await (await fetch(a.url)).arrayBuffer()));
     await ff.writeFile('pb.mp4', new Uint8Array(await (await fetch(b.url)).arrayBuffer()));
                 const outName = `prev_${Date.now()}.mp4`;
     previewProgCtxRef.current = { d, active: true, startedAt: performance.now() };
     try {
       const code = await ff.exec(['-i', 'pa.mp4', '-i', 'pb.mp4', '-filter_complex', filterComplex, '-map', '[finalv]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', '-pix_fmt', 'yuv420p', '-r', '30', '-f', 'mp4', '-movflags', '+faststart', '-y', outName]);
-      if (code !== 0) throw new Error(`xfade preview terminó con código ${code}`);
-      const data = await ff.readFile(outName);
-      cacheSet(key, URL.createObjectURL(new Blob([data], { type: 'video/mp4' })));
+      if (code !== 0) throw new Error(`xfade preview terminó con código ${code} · ${previewLogs.slice(-4).join(' | ')}`);
+const data = await ff.readFile(outName);
+if (!data || data.length === 0) throw new Error(`Snippet vacío (el render no produjo archivo) · ${previewLogs.slice(-4).join(' | ')}`);
+      {
+const cache = previewCacheRef.current;
+const snippetUrl = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
+if (cache.has(key)) URL.revokeObjectURL(cache.get(key)!);
+cache.set(key, snippetUrl);
+while (cache.size > 24) {
+const oldest = cache.keys().next().value as string;
+URL.revokeObjectURL(cache.get(oldest)!);
+cache.delete(oldest);
+}
+}
       setPreviewCacheVersion((v) => v + 1);
     } finally {
       previewProgCtxRef.current.active = false;
@@ -939,7 +1089,7 @@ for (const vo of proj.videoOverlays || []) {
       if (previewQueueRef.current.length && previewTransitionsRef.current) void processPreviewQueue();
     }
   }
-  const transSig = clips.map((c, i) => `${i}:${c.transition?.type ?? 'none'}:${(c.transition?.duration ?? 0).toFixed(2)}:${c.trimStart.toFixed(2)}:${c.trimEnd.toFixed(2)}:${c.speed}:${c.rotate}`).join('|') + `::${exportSettings.fit}::${exportSettings.ratio}`;
+  const transSig = clips.map((c, i) => `${i}:${c.transition?.type ?? 'none'}:${(c.transition?.duration ?? 0).toFixed(2)}:${c.trimStart.toFixed(2)}:${c.trimEnd.toFixed(2)}:${c.speed}:${c.rotate}:${c.filter ?? 'none'}`).join('|') + `::${exportSettings.fit}::${exportSettings.ratio}`;
   useEffect(() => {
     if (!previewTransitions) return;
     const t = setTimeout(() => { enqueueTransitionRenders(); }, 400);
@@ -998,53 +1148,139 @@ for (const vo of proj.videoOverlays || []) {
       if (hay) enqueueTransitionRenders();
     }
   }
-
-  function syncTransitionLayer(t: number) {
-    const layer = transitionLayerRef.current;
-    const sec = transitionVideoRef.current;
-    if (!layer || !sec) return;
-    const list = clipsRef.current;
-    const starts = videoStartsRef.current;
-    const { index } = locateVideo(t, list, starts);
-    const d = index >= 0 ? dAfter(index) : 0;
-    const winStart = index >= 0 && index < list.length - 1 ? starts[index + 1] : 0;
-    const inWin = previewTransitionsRef.current && index >= 0 && d > 0 && t >= winStart && t < winStart + d;
-    const mainVideo = videoRef.current;
-    if (!inWin) {
-      layer.style.display = 'none';
-      if (!sec.paused) sec.pause();
-      if (mainVideo) mainVideo.volume = 1;
-      return;
-    }
-    const p = clamp((t - winStart) / d, 0, 1);
-    if (mainVideo && !list[index].muted) mainVideo.volume = clamp(1 - p, 0, 1);
-    const key = transitionCacheKey(index);
-    const snippetUrl = key ? previewCacheRef.current.get(key) : undefined;
-    if (!snippetUrl) {
-      // Snippet aún en cola: se ve corte limpio hasta que el render real esté listo
-      layer.style.display = 'none';
-      if (sec.dataset.snippetUrl) sec.dataset.snippetUrl = '';
-      if (!sec.paused) sec.pause();
-      return;
-    }
-    if (sec.dataset.snippetUrl !== snippetUrl) {
-      sec.dataset.snippetUrl = snippetUrl;
-      sec.dataset.clipUrl = '';
-      sec.src = snippetUrl;
-    }
-    const target = clamp(t - winStart, 0, d);
-    if (playingRef.current) {
-      if (Math.abs(sec.currentTime - target) > 0.25) sec.currentTime = target;
-      if (sec.paused) sec.play().catch(() => {});
-    } else {
-      if (!sec.paused) sec.pause();
-      sec.currentTime = target;
-    }
-    layer.style.display = 'block';
-    layer.style.opacity = '1'; layer.style.clipPath = 'none'; layer.style.transform = 'none'; layer.style.filter = 'none';
-    layer.style.maskImage = 'none'; (layer.style as any).webkitMaskImage = 'none';
-  }
+const syncLayerRef = useRef<(t: number) => void>(() => {});
+ function syncTransitionLayer(t: number) {
+const layer = transitionLayerRef.current;
+const sec = transitionVideoRef.current;
+if (!layer || !sec) return;
+const list = clipsRef.current;
+const starts = videoStartsRef.current;
+const mainVideo = videoRef.current;
+const { index } = locateVideo(t, list, starts);
+const dCur = index >= 0 ? dAfter(index) : 0;
+const winStart = index >= 0 && index < list.length - 1 ? starts[index + 1] : 0;
+const dPrev = index >= 0 ? dAfter(index - 1) : 0;
+const winEndPrev = index >= 0 ? starts[index] + dPrev : 0;
+const on = previewTransitionsRef.current;
+const inBlend = on && dCur > 0 && t >= winStart && t < winStart + dCur;
+const inHandoff = on && dPrev > 0 && !inBlend && t >= winEndPrev && t < winEndPrev + 0.6;
+const inArmed = on && dCur > 0 && !inBlend && t >= winStart - 0.6 && t < winStart;
+// ===== IDLE: capa apagada y memoria del handoff limpia =====
+if (!inBlend && !inHandoff && !inArmed) {
+layer.style.display = 'none';
+if (!sec.paused) sec.pause();
+if (mainVideo) mainVideo.volume = 1;
+if (handoffClipRef.current) { handoffClipRef.current = ''; handoffReadyRef.current = false; }
+return;
+}
+// ===== ARMED: el snippet se carga ANTES de que abra la ventana =====
+if (inArmed) {
+const key = transitionCacheKey(index);
+const url = key ? previewCacheRef.current.get(key) : undefined;
+if (url && sec.dataset.snippetUrl !== url) { sec.dataset.snippetUrl = url; sec.src = url; }
+if (!sec.paused) sec.pause();
+if (sec.readyState >= 1 && Math.abs(sec.currentTime) > 0.05) sec.currentTime = 0;
+layer.style.display = 'none';
+handoffClipRef.current = '';
+handoffReadyRef.current = false;
+if (mainVideo && !list[index].muted) mainVideo.volume = 1;
+return;
+}
+// ===== BLEND: el snippet manda en pantalla; B se prepara debajo =====
+if (inBlend) {
+const d = dCur;
+const p = clamp((t - winStart) / d, 0, 1);
+const key = transitionCacheKey(index);
+const url = key ? previewCacheRef.current.get(key) : undefined;
+if (!url) { layer.style.display = 'none'; if (!sec.paused) sec.pause(); return; }
+if (sec.dataset.snippetUrl !== url) { sec.dataset.snippetUrl = url; sec.src = url; }
+if (mainVideo && mainVideo.dataset.clipId === list[index].id && !list[index].muted) mainVideo.volume = clamp(1 - p, 0, 1);
+const target = clamp(t - winStart, 0, d);
+if (snippetReadyForRef.current === url) {
+if (playingRef.current) {
+if (Math.abs(sec.currentTime - target) > 0.05) sec.currentTime = target;
+if (sec.paused) sec.play().catch(() => {});
+} else {
+if (!sec.paused) sec.pause();
+if (Math.abs(sec.currentTime - target) > 0.02) sec.currentTime = target;
+}
+layer.style.display = 'block';
+layer.style.opacity = '1'; layer.style.clipPath = 'none'; layer.style.transform = 'none'; layer.style.filter = 'none';
+layer.style.maskImage = 'none'; (layer.style as any).webkitMaskImage = 'none';
+} else {
+layer.style.display = 'none';
+if (!sec.paused) sec.pause();
+}
+const nextClip = list[index + 1];
+if (nextClip && mainVideo && p >= 0.35) {
+const handoffFileTime = Math.min(nextClip.trimStart + d * nextClip.speed, nextClip.trimEnd);
+if (mainVideo.dataset.clipId !== nextClip.id) {
+bindVideoToClip(nextClip);
+mainVideo.muted = true;
+mainVideo.pause();
+mainVideo.currentTime = handoffFileTime;
+handoffClipRef.current = nextClip.id;
+handoffReadyRef.current = false;
+} else if (!handoffReadyRef.current && !mainVideo.paused) {
+mainVideo.pause();
+mainVideo.currentTime = handoffFileTime;
+handoffClipRef.current = nextClip.id;
+}
+}
+return;
+}
+// ===== HANDOFF: la tapa solo se levanta cuando el decoder de B lo jura =====
+const bClip = list[index];
+const preparing = handoffClipRef.current === bClip.id && !handoffReadyRef.current;
+if (preparing && t < winEndPrev + 0.6) {
+if (!sec.paused) sec.pause();
+if (sec.readyState >= 2 && Math.abs(sec.currentTime - dPrev) > 0.05) sec.currentTime = dPrev;
+layer.style.display = 'block';
+layer.style.opacity = '1';
+return;
+}
+layer.style.display = 'none';
+if (!sec.paused) sec.pause();
+if (mainVideo && mainVideo.dataset.clipId === bClip.id) {
+mainVideo.muted = bClip.muted;
+mainVideo.volume = bClip.muted ? 0 : 1;
+if (playingRef.current && mainVideo.paused && !mainVideo.seeking) mainVideo.play().catch(() => {});
+}
+handoffClipRef.current = '';
+handoffReadyRef.current = false;
+}
+syncLayerRef.current = syncTransitionLayer;
   useEffect(() => { syncTransitionLayer(playhead); }, [playhead, previewTransitions, clips, playing, previewCacheVersion]);
+// EVENTOS = VERDAD: el snippet avisa cuando tiene frame, y el video principal
+// avisa (seeked/loadeddata) cuando el frame del handoff está realmente pintado.
+// La máquina de estados se re-evalúa en ese instante, no por polling a ciegas.
+useEffect(() => {
+const sec = transitionVideoRef.current;
+const v = videoRef.current;
+if (!sec || !v) return;
+const onSecReady = () => {
+if (sec.readyState >= 2 && sec.dataset.snippetUrl) snippetReadyForRef.current = sec.dataset.snippetUrl;
+syncLayerRef.current(playheadRef.current);
+};
+const onMainReady = () => {
+if (handoffClipRef.current && v.dataset.clipId === handoffClipRef.current && v.readyState >= 2) {
+handoffReadyRef.current = true;
+syncLayerRef.current(playheadRef.current);
+}
+};
+sec.addEventListener('loadeddata', onSecReady);
+sec.addEventListener('canplay', onSecReady);
+sec.addEventListener('seeked', onSecReady);
+v.addEventListener('seeked', onMainReady);
+v.addEventListener('loadeddata', onMainReady);
+return () => {
+sec.removeEventListener('loadeddata', onSecReady);
+sec.removeEventListener('canplay', onSecReady);
+sec.removeEventListener('seeked', onSecReady);
+v.removeEventListener('seeked', onMainReady);
+v.removeEventListener('loadeddata', onMainReady);
+};
+}, [stage]);
   useEffect(() => () => {
     previewQueueRef.current = [];
     if (previewFFRef.current) { try { previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
@@ -1116,7 +1352,15 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
         else if (selectedImageId) { e.preventDefault(); setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImageId)); setSelectedImageId(null); }
         else if (selectedTextId) { e.preventDefault(); setTextOverlays((prev) => prev.filter((a) => a.id !== selectedTextId)); setSelectedTextId(null); }
 else if (selectedVoId) { e.preventDefault(); setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVoId)); setSelectedVoId(null); }
-        else if (selectedId) { e.preventDefault(); setClips((prev) => prev.filter((c) => c.id !== selectedId)); setSelectedId(null); }
+        else if (selectedId) {
+e.preventDefault();
+const cid = selectedId;
+const hadRel = audioTracksRef.current.some((t) => t.sourceVideoId === cid && t.released);
+setClips((prev) => prev.filter((c) => c.id !== cid));
+setAudioTracks((prev) => prev.filter((t) => !(t.sourceVideoId === cid && !t.released)).map((t) => (t.sourceVideoId === cid ? { ...t, sourceVideoId: undefined } : t)));
+if (hadRel) showToast('🔓 El video se borró: su audio liberado quedó como pista independiente', 'info');
+setSelectedId(null);
+}
       }
     }
     window.addEventListener('keydown', onKey);
@@ -1141,38 +1385,51 @@ else if (selectedVoId) { e.preventDefault(); setVideoOverlays((prev) => prev.fil
   }, [clips.length]);
 
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v || activeIndex < 0) return;
-    const clip = clips[activeIndex];
-        if (!clip) return;
-    bindVideoToClip(clip);
-    if (!playingRef.current) v.currentTime = Math.min(activeLocalFile, clip.trimEnd);
-    v.playbackRate = clip.speed;
-    v.muted = clip.muted;
-    if (playing) v.play().catch(() => {});
-  }, [activeIndex, clips]);
+const v = videoRef.current;
+if (!v || activeIndex < 0) return;
+
+// Durante la reproducción, tick y syncTransitionLayer gobiernan el handoff de clips.
+// Este useEffect solo debe actuar cuando está pausado/scrubbeando para no pisar la pre-carga.
+if (playingRef.current) return;
+
+const clip = clips[activeIndex];
+if (!clip) return;
+bindVideoToClip(clip);
+if (!playingRef.current) v.currentTime = Math.min(activeLocalFile, clip.trimEnd);
+v.playbackRate = clip.speed;
+v.muted = clip.muted;
+if (playing) v.play().catch(() => {});
+}, [activeIndex, clips]);
 
   useEffect(() => {
     const tracks = audioTracksRef.current;
     const isPlaying = playingRef.current;
     const currentTime = playheadRef.current;
     tracks.forEach((track) => {
-      const audio = audioElementsRef.current.get(track.id);
-      if (!audio) return;
-      const isActive = currentTime >= track.start && currentTime < track.start + track.duration;
-      const localTime = currentTime - track.start;
-      if (isActive) {
-        const targetTime = track.offset + localTime;
-        if (Math.abs(audio.currentTime - targetTime) > 0.5) audio.currentTime = targetTime;
-        let volume = track.muted ? 0 : track.volume;
-        if (track.fadeIn > 0 && localTime < track.fadeIn) volume *= localTime / track.fadeIn;
-        if (track.fadeOut > 0 && localTime > track.duration - track.fadeOut) volume *= (track.duration - localTime) / track.fadeOut;
-        audio.volume = clamp(volume, 0, 1);
-        if (isPlaying && audio.paused) audio.play().catch(() => {});
-        else if (!isPlaying && !audio.paused) audio.pause();
-      } else { if (!audio.paused) audio.pause(); }
-    });
-  }, [playhead, playing, audioTracks]);
+const audio = audioElementsRef.current.get(track.id);
+if (!audio) return;
+const g = trackGeom(track);
+const cf = crossFades(track);
+const isActive = currentTime >= g.start && currentTime < g.start + g.duration;
+const localTime = currentTime - g.start;
+if (isActive) {
+const targetTime = g.offset + localTime * g.speed;
+if (Math.abs(audio.currentTime - targetTime) > 0.5) audio.currentTime = targetTime;
+if (Math.abs(audio.playbackRate - g.speed) > 0.01) audio.playbackRate = g.speed;
+let volume = track.muted ? 0 : track.volume;
+if (track.fadeIn > 0 && localTime < track.fadeIn) volume *= localTime / track.fadeIn;
+if (track.fadeOut > 0 && localTime > g.duration - track.fadeOut) volume *= (g.duration - localTime) / track.fadeOut;
+// CROSSFADE DE TRANSICIÓN: las pistas vinculadas se entrelazan en el solape
+// (rampa triangular idéntica al acrossfade del export).
+if (cf.dOut > 0 && localTime > g.duration - cf.dOut) volume *= Math.max((g.duration - localTime) / cf.dOut, 0);
+if (cf.dIn > 0 && localTime < cf.dIn) volume *= Math.max(localTime / cf.dIn, 0);
+audio.volume = clamp(volume, 0, 1);
+if (isPlaying && audio.paused) audio.play().catch(() => {});
+else if (!isPlaying && !audio.paused) audio.pause();
+} else { if (!audio.paused) audio.pause(); }
+});
+}, [playhead, playing, audioTracks]);
+// ===== SYNC DE CAPAS DE VIDEO: cada <video> sigue al playhead dentro de su ventana =====
 
 // ===== SYNC DE CAPAS DE VIDEO: cada <video> sigue al playhead dentro de su ventana =====
 useEffect(() => {
@@ -1194,23 +1451,42 @@ else if (!isPlaying && !el.paused) el.pause();
 
  const proxyToastRef = useRef(false);
 
-  function bindVideoToClip(clip: Clip) {
-    const v = videoRef.current;
-    if (!v) return;
-    const src = previewSrc(clip);
-    if (v.dataset.clipId !== clip.id || v.dataset.clipSrc !== src) {
-      v.dataset.clipId = clip.id;
-      v.dataset.clipSrc = src;
-      v.src = src;
-      v.playbackRate = clip.speed;
-      v.muted = clip.muted;
-      if (playingRef.current) v.play().catch(() => {});
-      if (src !== clip.url && !proxyToastRef.current) {
-        proxyToastRef.current = true;
-        showToast('⚡ Preview usando proxy 480p', 'info');
-      }
-    }
-  }
+function applyClipVisualsToDom(clip: Clip) {
+const v = videoRef.current;
+if (!v) return;
+const st = stageRef.current;
+const scale = st ? st.offsetWidth / REF_WIDTH : 0;
+const sp = clip.filter ? FILTER_MAP[clip.filter] : undefined;
+const cssFilter = sp ? specToCss(sp, scale) : 'none';
+// Aplicamos directo al DOM para evitar el delay de 1-2 frames de React
+v.style.filter = cssFilter === 'none' ? '' : cssFilter;
+v.style.objectPosition = objectPositionFor(clip);
+}
+
+function bindVideoToClip(clip: Clip) {
+const v = videoRef.current;
+if (!v) return;
+const src = previewSrc(clip);
+
+// 1. Sincronizar filtro y encuadre en el DOM de inmediato (bypass del delay de React)
+applyClipVisualsToDom(clip);
+
+if (v.dataset.clipId !== clip.id || v.dataset.clipSrc !== src) {
+const sameSrc = v.dataset.clipSrc === src;
+v.dataset.clipId = clip.id;
+v.dataset.clipSrc = src;
+if (!sameSrc) {
+v.src = src;
+if (playingRef.current) v.play().catch(() => {});
+}
+v.playbackRate = clip.speed;
+v.muted = clip.muted;
+if (src !== clip.url && !proxyToastRef.current) {
+proxyToastRef.current = true;
+showToast('⚡ Preview usando proxy 480p', 'info');
+}
+}
+}
 
   // ===== PROXIES 480p PARA EDICIÓN FLUIDA EN MÓVILES =====
   async function renderProxy(assetId: string, url: string) {
@@ -1262,43 +1538,89 @@ else if (!isPlaying && !el.paused) el.pause();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proxyVersion]);
 
-      const tick = useCallback((ts: number) => {
+  const tick = useCallback((ts: number) => {
     if (!playingRef.current) return;
     const dt = lastTsRef.current ? (ts - lastTsRef.current) / 1000 : 0;
     lastTsRef.current = ts;
     const v = videoRef.current;
     const list = clipsRef.current;
     const starts = videoStartsRef.current;
-    // RELOJ ESCLAVO: el playhead avanza según lo que el decoder realmente muestra
+
     let t = playheadRef.current + dt;
-    if (v && list.length > 0 && !v.paused && v.readyState >= 1) {
-      const loc = locateVideo(playheadRef.current, list, starts);
-      if (loc.index >= 0 && v.dataset.clipId === list[loc.index].id) {
-        const clip = list[loc.index];
+
+    // Verificar si estamos en ventana de transición activa
+    const loc0 = locateVideo(playheadRef.current, list, starts);
+    const d0 = loc0.index >= 0 && previewTransitionsRef.current ? dAfter(loc0.index) : 0;
+    const winStart0 = loc0.index >= 0 && loc0.index < list.length - 1 ? starts[loc0.index + 1] : 0;
+    const inTransWin = d0 > 0 && playheadRef.current >= winStart0 && playheadRef.current < winStart0 + d0;
+
+    // RELOJ ESCLAVO: solo lee del video principal si NO estamos pre-cargando el clip B en una transición
+    if (!inTransWin && v && list.length > 0 && !v.paused && v.readyState >= 1) {
+      if (loc0.index >= 0 && v.dataset.clipId === list[loc0.index].id) {
+        const clip = list[loc0.index];
         const localProj = (v.currentTime - clip.trimStart) / clip.speed;
-        const mediaT = starts[loc.index] + Math.max(localProj, 0);
+        const mediaT = starts[loc0.index] + Math.max(localProj, 0);
         if (mediaT >= playheadRef.current - 0.02 && mediaT <= playheadRef.current + dt + 0.25) t = mediaT;
       }
     }
+
     const total = projectDurationRef.current;
     if (t >= total) { t = total; playingRef.current = false; setPlaying(false); }
     playheadRef.current = t;
+
     // DOM directo a 60fps: línea y timecodes sin re-render
     const line = playheadLineRef.current;
     if (line) line.style.left = `${t * ppsRef.current}px`;
     const tc = formatTime(t);
     if (tcMobileRef.current) tcMobileRef.current.textContent = tc;
     if (tcDesktopRef.current) tcDesktopRef.current.textContent = tc;
-    // Corrección SOLO ante desincronización grande o clip equivocado (nada de re-seeks finos)
-    if (v && list.length > 0) {
-      const { localFile, index } = locateVideo(t, list, starts);
-      if (index >= 0) {
-        const clip = list[index];
-        bindVideoToClip(clip);
-        const clampedLocalFile = Math.min(localFile, clip.trimEnd);
-        if (Math.abs(v.currentTime - clampedLocalFile) > 0.8) v.currentTime = clampedLocalFile;
-      }
-    }
+
+    // Manejo del video principal a 60fps (evita frames fantasma de filtro/opacidad)
+if (v && list.length > 0) {
+const { localFile, index } = locateVideo(t, list, starts);
+const d = index >= 0 && previewTransitionsRef.current ? dAfter(index) : 0;
+const winStart = index >= 0 && index < list.length - 1 ? starts[index + 1] : 0;
+const nowInWin = d > 0 && t >= winStart && t < winStart + d;
+
+// Si NO estamos en la ventana de transición, manejamos el video principal normalmente
+if (!nowInWin && index >= 0) {
+const clip = list[index];
+const prevBoundId = v.dataset.clipId;
+bindVideoToClip(clip);
+// Fin del pre-roll muteado: B recupera su audio real recién al destaparse
+// (bindVideoToClip no lo hace porque el src no cambió desde el pre-bind).
+v.muted = clip.muted;
+
+// Sincronizar opacidad de fadeIn/fadeOut a 60fps en el DOM
+const len = effLen(clip);
+const localProj = t - starts[index];
+let alpha = 1;
+if (clip.fadeIn > 0 && localProj < clip.fadeIn) alpha = Math.max(localProj / clip.fadeIn, 0);
+if (clip.fadeOut > 0 && localProj > len - clip.fadeOut) alpha = Math.max((len - localProj) / clip.fadeOut, 0);
+v.style.opacity = String(alpha);
+
+const clampedLocalFile = Math.min(localFile, clip.trimEnd);
+
+// No iniciar otro seek mientras el navegador todavía procesa el anterior.
+const clipChanged = prevBoundId !== clip.id;
+const timeDrift = Math.abs(v.currentTime - clampedLocalFile);
+
+if (!v.seeking && (clipChanged || timeDrift > 0.4)) {
+  v.currentTime = clampedLocalFile;
+}
+
+// Si el clip cambió, dejamos que el navegador comience a cargarlo.
+// Si ya está cargado, podemos reanudarlo normalmente.
+const preparingHandoff = handoffClipRef.current === clip.id && !handoffReadyRef.current;
+if (v.paused && playingRef.current && !v.seeking && !preparingHandoff) {
+v.play().catch(() => {});
+}
+}
+}
+
+    // Sincronizar la capa de transición a 60fps en el mismo frame de pintado
+    syncLayerRef.current(t);
+
     // React state solo a UI_HZ
     const uiStep = Math.round(t * UI_HZ);
     if (uiStep !== lastUiTenthRef.current || t >= total) {
@@ -1357,12 +1679,18 @@ else if (!isPlaying && !el.paused) el.pause();
           try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
           const clipId = uid();
           const audioData = await extractAudioFromVideo(url);
-          const newClip: Clip = { id: clipId, assetId, name: f.name, url, duration, trimStart: 0, trimEnd: duration, rotate: 0, speed: 1, fadeIn: 0, fadeOut: 0, muted: false, cropX: 0.5, cropY: 0.5, hasAudio: !!audioData, transition: { type: 'fade', duration: 0.5 } };
-                    if (audioData) audioDataMap.set(clipId, { channelData: audioData.channelData, sampleRate: audioData.sampleRate });
+          const newClip: Clip = { id: clipId, assetId, name: f.name, url, duration, trimStart: 0, trimEnd: duration, rotate: 0, speed: 1, fadeIn: 0, fadeOut: 0, muted: !!audioData, cropX: 0.5, cropY: 0.5, hasAudio: !!audioData, transition: { type: 'fade', duration: 0.5 } };
+if (audioData) {
+audioDataMap.set(clipId, { channelData: audioData.channelData, sampleRate: audioData.sampleRate });
+const trackId = uid();
+audioDataMap.set(trackId, audioData);
+const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: getPeaksForSegment(trackId, 0, duration), sourceVideoId: clipId, released: false };
+setAudioTracks((prev) => [...prev, linked]);
+}
                     setClips((prev) => [...prev, newClip]);
           enqueueFilmstrip(assetId, url, duration);
           enqueueProxy(assetId, url);
-          showToast(audioData ? `🎬 Video "${f.name}" agregado con audio integrado` : `🎬 Video "${f.name}" agregado (sin audio)`, 'info');
+          showToast(audioData ? `🎬 Video "${f.name}" agregado · audio vinculado en la pista 🔗` : `🎬 Video "${f.name}" agregado (sin audio)`, 'info');
         }
       }
     }
@@ -1393,28 +1721,36 @@ else if (!isPlaying && !el.paused) el.pause();
     }
   }
 
-  function toggleSeparateAudio(clip: Clip) {
-    const existing = audioTracks.find((t) => t.sourceVideoId === clip.id);
-    if (existing) {
-      setAudioTracks((prev) => prev.filter((t) => t.id !== existing.id));
-      updateClip(clip.id, { muted: false });
-      showToast('🔊 Audio reintegrado al video', 'info');
-      return;
-    }
-    if (!clip.hasAudio) { showToast('⚠️ Este video no tiene pista de audio', 'warn'); return; }
-    const idx = clips.findIndex((c) => c.id === clip.id);
-    const data = audioDataMap.get(clip.id);
-    const dur = effLen(clip);
-    const track: AudioTrack = {
-      id: uid(), assetId: clip.assetId, name: `Audio de ${clip.name}`, url: clip.url,
-      duration: dur, offset: clip.trimStart, start: idx >= 0 ? videoStarts[idx] : 0,
-      volume: 1, fadeIn: 0, fadeOut: 0, muted: false,
-      peaks: data ? getPeaksForSegment(clip.id, clip.trimStart, dur) : [], sourceVideoId: clip.id,
-    };
-    setAudioTracks((prev) => [...prev, track]);
-    updateClip(clip.id, { muted: true });
-    showToast('🎵 Audio separado en la pista de audio', 'info');
-  }
+  function toggleRelease(trackId: string) {
+const track = audioTracksRef.current.find((t) => t.id === trackId);
+if (!track || !track.sourceVideoId) return;
+if (!track.released) {
+const g = trackGeom(track);
+setAudioTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, released: true, start: g.start, duration: g.duration, offset: g.offset } : t)));
+showToast('🔓 Audio liberado: ahora se mueve y recorta independiente', 'info');
+} else {
+setAudioTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, released: false } : t)));
+showToast('🔗 Audio re-vinculado: sigue al video de nuevo', 'info');
+}
+}
+function clipAudioMode(clip: Clip): 'linked' | 'released' | 'muted' | 'integrated' {
+const t = audioTracks.find((x) => x.sourceVideoId === clip.id);
+if (t) return t.released ? 'released' : 'linked';
+return clip.muted ? 'muted' : 'integrated';
+}
+function cycleClipAudio(clip: Clip) {
+const mode = clipAudioMode(clip);
+const existing = audioTracks.find((x) => x.sourceVideoId === clip.id);
+if ((mode === 'linked' || mode === 'released') && existing) { toggleRelease(existing.id); return; }
+if (mode === 'muted') { updateClip(clip.id, { muted: false }); showToast('🔊 Audio devuelto al video', 'info'); return; }
+if (!clip.hasAudio) { showToast('⚠️ Este video no tiene pista de audio', 'warn'); return; }
+const data = audioDataMap.get(clip.id);
+const trackId = uid();
+if (data) audioDataMap.set(trackId, data);
+setAudioTracks((prev) => [...prev, { id: trackId, assetId: clip.assetId, name: `Audio de ${clip.name}`, url: clip.url, duration: clip.duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: data ? getPeaksForSegment(trackId, 0, clip.duration) : [], sourceVideoId: clip.id, released: false }]);
+updateClip(clip.id, { muted: true });
+showToast('🎵 Audio vinculado en la pista de audio', 'info');
+}
 
   function toggleProxies() {
     const next = !proxiesOn;
@@ -1494,19 +1830,38 @@ setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelec
       const clip = clipsRef.current.find((c) => c.id === selectedId);
       if (clip && index >= 0 && clipsRef.current[index].id === selectedId) {
         if (localFile - clip.trimStart >= MIN_LEN && clip.trimEnd - localFile >= MIN_LEN) {
-          const partA: Clip = { ...clip, id: uid(), trimEnd: localFile };
-          const partB: Clip = { ...clip, id: uid(), trimStart: localFile };
-          setClips((prev) => { const next = [...prev]; next.splice(index, 1, partA, partB); return next; });
+const partA: Clip = { ...clip, id: uid(), trimEnd: localFile, transition: { type: 'none', duration: 0 } };
+const partB: Clip = { ...clip, id: uid(), trimStart: localFile };
+setClips((prev) => { const next = [...prev]; next.splice(index, 1, partA, partB); return next; });
+const lt = audioTracksRef.current.find((t) => t.sourceVideoId === clip.id && !t.released);
+if (lt) {
+const data = audioDataMap.get(lt.id);
+const idA = uid(); const idB = uid();
+if (data) { audioDataMap.set(idA, data); audioDataMap.set(idB, data); }
+setAudioTracks((prev) => { const idx = prev.findIndex((t) => t.id === lt.id); if (idx < 0) return prev; const next = [...prev];
+next.splice(idx, 1, { ...lt, id: idA, sourceVideoId: partA.id }, { ...lt, id: idB, sourceVideoId: partB.id }); return next; });
+}
+
+// REGLA FUNDADORA (29/10): si el clip se divide mientras su audio está
+// LIBERADO, el lazo se corta ahí mismo: el audio pasa a ser pista
+// independiente (chau candadito, chau estados huérfanos). Simple y honesto.
+const rel = audioTracksRef.current.find((t) => t.sourceVideoId === clip.id && t.released);
+if (rel) {
+setAudioTracks((prev) => prev.map((t) => (t.id === rel.id ? { ...t, sourceVideoId: undefined } : t)));
+showToast('🔓 El video se dividió: su audio liberado ahora es pista independiente', 'info');
+}
         }
       }
     } else if (selectedAudioId) {
-      const track = audioTracksRef.current.find((t) => t.id === selectedAudioId);
-      if (track && currentTime >= track.start && currentTime < track.start + track.duration) {
-        const localTime = currentTime - track.start;
-        if (localTime >= MIN_LEN && track.duration - localTime >= MIN_LEN) {
+const track = audioTracksRef.current.find((t) => t.id === selectedAudioId);
+if (track && track.sourceVideoId && !track.released) { showToast('🔗 El audio vinculado se divide con el clip: seleccioná el video y usá Dividir', 'info'); return; }
+const g0 = track ? trackGeom(track) : null;
+if (track && g0 && currentTime >= g0.start && currentTime < g0.start + g0.duration) {
+const localTime = currentTime - g0.start;
+if (localTime >= MIN_LEN && g0.duration - localTime >= MIN_LEN) {
           const rawData = audioDataMap.get(track.id);
           const partA: AudioTrack = { ...track, id: uid(), duration: localTime };
-          const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: track.duration - localTime, offset: track.offset + localTime };
+const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g0.duration - localTime, offset: g0.offset + localTime };
           if (rawData) { audioDataMap.set(partA.id, { ...rawData }); audioDataMap.set(partB.id, { ...rawData }); }
           setAudioTracks((prev) => { const idx = prev.findIndex((t) => t.id === track.id); if (idx >= 0) { const next = [...prev]; next.splice(idx, 1, partA, partB); return next; } return prev; });
         }
@@ -1539,7 +1894,14 @@ setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelec
     else if (selectedImageId) { setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImageId)); setSelectedImageId(null); }
     else if (selectedTextId) { setTextOverlays((prev) => prev.filter((a) => a.id !== selectedTextId)); setSelectedTextId(null); }
 else if (selectedVoId) { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVoId)); setSelectedVoId(null); }
-    else if (selectedId) { setClips((prev) => prev.filter((c) => c.id !== selectedId)); setSelectedId(null); }
+    else if (selectedId) {
+const cid = selectedId;
+const hadRel = audioTracksRef.current.some((t) => t.sourceVideoId === cid && t.released);
+setClips((prev) => prev.filter((c) => c.id !== cid));
+setAudioTracks((prev) => prev.filter((t) => !(t.sourceVideoId === cid && !t.released)).map((t) => (t.sourceVideoId === cid ? { ...t, sourceVideoId: undefined } : t)));
+if (hadRel) showToast('🔓 El video se borró: su audio liberado quedó como pista independiente', 'info');
+setSelectedId(null);
+}
   }
 
   function timeFromPointer(e: React.PointerEvent) { const rect = rulerRef.current?.getBoundingClientRect(); if (!rect) return 0; return (e.clientX - rect.left) / pps; }
@@ -1551,11 +1913,8 @@ else if (selectedVoId) { setVideoOverlays((prev) => prev.filter((a) => a.id !== 
     const same = next.length === list.length && next.every((c, i) => c.id === list[i].id);
     if (!same) {
       setClips(next);
-      // El audio extraído de un video sigue a su clip al reordenar
-      const starts = new Map<string, number>();
-      let a2 = 0;
-      for (const c of next) { starts.set(c.id, a2); a2 += effLen(c); }
-      setAudioTracks((prev) => prev.map((tr) => (tr.sourceVideoId && starts.has(tr.sourceVideoId) ? { ...tr, start: starts.get(tr.sourceVideoId)! } : tr)));
+// El audio vinculado sigue al clip automáticamente (geometría derivada);
+// el liberado conserva su posición manual.
     }
   }
   function hasFiles(e: React.DragEvent) { return Array.from(e.dataTransfer.types).includes('Files'); }
@@ -1810,7 +2169,8 @@ const maskCount = voMaskIdx.filter((x) => x !== null).length;
         const fitChain = exportSettings.fit === 'recortar'
           ? `scale=${REF_WIDTH}:${REF_HEIGHT}:force_original_aspect_ratio=increase,crop=${REF_WIDTH}:${REF_HEIGHT}:(iw-${REF_WIDTH})*${c.cropX}:(ih-${REF_HEIGHT})*${c.cropY}`
           : `scale=${REF_WIDTH}:${REF_HEIGHT}:force_original_aspect_ratio=decrease,pad=${REF_WIDTH}:${REF_HEIGHT}:(ow-iw)/2:(oh-ih)/2`;
-        filterComplex += `[${i}:v]trim=${t0}:${t1},${pts},${rot}fps=30,${fitChain}${vfades}[v${i}_trim];`;
+        const fFF = specToFF(FILTER_MAP[c.filter || 'none'] || {});
+filterComplex += `[${i}:v]trim=${t0}:${t1},${pts},${rot}fps=30,${fitChain}${fFF ? ',' + fFF : ''}${vfades}[v${i}_trim];`;
         videoLabels.push(`v${i}_trim`);
       });
 
@@ -1936,17 +2296,23 @@ currentVideoLabel = `vo${i}_out`;
       const audioLabels: string[] = [];
       if (clips.length > 0) audioLabels.push(prevAudioLabel);
       audioTracks.forEach((aud, i) => {
-        if (!aud.muted) {
-          const maskCount = voMaskIdx.filter((x) => x !== null).length;
+if (!aud.muted) {
+const maskCount = voMaskIdx.filter((x) => x !== null).length;
 const audInputIdx = clips.length + imageOverlays.length + videoOverlays.length + maskCount + i;
-          const delay = aud.start * 1000;
-          let afades = '';
-          if (aud.fadeIn > 0) afades += `,afade=t=in:st=0:d=${aud.fadeIn}`;
-          if (aud.fadeOut > 0) afades += `,afade=t=out:st=${Math.max(aud.duration - aud.fadeOut, 0)}:d=${aud.fadeOut}`;
-          filterComplex += `[${audInputIdx}:a]atrim=${aud.offset}:${aud.offset + aud.duration},asetpts=PTS-STARTPTS,adelay=${delay}|${delay},volume=${aud.volume}${afades}[sa${i}];`;
-          audioLabels.push(`sa${i}`);
-        }
-      });
+const g = trackGeom(aud);
+const cf = crossFades(aud);
+const delay = g.start * 1000;
+const pts = g.speed === 1 ? 'asetpts=PTS-STARTPTS' : `asetpts=(PTS-STARTPTS)/${g.speed}`;
+const tempo = g.speed === 1 ? '' : `,atempo=${g.speed}`;
+let afades = '';
+if (aud.fadeIn > 0) afades += `,afade=t=in:st=0:d=${aud.fadeIn}`;
+if (aud.fadeOut > 0) afades += `,afade=t=out:st=${Math.max(g.duration - aud.fadeOut, 0)}:d=${aud.fadeOut}`;
+if (cf.dIn > 0) afades += `,afade=t=in:st=0:d=${cf.dIn}`;
+if (cf.dOut > 0) afades += `,afade=t=out:st=${Math.max(g.duration - cf.dOut, 0)}:d=${cf.dOut}`;
+filterComplex += `[${audInputIdx}:a]atrim=${g.offset}:${g.offset + g.duration},${pts}${tempo},adelay=${delay}|${delay},volume=${aud.volume}${afades}[sa${i}];`;
+audioLabels.push(`sa${i}`);
+}
+});
 
 videoOverlays.forEach((vo, i) => {
 if (!vo.muted && vo.hasAudio !== false) {
@@ -2020,6 +2386,14 @@ audioLabels.push(`va${i}`);
   const ticks: number[] = [];
   for (let s = 0; s <= Math.ceil(projectDuration); s += tickStep) ticks.push(s);
   const stageScale = stage ? stage.width / REF_WIDTH : 0;
+
+const clipCssFilter = (c: Clip | null): string | undefined => {
+const sp = c?.filter ? FILTER_MAP[c.filter] : undefined;
+if (!sp) return undefined;
+const css = specToCss(sp, stageScale);
+return css === 'none' ? undefined : css;
+};
+
     void histVersion;
   void filmstripVersion;
 
@@ -2227,7 +2601,7 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
                   <video
                     ref={videoRef}
                     className={isCover ? 'cursor-grab active:cursor-grabbing' : ''}
-                    style={{ width: videoElemW, height: videoElemH, objectFit: isCover ? 'cover' : 'contain', objectPosition: activeClip ? objectPositionFor(activeClip) : '50% 50%', opacity: previewAlpha }}
+                    style={{ width: videoElemW, height: videoElemH, objectFit: isCover ? 'cover' : 'contain', objectPosition: activeClip ? objectPositionFor(activeClip) : '50% 50%', opacity: previewAlpha, filter: clipCssFilter(activeClip) }}
                     onPointerDown={(e) => { if (activeClip) startPanDrag(e, activeClip); }}
                     onPointerMove={movePanDrag}
                     onPointerUp={endPanDrag} onPointerCancel={endPanDrag}
@@ -2389,9 +2763,15 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
                 <div className="grid grid-cols-2 gap-2">
                   <button onClick={() => updateClip(selectedClip.id, { rotate: ((selectedClip.rotate + 90) % 360) as Clip['rotate'] })} className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">⟲ Rotar ({selectedClip.rotate}°)</button>
                   <select value={selectedClip.speed} onChange={(e) => updateClip(selectedClip.id, { speed: Number(e.target.value) })} className="rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
-                    {[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => (<option key={s} value={s}>Velocidad {s}x</option>))}
-                  </select>
-                </div>
+{[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => (<option key={s} value={s}>Velocidad {s}x</option>))}
+</select>
+</div>
+<label className="block select-none text-xs text-slate-400">🎞 Filtro de color
+<select value={selectedClip.filter || 'none'} onChange={(e) => updateClip(selectedClip.id, { filter: e.target.value as FilterType })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
+{FILTERS.map((f) => (<option key={f.id} value={f.id}>{f.label}</option>))}
+</select>
+</label>
+<p className="text-[11px] leading-relaxed text-slate-500">{FILTERS.find((f) => f.id === (selectedClip.filter || 'none'))?.desc}</p>
                 {isCover && (
                   <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-2">
                     <p className="text-[11px] font-semibold text-cyan-200">✂️ Encuadre (modo Recortar)</p>
@@ -2402,11 +2782,11 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
                 )}
                 <label className="block select-none text-xs text-slate-400">Fade in: {selectedClip.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedClip.fadeIn} onChange={(e) => updateClip(selectedClip.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade out: {selectedClip.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedClip.fadeOut} onChange={(e) => updateClip(selectedClip.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
-                <button onClick={() => toggleSeparateAudio(selectedClip)} disabled={!selectedClip.hasAudio}
-                  className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${audioTracks.some((t) => t.sourceVideoId === selectedClip.id) ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'} disabled:opacity-40`}
-                  title={!selectedClip.hasAudio ? 'Este video no tiene audio' : 'Alternar entre audio integrado y pista separada'}>
-                  {audioTracks.some((t) => t.sourceVideoId === selectedClip.id) ? '🎵 Audio separado del video (reintegrar)' : '🎵 Separar audio de video'}
-                </button>
+                <button onClick={() => cycleClipAudio(selectedClip)} disabled={!selectedClip.hasAudio && clipAudioMode(selectedClip) === 'integrated'}
+className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${clipAudioMode(selectedClip) === 'linked' ? 'bg-green-500/15 text-green-300 border border-green-400/40 hover:bg-green-500/25' : clipAudioMode(selectedClip) === 'released' ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'} disabled:opacity-40`}
+title="Cambiar dónde vive el audio de este clip">
+{clipAudioMode(selectedClip) === 'linked' ? '🔗 Audio vinculado a la pista · liberar' : clipAudioMode(selectedClip) === 'released' ? '🔓 Audio liberado · re-vincular' : clipAudioMode(selectedClip) === 'muted' ? '🔇 Clip muteado · devolver audio al video' : '🎵 Audio en el video · enviar a la pista'}
+</button>
               
                 
               </div>
@@ -2443,7 +2823,12 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
             {selectedAudio && (
               <div className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audio: <span className="normal-case text-green-300">{selectedAudio.name}</span></p>
-                {selectedAudio.sourceVideoId && <p className="text-[11px] text-slate-500">🔗 Audio extraído de video</p>}
+                {selectedAudio.sourceVideoId && (
+<div className="space-y-1">
+<p className="text-[11px] text-slate-500">{selectedAudio.released ? '🔓 Liberado: edición independiente' : '🔗 Vinculado: sigue trim/move/velocidad/dividir del clip'}</p>
+<button onClick={() => toggleRelease(selectedAudio.id)} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-green-400 hover:text-green-300">{selectedAudio.released ? '🔗 Re-vincular al video' : '🔓 Liberar audio'}</button>
+</div>
+)}
                 <label className="block select-none text-xs text-slate-400">Volumen: {Math.round(selectedAudio.volume * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedAudio.volume} onChange={(e) => updateAudioTrack(selectedAudio.id, { volume: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade in: {selectedAudio.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeIn} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade out: {selectedAudio.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeOut} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
@@ -2526,19 +2911,19 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
         </div>
       </div>
       {/* ===== TIMELINE CON ZOOM ===== */}
-      <div className="relative flex min-h-[15rem] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 lg:flex-none lg:shrink-0">
+      <div className="relative flex min-h-[15rem] max-h-[36dvh] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 lg:max-h-none lg:flex-none lg:shrink-0" style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
                 <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/90 p-1 shadow-lg backdrop-blur lg:right-3 lg:top-3">
           <button onClick={() => zoomBy(1 / 1.25)} className="rounded px-2 py-0.5 text-xs font-bold text-slate-300 hover:bg-slate-800" title="Alejar">−</button>
           <span className="w-12 text-center font-mono text-[10px] text-cyan-300">{Math.round((pps / DEFAULT_PPS) * 100)}%</span>
           <button onClick={() => zoomBy(1.25)} className="rounded px-2 py-0.5 text-xs font-bold text-slate-300 hover:bg-slate-800" title="Acercar">+</button>
           <button onClick={() => { pendingAnchorRef.current = null; setPps(DEFAULT_PPS); }} className="rounded px-2 py-0.5 text-[10px] font-bold text-slate-400 hover:bg-slate-800" title="Restablecer zoom">1:1</button>
         </div>
-         <div ref={timelineScrollRef} className="min-h-0 flex-1 overflow-x-auto overflow-y-auto overscroll-contain p-2 lg:flex-none lg:max-h-none lg:overflow-y-hidden lg:p-4">
+         <div ref={timelineScrollRef} className="min-h-0 flex-1 overflow-x-auto overflow-y-auto overscroll-contain p-2 [touch-action:pan-x_pan-y] lg:flex-none lg:max-h-none lg:overflow-y-hidden lg:p-4">
           <div className="relative" style={{ width: Math.max(projectDuration * pps + 160, 700) }}>
             <div ref={rulerRef} className="sticky top-0 z-10 h-6 cursor-pointer select-none border-b border-slate-700 bg-slate-900/95 backdrop-blur-sm lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
               {ticks.map((s) => (<div key={s} className="absolute top-0 h-full" style={{ left: s * pps }}><div className="h-2 w-px bg-slate-600" /><span className="ml-1 text-[10px] text-slate-500">{s}s</span></div>))}
             </div>
-            <div className="relative mt-1.5 h-9 rounded-lg bg-slate-800/20 lg:mt-2">
+            <div className="relative mt-1.5 h-[calc(2.25rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:mt-2 lg:h-9">
               {imageOverlays.map((img) => {
                 const isSelected = img.id === selectedImageId; const width = (img.end - img.start) * pps; const left = img.start * pps;
                 return (<div key={img.id} onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'border-pink-400/60 bg-pink-500/10'}`} title="Arrastrá para mover · bordes para recortar">
@@ -2550,8 +2935,8 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
               {imageOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">🖼️ Pista de imagen — arrastrá una imagen o hacé clic en "+ Imagen"</div>)}
               <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">I</div>
             </div>
-            <div className="relative mt-2 h-12 rounded-lg bg-slate-800/20 lg:h-9">
-              {textOverlays.map((txt) => {
+            <div className="relative mt-2 h-[calc(3rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:h-9">
+{textOverlays.map((txt) => {
                 const isSelected = txt.id === selectedTextId; const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
                 return (<div key={txt.id} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover · bordes para recortar">
                   <p className="relative z-10 truncate text-[10px] font-semibold text-fuchsia-200 drop-shadow">T: {txt.text}</p>
@@ -2563,7 +2948,7 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
               <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">T</div>
             </div>
 
-<div className="relative mt-2 h-12 rounded-lg bg-slate-800/20 lg:h-9">
+<div className="relative mt-2 h-[calc(3rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:h-9">
 {videoOverlays.map((vo) => {
 const isSelected = vo.id === selectedVoId; const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
 return (<div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'border-amber-400/60 bg-amber-500/10'}`} title="Arrastrá para mover · bordes para recortar">
@@ -2576,7 +2961,7 @@ return (<div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'v
 <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">S</div>
 </div>
 
-            <div className="relative mt-1.5 h-16 rounded-lg bg-slate-800/40 lg:mt-2 lg:h-20">
+            <div className="relative mt-1.5 h-[calc(4rem*var(--tz,1))] rounded-lg bg-slate-800/40 lg:mt-2 lg:h-20">
               {clips.map((c, i) => {
                 const hasTransition = c.transition && c.transition.type !== 'none' && i < clips.length - 1;
                 return (
@@ -2626,19 +3011,25 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
               {clips.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de video</div>)}
             </div>
             {audioTracks.map((track) => {
-              const isSelected = track.id === selectedAudioId; const width = track.duration * pps; const left = track.start * pps;
-              return (
-                <div key={track.id} className="relative mt-1.5 h-10 rounded-lg bg-slate-800/20 lg:mt-2 lg:h-12" style={{ width: Math.max(projectDuration * pps + 160, 700) }}>
-                  <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'border-green-400/60 bg-green-500/10'}`} title="Arrastrá para mover · bordes para recortar">
-                                        <WaveformCanvas id={track.id} offset={track.offset} duration={track.duration} width={width} selected={isSelected} />
-                    <p className="relative z-10 truncate text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{track.sourceVideoId ? ' (video)' : ''}</p>
-                    <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />
-                    <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />
+const isSelected = track.id === selectedAudioId;
+const g = trackGeom(track);
+const linked = !!linkedInfo(track);
+const width = g.duration * pps; const left = g.start * pps;
+return (
+<div key={track.id} className="relative mt-1.5 h-[calc(2.5rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:mt-2 lg:h-12" style={{ width: Math.max(projectDuration * pps + 160, 700) }}>
+<div onClick={(e) => { e.stopPropagation(); selectOnly(track.id, 'audio'); }} onPointerDown={linked ? undefined : (e) => startOverlayTimeDrag(e, track.id, 'audio', 'move')} onPointerMove={linked ? undefined : moveOverlayTimeDrag} onPointerUp={linked ? undefined : endOverlayTimeDrag} onPointerCancel={linked ? undefined : endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 ${linked ? 'cursor-default border-green-400/40 bg-green-500/5' : isSelected ? 'cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado al video: sigue sus edits · tocá el candado para liberar' : 'Arrastrá para mover · bordes para recortar'}>
+<WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} width={width} selected={isSelected} />
+{track.sourceVideoId && (
+<button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>
+)}
+<p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
+                    {!linked && (<div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />)}
+{!linked && (<div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />)}
                   </div>
                 </div>
               );
             })}
-            {audioTracks.length === 0 && (<div className="mt-1.5 flex h-10 items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-800/20 text-xs text-slate-600 lg:mt-2 lg:h-12">🎵 Pista de audio — arrastrá un MP3/WAV o hacé clic en "+ Audio"</div>)}
+            {audioTracks.length === 0 && (<div className="mt-1.5 flex h-[calc(2.5rem*var(--tz,1))] items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-800/20 text-xs text-slate-600 lg:mt-2 lg:h-12">🎵 Pista de audio — arrastrá un MP3/WAV o hacé clic en "+ Audio"</div>)}
             <div ref={playheadLineRef} className="pointer-events-none absolute bottom-0 top-0 z-20" style={{ left: 0 }}>
               <div className="h-full w-px bg-cyan-400" />
               <div className="absolute -left-[5px] top-0 h-2.5 w-2.5 rotate-45 rounded-[2px] bg-cyan-400" />
