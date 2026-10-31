@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 import { toBlobURL } from '@ffmpeg/util';
 import { putAsset, getAsset, saveProject, loadProject, clearProject, StoredProject } from '@/lib/projectStore';
 import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles, IconPlayCorel, IconPauseCorel, Icon480p, IconSuperponer } from './icons';
+import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, asrSpeedFactor, readAsrPref, writeAsrPref, decodeSegment16k, transcribeSegment, groupWordsIntoCaptions } from './asr';
+
 
 type TransitionType =
   | 'none' | 'fade' | 'dissolve' | 'fadeblack' | 'fadewhite' | 'fadegrays' | 'fadefast' | 'fadeslow'
@@ -43,7 +45,8 @@ fadeIn: number; fadeOut: number; muted: boolean; shape: OverlayShape; hasAudio?:
 type TextOverlay = {
   id: string; text: string; start: number; end: number; x: number; y: number; size: number; bold: boolean;
   font: 'sans' | 'serif' | 'mono' | 'roboto' | 'playfair' | 'montserrat' | 'opensans' | 'lato' | 'oswald' | 'raleway' | 'poppins' | 'merriweather' | 'nunito';
-  color: string; fadeIn: number; fadeOut: number;
+  color: string; fadeIn: number; fadeOut: number; outline?: boolean;
+kind?: 'texto' | 'subtitulo';
 };
 type AudioTrack = {
   id: string; assetId: string; name: string; url: string; duration: number; offset: number; start: number;
@@ -513,6 +516,81 @@ function AudioElement({ track, onReady, onCleanup }: { track: AudioTrack; onRead
   return <audio ref={ref} src={track.url} preload="auto" className="hidden" />;
 }
 
+function SubtitleModal({ clipDuration, isPlus, isMobile, onCancel, onConfirm }: {
+clipDuration: number; isPlus: boolean; isMobile: boolean;
+onCancel: () => void;
+onConfirm: (model: (typeof ASR_MODELS)[number], lang: AsrLanguage, remember: boolean) => void;
+}) {
+const pref = readAsrPref();
+const [modelId, setModelId] = useState<AsrModelId>(() => {
+const wanted = pref?.model ?? (isMobile ? 'tiny' : 'base');
+const m = ASR_MODELS.find((x) => x.id === wanted);
+if (!m) return 'base';
+if ((m.plus && !isPlus) || (isMobile && m.factorMobile >= 999)) return isMobile ? 'tiny' : 'base';
+return m.id;
+});
+const [lang, setLang] = useState<AsrLanguage>(pref?.lang ?? 'es');
+const [remember, setRemember] = useState(true);
+const downloaded = asrDownloadedModels();
+const model = ASR_MODELS.find((m) => m.id === modelId)!;
+const locked = (m: (typeof ASR_MODELS)[number]) => (m.plus && !isPlus) || (isMobile && m.factorMobile >= 999);
+const factor = isMobile ? model.factorMobile : model.factorDesktop;
+const est = clipDuration * asrSpeedFactor(model.id, isMobile, factor);
+const fmtEst = (s: number) => (s >= 900 ? '—' : s >= 90 ? `≈ ${Math.round(s / 60)} min` : `≈ ${Math.max(1, Math.round(s))} s`);
+useEffect(() => {
+const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
+window.addEventListener('keydown', onKey);
+return () => window.removeEventListener('keydown', onKey);
+}, [onCancel]);
+return (
+<div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm" onClick={onCancel}>
+<div className="flex max-h-[88vh] w-[min(94vw,32rem)] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl shadow-fuchsia-500/10" onClick={(e) => e.stopPropagation()}>
+<div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+<h2 className="text-sm font-black text-white">🎙 Subtítulos automáticos</h2>
+<button onClick={onCancel} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white" title="Cerrar">✕</button>
+</div>
+<div className="space-y-3 overflow-y-auto p-4">
+<p className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[11px] leading-relaxed text-cyan-200">🔒 Whisper corre 100% en tu dispositivo: tu voz nunca sale de esta pestaña. La primera vez por modelo se descarga; después queda en caché (✓).</p>
+<div className="grid grid-cols-2 gap-2">
+{ASR_MODELS.map((m) => {
+const dis = locked(m);
+const sel = modelId === m.id;
+const f = isMobile ? m.factorMobile : m.factorDesktop;
+const e = clipDuration * asrSpeedFactor(m.id, isMobile, f);
+return (
+<button key={m.id} disabled={dis} onClick={() => setModelId(m.id)}
+className={`relative rounded-xl border p-2.5 text-left transition ${sel ? 'border-fuchsia-400 bg-fuchsia-500/15 ring-1 ring-fuchsia-400' : dis ? 'border-slate-800 bg-slate-900/40 opacity-60' : 'border-slate-700 bg-slate-900/60 hover:border-slate-500'}`}>
+{m.plus && !isPlus && <span className="absolute -right-1.5 -top-1.5 text-xs">🔒</span>}
+<div className="flex items-center gap-1.5 text-sm font-black text-white">{m.icon} {m.label}</div>
+<div className="mt-0.5 text-[10px] text-amber-300">{'★'.repeat(m.stars)}{'☆'.repeat(5 - m.stars)}</div>
+<p className="mt-1 text-[10px] leading-snug text-slate-400">{m.desc}</p>
+<p className="mt-1 text-[10px] font-semibold text-slate-300">{downloaded.includes(m.id) ? '✓ ya en tu equipo' : `↓ ~${m.mb} MB`} · {f >= 999 ? '—' : fmtEst(e)}</p>
+{m.plus && !isPlus && <p className="mt-0.5 text-[9px] text-slate-500">Requiere Clipedia Plus</p>}
+{isMobile && f >= 999 && <p className="mt-0.5 text-[9px] text-slate-500">En el celular: usalo desde la PC</p>}
+</button>
+);
+})}
+</div>
+{isPlus && (<p className="text-[10px] text-amber-200">🎁 Beta privada: modelos Plus desbloqueados temporalmente.</p>)}
+<label className="block text-xs font-semibold text-slate-300">Idioma del audio
+<select value={lang} onChange={(e) => setLang(e.target.value as AsrLanguage)} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+{ASR_LANGS.map((l) => (<option key={l.id} value={l.id}>{l.label}</option>))}
+</select>
+</label>
+<label className="flex items-center gap-2 text-[11px] text-slate-400">
+<input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="accent-fuchsia-400" />
+Recordar mi elección
+</label>
+</div>
+<div className="flex gap-2 border-t border-slate-800 bg-slate-950/60 px-4 py-3">
+<button onClick={onCancel} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-bold text-slate-200 transition-colors hover:border-slate-500">Cancelar</button>
+<button onClick={() => onConfirm(model, lang, remember)} disabled={locked(model)} className="flex-1 rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-4 py-2.5 text-sm font-black text-white transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50">Generar · {fmtEst(est)}</button>
+</div>
+</div>
+</div>
+);
+}
+
 export default function Studio() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [imageOverlays, setImageOverlays] = useState<ImageOverlay[]>([]);
@@ -544,6 +622,8 @@ export default function Studio() {
   const [previewTransitions, setPreviewTransitions] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
 const [importOpen, setImportOpen] = useState(false);
+const [subtitleFor, setSubtitleFor] = useState<string | null>(null);
+const [asrProgress, setAsrProgress] = useState<{ phase: 'model' | 'transcribe'; pct: number } | null>(null);
 const [proxiesOn, setProxiesOn] = useState(false);
   useEffect(() => { setProxiesOn(proxiesEnabled); }, []);
 
@@ -853,6 +933,8 @@ c.muted = true;
 }
 
         const rt: TextOverlay[] = proj.textOverlays || [];
+// Migración: los subtítulos de rondas anteriores (outline=true) pasan a la pista SUB
+rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'subtitulo'; });
         if (cancelled) return;
         if (rc.length || ri.length || rt.length || ra.length || rv.length || missing) {
           applyingRef.current = true;
@@ -1300,6 +1382,8 @@ const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url :
   const selectedClip = clips.find((c) => c.id === selectedId) ?? null;
   const selectedImage = imageOverlays.find((t) => t.id === selectedImageId) ?? null;
   const selectedText = textOverlays.find((t) => t.id === selectedTextId) ?? null;
+const subtitleOverlays = textOverlays.filter((t) => t.kind === 'subtitulo');
+const plainTextOverlays = textOverlays.filter((t) => t.kind !== 'subtitulo');
   const selectedAudio = audioTracks.find((t) => t.id === selectedAudioId) ?? null;
   const selectedVo = videoOverlays.find((v) => v.id === selectedVoId) ?? null;
 
@@ -1801,6 +1885,11 @@ showToast('🎵 Audio vinculado en la pista de audio', 'info');
   function updateClip(id: string, patch: Partial<Clip>) { setClips((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c))); }
   function updateImageOverlay(id: string, patch: Partial<ImageOverlay>) { setImageOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
   function updateTextOverlay(id: string, patch: Partial<TextOverlay>) { setTextOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
+function applyStyleToAllSubtitles(src: TextOverlay) {
+const total = textOverlaysRef.current.filter((t) => t.kind === 'subtitulo').length;
+setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline } : t)));
+showToast(`📑 Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info');
+}
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
 function updateVideoOverlay(id: string, patch: Partial<VideoOverlay>) { setVideoOverlays((prev) => prev.map((v) => (v.id === id ? { ...v, ...patch } : v))); }
   function selectOnly(id: string, type: 'clip' | 'image' | 'text' | 'audio' | 'video') {
@@ -2060,6 +2149,41 @@ e.target.value = '';
     setTextOverlays((prev) => [...prev, newOverlay]); setSelectedTextId(newOverlay.id);
     showToast('✏️ Texto agregado — editálo en el panel de propiedades', 'info');
   }
+
+async function generateSubtitles(clip: Clip, model: (typeof ASR_MODELS)[number], lang: AsrLanguage, remember: boolean) {
+setSubtitleFor(null);
+if (remember) writeAsrPref(model.id, lang);
+setAsrProgress({ phase: 'model', pct: 0 });
+try {
+const audio = await decodeSegment16k(clip.url, clip.trimStart, clip.trimEnd);
+if (!audio) { setAsrProgress(null); showToast('⚠️ No se pudo extraer el audio de este clip', 'warn'); return; }
+const words = await transcribeSegment({
+modelId: model.id, hf: model.hf, language: lang, audio,
+onModelProgress: (pct) => setAsrProgress(pct >= 100 ? { phase: 'transcribe', pct: 0 } : { phase: 'model', pct }),
+});
+setAsrProgress(null);
+if (!words.length) { showToast('⚠️ Whisper no encontró habla en este clip', 'warn'); return; }
+const caps = groupWordsIntoCaptions(words);
+if (!caps.length) { showToast('⚠️ La transcripción no produjo subtítulos agrupables', 'warn'); return; }
+const idx = clipsRef.current.findIndex((c) => c.id === clip.id);
+if (idx < 0) return;
+const base = videoStartsRef.current[idx];
+const speed = clip.speed || 1;
+const subs: TextOverlay[] = caps.map((cp) => ({
+id: uid(), text: cp.text,
+start: base + cp.start / speed, end: base + cp.end / speed,
+x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.9, size: Math.round(REF_HEIGHT * 0.05),
+bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, outline: true, kind: 'subtitulo',
+}));
+setTextOverlays((prev) => [...prev, ...subs]);
+showToast(`✅ ${subs.length} subtítulos con ${model.label} · editá cualquier bloque en la pista T`, 'info', 5000);
+} catch (e: any) {
+console.error('[ASR]', e);
+setAsrProgress(null);
+showToast(`❌ Subtítulos: ${e?.message || 'error'} — revisá la consola`, 'warn', 6000);
+}
+}
+
   function openExportModal() {
     if (projectDuration === 0) { showToast('⚠️ No hay nada en la timeline para exportar', 'warn'); return; }
     setShowExportModal(true);
@@ -2246,28 +2370,31 @@ currentVideoLabel = `vo${i}_out`;
 }
 
       let finalVideoLabel = currentVideoLabel;
-      textOverlays.forEach((txt, i) => {
-        const variant = FONT_VARIANTS[txt.font];
-        let fontFile = (txt.bold ? variant.bold : variant.regular).split('/').pop() as string;
-        if (!loadedFontFiles.has(fontFile)) {
-          const familyRegular = variant.regular.split('/').pop() as string;
-          if (loadedFontFiles.has(familyRegular)) fontFile = familyRegular;
-          else {
-            const anyFont = Array.from(loadedFontFiles)[0];
-            if (!anyFont) { filterComplex += `[${finalVideoLabel}]null[txt${i}_out];`; finalVideoLabel = `txt${i}_out`; return; }
-            fontFile = anyFont;
-          }
-        }
-        const textEscaped = txt.text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
-        const S = txt.start; const E = txt.end;
-        let alphaExpr = '';
-        if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S})/${txt.fadeIn},(${E}-t)/${txt.fadeOut})))'`;
-        else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S})/${txt.fadeIn}))'`;
-        else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E}-t)/${txt.fadeOut}))'`;
-        filterComplex += `[${finalVideoLabel}]drawtext=text='${textEscaped}':x=${txt.x}-text_w/2:y=${txt.y}-text_h/2:fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${alphaExpr}:enable='between(t,${S},${E})'[txt${i}_out];`;
-        finalVideoLabel = `txt${i}_out`;
-      });
-      filterComplex += `[${finalVideoLabel}]scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2[finalv];`;
+textOverlays.forEach((txt, i) => {
+const variant = FONT_VARIANTS[txt.font];
+let fontFile = (txt.bold ? variant.bold : variant.regular).split('/').pop() as string;
+if (!loadedFontFiles.has(fontFile)) {
+const familyRegular = variant.regular.split('/').pop() as string;
+if (loadedFontFiles.has(familyRegular)) fontFile = familyRegular;
+else {
+const anyFont = Array.from(loadedFontFiles)[0];
+if (!anyFont) { filterComplex += `[${finalVideoLabel}]null[txt${i}_out];`; finalVideoLabel = `txt${i}_out`; return; }
+fontFile = anyFont;
+}
+}
+const textEscaped = txt.text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
+const S = txt.start; const E = txt.end;
+let alphaExpr = '';
+if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S})/${txt.fadeIn},(${E}-t)/${txt.fadeOut})))'`;
+else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S})/${txt.fadeIn}))'`;
+else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E}-t)/${txt.fadeOut}))'`;
+const outline = (txt as any).outline ? ':borderw=4:bordercolor=black' : '';
+// CADENA MARGARITA: cada drawtext consume el label anterior y produce el suyo.
+// [basev] es un pad de UN solo uso: reutilizarlo = "matches no streams".
+filterComplex += `[${finalVideoLabel}]drawtext=text='${textEscaped}':x=${txt.x}-text_w/2:y=${txt.y}-text_h/2:fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S},${E})'[txt${i}_out];`;
+finalVideoLabel = `txt${i}_out`;
+});
+filterComplex += `[${finalVideoLabel}]scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2[finalv];`;
 
       // ===== AUDIO: integrado con acrossfade que espeja el xfade de video =====
       const clipAudioLabels: string[] = [];
@@ -2397,6 +2524,16 @@ return css === 'none' ? undefined : css;
     void histVersion;
   void filmstripVersion;
 
+// Bloque dibujador compartido por la pista SUB y la pista T
+const renderTextBlock = (txt: TextOverlay) => {
+const isSelected = txt.id === selectedTextId; const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
+return (<div key={txt.id} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover · bordes para recortar">
+<p className="relative z-10 truncate text-[10px] font-semibold text-fuchsia-200 drop-shadow">{txt.kind === 'subtitulo' ? '💬' : 'T:'} {txt.text}</p>
+<div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
+<div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
+</div>);
+};
+
   const exportModal = showExportModal && typeof document !== 'undefined' ? createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-2xl rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 shadow-2xl shadow-cyan-500/10 overflow-hidden max-h-[90vh] flex flex-col">
@@ -2512,8 +2649,32 @@ const transitionPickerUI = transitionPicker !== null && clips[transitionPicker] 
   />,
   document.body
 ) : null;
-
-  return (
+const subtitleClip = clips.find((c) => c.id === subtitleFor) ?? null;
+const subtitleUI = subtitleClip ? createPortal(
+<SubtitleModal
+clipDuration={effLen(subtitleClip)}
+isPlus={isPlus}
+isMobile={IS_MOBILE}
+onCancel={() => setSubtitleFor(null)}
+onConfirm={(m, l, r) => generateSubtitles(subtitleClip, m, l, r)}
+/>,
+document.body
+) : null;
+const asrProgressUI = asrProgress ? createPortal(
+<div className="fixed inset-0 z-[170] flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm">
+<div className="w-[min(92vw,24rem)] rounded-2xl border border-fuchsia-400/40 bg-slate-950/95 px-5 py-4 shadow-2xl shadow-fuchsia-500/20">
+<p className="text-sm font-bold text-fuchsia-200">
+{asrProgress.phase === 'model' ? `⬇️ Descargando/cargando modelo… ${asrProgress.pct}%` : '🎙 Transcribiendo audio… (Whisper escuchando en tu equipo)'}
+</p>
+<div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+<div className={`h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-cyan-400 transition-all duration-200 ${asrProgress.phase === 'transcribe' ? 'w-1/3 animate-pulse' : ''}`} style={asrProgress.phase === 'model' ? { width: `${asrProgress.pct}%` } : undefined} />
+</div>
+<p className="mt-2 text-[11px] text-slate-400">La interfaz no miente: si dice transcribiendo, está escuchando. 🔒 Nada sale de tu pestaña.</p>
+</div>
+</div>,
+document.body
+) : null;
+return (
         <div className="flex flex-col gap-2 p-2 lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:overflow-hidden lg:p-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <style>{FONT_FACE_CSS}</style>
       {/* ===== BARRA DE ACCIONES MÓVIL (Nuevo + Exportar) ===== */}
@@ -2543,6 +2704,8 @@ const transitionPickerUI = transitionPicker !== null && clips[transitionPicker] 
         </div>
       )}
       {exportModal}
+{subtitleUI}
+{asrProgressUI}
       {transitionPickerUI}
       <div className="pointer-events-none fixed inset-0 z-[100] flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
@@ -2627,7 +2790,7 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
                       className="pointer-events-auto absolute cursor-move touch-none select-none"
                       style={{ left: activeText.x, top: activeText.y, transform: 'translate(-50%, -50%)', opacity: textAlpha }}
                       title="Arrastrá para mover el texto">
-                      <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: '0 2px 10px rgba(0,0,0,0.85)' }}>
+                      <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: activeText.outline ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)' : '0 2px 10px rgba(0,0,0,0.85)' }}>
                         {activeText.text}
                       </p>
                     </div>
@@ -2772,6 +2935,11 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
 </select>
 </label>
 <p className="text-[11px] leading-relaxed text-slate-500">{FILTERS.find((f) => f.id === (selectedClip.filter || 'none'))?.desc}</p>
+<button onClick={() => setSubtitleFor(selectedClip.id)} disabled={!selectedClip.hasAudio}
+className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20 disabled:opacity-40"
+title={!selectedClip.hasAudio ? 'Este clip no tiene audio para transcribir' : 'Generar subtítulos con Whisper, 100% en tu dispositivo'}>
+🎙 Subtítulos automáticos
+</button>
                 {isCover && (
                   <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-2">
                     <p className="text-[11px] font-semibold text-cyan-200">✂️ Encuadre (modo Recortar)</p>
@@ -2816,6 +2984,12 @@ title="Cambiar dónde vive el audio de este clip">
                 <label className="block select-none text-xs text-slate-400">Tamaño: {selectedText.size}px<input type="range" min={16} max={400} step={2} value={selectedText.size} onChange={(e) => updateTextOverlay(selectedText.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade in: {selectedText.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeIn} onChange={(e) => updateTextOverlay(selectedText.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade out: {selectedText.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeOut} onChange={(e) => updateTextOverlay(selectedText.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+
+{selectedText.kind === 'subtitulo' && (
+<button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, fades y posición de este subtítulo a todos los de la pista SUB">
+📑 Aplicar cambio a todos los subtítulos
+</button>
+)}
                 <p className="text-[11px] leading-relaxed text-slate-500"> De {selectedText.start.toFixed(1)}s a {selectedText.end.toFixed(1)}s</p>
                 <button onClick={() => { setTextOverlays((prev) => prev.filter((a) => a.id !== selectedText.id)); setSelectedTextId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar texto</button>
               </div>
@@ -2923,6 +3097,13 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
             <div ref={rulerRef} className="sticky top-0 z-10 h-6 cursor-pointer select-none border-b border-slate-700 bg-slate-900/95 backdrop-blur-sm lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
               {ticks.map((s) => (<div key={s} className="absolute top-0 h-full" style={{ left: s * pps }}><div className="h-2 w-px bg-slate-600" /><span className="ml-1 text-[10px] text-slate-500">{s}s</span></div>))}
             </div>
+
+{subtitleOverlays.length > 0 && (
+<div className="relative mt-1.5 h-[calc(3rem*var(--tz,1))] rounded-lg bg-fuchsia-500/5 lg:mt-2 lg:h-9">
+{subtitleOverlays.map(renderTextBlock)}
+<div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-fuchsia-300">SUB</div>
+</div>
+)}
             <div className="relative mt-1.5 h-[calc(2.25rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:mt-2 lg:h-9">
               {imageOverlays.map((img) => {
                 const isSelected = img.id === selectedImageId; const width = (img.end - img.start) * pps; const left = img.start * pps;
@@ -2936,17 +3117,10 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
               <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">I</div>
             </div>
             <div className="relative mt-2 h-[calc(3rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:h-9">
-{textOverlays.map((txt) => {
-                const isSelected = txt.id === selectedTextId; const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
-                return (<div key={txt.id} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover · bordes para recortar">
-                  <p className="relative z-10 truncate text-[10px] font-semibold text-fuchsia-200 drop-shadow">T: {txt.text}</p>
-                  <div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
-                  <div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
-                </div>);
-              })}
-              {textOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">T Pista de texto — hacé clic en "+ Texto"</div>)}
-              <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">T</div>
-            </div>
+{plainTextOverlays.map(renderTextBlock)}
+{plainTextOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">T Pista de texto — hacé clic en "+ Texto"</div>)}
+<div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">T</div>
+</div>
 
 <div className="relative mt-2 h-[calc(3rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:h-9">
 {videoOverlays.map((vo) => {
