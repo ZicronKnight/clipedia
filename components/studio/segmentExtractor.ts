@@ -2,7 +2,7 @@
 // Nunca carga el archivo entero: parsea el moov, pide con slice() solo los
 // bytes de la ventana, y entrega los samples como stream Annex-B H.264
 // (SPS/PPS + start codes), listo para que FFmpeg.wasm lo decoda directo.
-export interface SegmentResult { annexB: Uint8Array; fps: number; fetchedBytes: number; ms: number; samples: number }
+export interface SegmentResult { annexB: Uint8Array; fps: number; fetchedBytes: number; ms: number; samples: number; firstTs: number }
 
 function loadMp4Box(): Promise<any> {
 return new Promise((resolve, reject) => {
@@ -142,5 +142,5 @@ const totalDur = wanted.reduce((a, s) => a + (s.duration || 0), 0) / ts;
 const fps = totalDur > 0 ? wanted.length / totalDur : 30;
 log(`✅ Extracción: ${(fetchedBytes / 1048576).toFixed(1)}MB leídos de ${(file.size / 1073741824).toFixed(2)}GB · ${wanted.length} samples · ${Math.round(performance.now() - tStart)}ms`);
 log(`✅ Stream Annex-B H.264: ${(annexB.byteLength / 1048576).toFixed(1)}MB · ~${fps.toFixed(2)}fps (sin recodificar, sin mp4-muxer)`);
-return { annexB, fps, fetchedBytes, ms: performance.now() - tStart, samples: wanted.length };
+return { annexB, fps, fetchedBytes, ms: performance.now() - tStart, samples: wanted.length, firstTs: wanted[0].dts / ts };
 }

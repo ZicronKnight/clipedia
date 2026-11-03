@@ -5,6 +5,7 @@ import { toBlobURL } from '@ffmpeg/util';
 import { putAsset, getAsset, saveProject, loadProject, clearProject, StoredProject } from '@/lib/projectStore';
 import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles, IconPlayCorel, IconPauseCorel, Icon480p, IconSuperponer } from './icons';
 import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, asrSpeedFactor, readAsrPref, writeAsrPref, decodeSegment16k, transcribeSegment, groupWordsIntoCaptions } from './asr';
+import { extractSegment } from './segmentExtractor';
 
 
 type TransitionType =
@@ -24,9 +25,10 @@ type TransitionType =
 type Clip = {
   id: string; assetId: string; name: string; url: string; duration: number; trimStart: number; trimEnd: number;
   rotate: 0 | 90 | 180 | 270; speed: number; fadeIn: number; fadeOut: number; muted: boolean;
-  cropX: number; cropY: number;
-  hasAudio?: boolean;
-  filter?: FilterType;
+cropX: number; cropY: number;
+hasAudio?: boolean;
+bytes?: number;
+filter?: FilterType;
   transition?: { type: TransitionType; duration: number };
 };
 type ImageOverlay = {
@@ -73,6 +75,10 @@ const DRAG_THRESHOLD = 5;
 const WAVEFORM_SAMPLES = 150;
 const HISTORY_LIMIT = 60;
 const PREVIEW_PROXY_HEIGHT = 360;
+const SKIP_HEAVY_BYTES = 2 * 1024 * 1024 * 1024; // >2GB: sin extracción de audio ni proxy al importar
+const SAFE_PROC_BYTES = 1.5 * 1024 * 1024 * 1024; // >1.5GB por clip: snippets y export se niegan (techo MEMFS de wasm)
+let lastSegmentReason = '';
+const EXTRACT_THRESHOLD = 300 * 1024 * 1024; // >300MB: el snippet se alimenta por byte-ranges (Annex-B), no con el archivo entero
 const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 const UI_HZ = IS_MOBILE ? 15 : 30;
 
@@ -102,6 +108,7 @@ const previewLogs: string[] = [];
 const snippetAudioMap = new Map<string, boolean>();
 
 const proxyUrlMap = new Map<string, string>();
+const clipBlobMap = new Map<string, Blob>();
 function initialProxies(): boolean {
   if (typeof window === 'undefined') return IS_MOBILE;
   try {
@@ -622,6 +629,8 @@ export default function Studio() {
   const [previewTransitions, setPreviewTransitions] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
 const [importOpen, setImportOpen] = useState(false);
+const [importStep, setImportStep] = useState<string | null>(null);
+const [importProgress, setImportProgress] = useState<{ file: string; step: string; idx: number; total: number } | null>(null);
 const [subtitleFor, setSubtitleFor] = useState<string | null>(null);
 const [asrProgress, setAsrProgress] = useState<{ phase: 'model' | 'transcribe'; pct: number } | null>(null);
 const [proxiesOn, setProxiesOn] = useState(false);
@@ -888,8 +897,10 @@ container.removeEventListener('touchcancel', onEnd);
                 for (const c of proj.clips || []) {
           const blob = c.assetId ? await getAsset(c.assetId) : null;
           if (!blob) { missing++; continue; }
-          c.url = URL.createObjectURL(blob);
-                    if (proxiesEnabled && c.assetId && !proxyUrlMap.has(c.assetId)) {
+c.url = URL.createObjectURL(blob);
+clipBlobMap.set(c.id, blob);
+if (c.bytes === undefined) c.bytes = blob.size;
+if (proxiesEnabled && c.assetId && !proxyUrlMap.has(c.assetId)) {
             const pb = await getAsset(`proxy:v2:${c.assetId}`);
             if (pb) proxyUrlMap.set(c.assetId, URL.createObjectURL(pb));
             else enqueueProxy(c.assetId, c.url);
@@ -1050,9 +1061,43 @@ ff.on('log', ({ message }: any) => { previewLogs.push(String(message)); if (prev
     previewFFRef.current = ff;
     return ff;
   }
+
+// ===== FASE 6 · PASO 2: entrada de FFmpeg por byte-ranges para clips pesados =====
+// Escalera de caminos: (1) clips chicos → archivo entero en MEMFS;
+// (2) clips grandes → byte-ranges Annex-B (RAM = solo la ventana);
+// (3) si byte-ranges falla y el clip aún entra en la zona segura de MEMFS
+//     (≤1.5GB), fallback a archivo entero; (4) si no, skip honesto con razón.
+async function segmentInputFor(clip: Clip, t0: number, t1: number, ff: any, base: string): Promise<{ mode: 'mp4' | 'h264'; fps: number; lead: number } | null> {
+let srcBlob: Blob;
+try { srcBlob = await (await fetch(clip.url)).blob(); } catch { lastSegmentReason = 'no se pudo abrir el blob del clip'; return null; }
+const bytes = clip.bytes ?? srcBlob.size;
+// (1) Clips chicos: camino clásico de archivo entero
+if (bytes <= EXTRACT_THRESHOLD) {
+await ff.writeFile(`${base}.mp4`, new Uint8Array(await srcBlob.arrayBuffer()));
+return { mode: 'mp4', fps: 30, lead: 0 };
+}
+// (2) Clips grandes: byte-ranges (el archivo entero jamás entra a RAM)
+let reason = '';
+const seg = await extractSegment(srcBlob, t0, t1, (s) => { console.log('[Segment]', s); if (s.startsWith('⚠️')) reason = s; });
+if (seg) {
+await ff.writeFile(`${base}.h264`, seg.annexB);
+return { mode: 'h264', fps: Math.max(seg.fps || 30, 1), lead: seg.firstTs };
+}
+// (3) Fallback: si el clip entra en la zona segura de MEMFS, archivo entero
+if (bytes <= SAFE_PROC_BYTES) {
+console.warn('[Segment] byte-ranges falló; fallback a archivo entero para', clip.name);
+await ff.writeFile(`${base}.mp4`, new Uint8Array(await srcBlob.arrayBuffer()));
+return { mode: 'mp4', fps: 30, lead: 0 };
+}
+// (4) Skip honesto con razón visible
+lastSegmentReason = reason || 'razón desconocida (revisá consola [Segment])';
+return null;
+}
+
   async function renderTransitionSnippet(i: number, key: string) {
-    const list = clipsRef.current;
-    const a = list[i]; const b = list[i + 1];
+const list = clipsRef.current;
+const a = list[i]; const b = list[i + 1];
+
     const tr = a.transition!;
     const type = XFADE_VALID.has(tr.type) ? tr.type : 'fade';
     const d = clamp(tr.duration, 0, Math.min(effLen(a), effLen(b)));
@@ -1076,17 +1121,29 @@ const fB = specToFF(FILTER_MAP[b.filter || 'none'] || {});
 // triangular (paridad con el export). El snippet vuelve a ser video puro:
 // wasm más liviano en móvil (decisión de la fundadora, 29/10).
 const audioChain = '';
+// PASO 2: cada entrada se resuelve por byte-ranges (pesado) o archivo entero (liviano)
+const segA = await segmentInputFor(a, aStart, a.trimEnd, ff, 'pa');
+if (!segA) { showToast(`⚠️ "${a.name}": ${lastSegmentReason || 'no se pudo segmentar'} · preview real salteado.`, 'warn', 7000); throw new Error('SKIP: segmentación A falló'); }
+const segB = await segmentInputFor(b, b.trimStart, bEnd, ff, 'pb');
+if (!segB) { showToast(`⚠️ "${b.name}": ${lastSegmentReason || 'no se pudo segmentar'} · preview real salteado.`, 'warn', 7000); throw new Error('SKIP: segmentación B falló'); }
+// En modo h264 el stream arranca en firstTs (keyframe previo): corremos el trim
+// para que la ventana pedida quede alineada al timeline del segmento.
+const aT0 = segA.mode === 'h264' ? Math.max(aStart - segA.lead, 0) : aStart;
+const aT1 = segA.mode === 'h264' ? Math.max(a.trimEnd - segA.lead, aT0 + 0.04) : a.trimEnd;
+const bT0 = segB.mode === 'h264' ? Math.max(b.trimStart - segB.lead, 0) : b.trimStart;
+const bT1 = segB.mode === 'h264' ? Math.max(bEnd - segB.lead, bT0 + 0.04) : bEnd;
 const filterComplex =
-`[0:v]trim=${aStart}:${a.trimEnd},setpts=(PTS-STARTPTS)/${a.speed},${rotFor(a)}fps=30,${fitFor(a)}${fA ? ',' + fA : ''}${aFadeOut}[pa];` +
-`[1:v]trim=${b.trimStart}:${bEnd},setpts=(PTS-STARTPTS)/${b.speed},${rotFor(b)}fps=30,${fitFor(b)}${fB ? ',' + fB : ''}${bFadeIn}[pb];` +
+`[0:v]trim=${aT0}:${aT1},setpts=(PTS-STARTPTS)/${a.speed},${rotFor(a)}fps=30,${fitFor(a)}${fA ? ',' + fA : ''}${aFadeOut}[pa];` +
+`[1:v]trim=${bT0}:${bT1},setpts=(PTS-STARTPTS)/${b.speed},${rotFor(b)}fps=30,${fitFor(b)}${fB ? ',' + fB : ''}${bFadeIn}[pb];` +
 audioChain +
 `[pa]format=yuv420p[pan];[pb]format=yuv420p[pbn];[pan][pbn]xfade=transition=${type}:duration=${d}:offset=0[finalv]`;
-    await ff.writeFile('pa.mp4', new Uint8Array(await (await fetch(a.url)).arrayBuffer()));
-    await ff.writeFile('pb.mp4', new Uint8Array(await (await fetch(b.url)).arrayBuffer()));
-                const outName = `prev_${Date.now()}.mp4`;
-    previewProgCtxRef.current = { d, active: true, startedAt: performance.now() };
-    try {
-      const code = await ff.exec(['-i', 'pa.mp4', '-i', 'pb.mp4', '-filter_complex', filterComplex, '-map', '[finalv]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', '-pix_fmt', 'yuv420p', '-r', '30', '-f', 'mp4', '-movflags', '+faststart', '-y', outName]);
+const inputs: string[] = [];
+inputs.push(...(segA.mode === 'mp4' ? ['-i', 'pa.mp4'] : ['-f', 'h264', '-framerate', segA.fps.toFixed(3), '-i', 'pa.h264']));
+inputs.push(...(segB.mode === 'mp4' ? ['-i', 'pb.mp4'] : ['-f', 'h264', '-framerate', segB.fps.toFixed(3), '-i', 'pb.h264']));
+const outName = `prev_${Date.now()}.mp4`;
+previewProgCtxRef.current = { d, active: true, startedAt: performance.now() };
+try {
+const code = await ff.exec([...inputs, '-filter_complex', filterComplex, '-map', '[finalv]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', '-pix_fmt', 'yuv420p', '-r', '30', '-f', 'mp4', '-movflags', '+faststart', '-y', outName]);
       if (code !== 0) throw new Error(`xfade preview terminó con código ${code} · ${previewLogs.slice(-4).join(' | ')}`);
 const data = await ff.readFile(outName);
 if (!data || data.length === 0) throw new Error(`Snippet vacío (el render no produjo archivo) · ${previewLogs.slice(-4).join(' | ')}`);
@@ -1108,7 +1165,7 @@ cache.delete(oldest);
       progressSeenRef.current = false;
       // Limpieza del FS SIN await: ningún yield entre el fin del exec y el apagado
       // del contexto → la barra no puede publicar un 100% fantasma en el handoff.
-      for (const f of ['pa.mp4', 'pb.mp4', outName]) { Promise.resolve(ff.deleteFile(f)).catch(() => {}); }
+      for (const f of ['pa.mp4', 'pb.mp4', 'pa.h264', 'pb.h264', outName]) { Promise.resolve(ff.deleteFile(f)).catch(() => {}); }
     }
   }
     function enqueueTransitionRenders() {
@@ -1154,12 +1211,12 @@ cache.delete(oldest);
       if (renderedThisRun > 0 && previewTransitionsRef.current && runId === previewRunIdRef.current) {
         showToast('✨ Transiciones reales listas en el preview', 'info');
       }
-    } catch (e) {
-      previewInFlightRef.current = null;
-      if (runId === previewRunIdRef.current) {
-        console.error('[PreviewTransitions] Error renderizando snippet:', e);
-        showToast('⚠️ No se pudo renderizar una transición real; seguimos con corte limpio', 'warn');
-      }
+} catch (e: any) {
+previewInFlightRef.current = null;
+if (runId === previewRunIdRef.current) {
+console.error('[PreviewTransitions] Error renderizando snippet:', e);
+if (!String(e?.message || '').startsWith('SKIP:')) showToast('⚠️ No se pudo renderizar una transición real; seguimos con corte limpio', 'warn');
+}
     } finally {
       // SIEMPRE liberamos el flag y relanzamos si quedó cola, aunque este run haya
       // muerto por cancel: ningún fantasma se lleva más las llaves de la cola. 👻🔑
@@ -1751,19 +1808,24 @@ v.play().catch(() => {});
     const images = files.filter((f) => f.type.startsWith('image/'));
     const audios = files.filter((f) => f.type.startsWith('audio/'));
     if (videos.length > 0) {
-      for (const f of videos) {
-        const url = URL.createObjectURL(f);
-        const meta = await probeVideoMeta(url);
+for (let vi = 0; vi < videos.length; vi++) {
+const f = videos[vi];
+const url = URL.createObjectURL(f);
+setImportProgress({ file: f.name, step: 'Leyendo metadatos…', idx: vi, total: videos.length });
+const meta = await probeVideoMeta(url);
         const duration = meta.duration;
         if (duration > 0) {
           if (meta.width >= 3000 || meta.height >= 3000) {
             showToast('🎥 Archivo 4K detectado: editar y exportar desde el navegador puede ser lento y requerir un PC de gama alta. Para un flujo más ágil, probá trabajando en 1080p.', 'warn', 8000);
           }
           const assetId = uid();
-          try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
-          const clipId = uid();
-          const audioData = await extractAudioFromVideo(url);
-          const newClip: Clip = { id: clipId, assetId, name: f.name, url, duration, trimStart: 0, trimEnd: duration, rotate: 0, speed: 1, fadeIn: 0, fadeOut: 0, muted: !!audioData, cropX: 0.5, cropY: 0.5, hasAudio: !!audioData, transition: { type: 'fade', duration: 0.5 } };
+setImportProgress({ file: f.name, step: 'Guardando en tu navegador…', idx: vi, total: videos.length });
+try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
+const clipId = uid();
+clipBlobMap.set(clipId, f);
+setImportProgress({ file: f.name, step: f.size > SKIP_HEAVY_BYTES ? 'Archivo muy pesado: salteando extracción de audio…' : 'Extrayendo audio…', idx: vi, total: videos.length });
+const audioData = f.size > SKIP_HEAVY_BYTES ? null : await extractAudioFromVideo(url);
+          const newClip: Clip = { id: clipId, assetId, name: f.name, url, duration, trimStart: 0, trimEnd: duration, rotate: 0, speed: 1, fadeIn: 0, fadeOut: 0, muted: !!audioData, cropX: 0.5, cropY: 0.5, hasAudio: !!audioData, bytes: f.size, transition: { type: 'fade', duration: 0.5 } };
 if (audioData) {
 audioDataMap.set(clipId, { channelData: audioData.channelData, sampleRate: audioData.sampleRate });
 const trackId = uid();
@@ -1772,8 +1834,10 @@ const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, u
 setAudioTracks((prev) => [...prev, linked]);
 }
                     setClips((prev) => [...prev, newClip]);
-          enqueueFilmstrip(assetId, url, duration);
-          enqueueProxy(assetId, url);
+setImportProgress({ file: f.name, step: 'Generando miniaturas…', idx: vi, total: videos.length });
+enqueueFilmstrip(assetId, url, duration);
+if (f.size <= SKIP_HEAVY_BYTES) enqueueProxy(assetId, url);
+else showToast('⚠️ Archivo >2GB: sin proxy ni waveform por memoria del navegador. Editar y previsualizar siguen funcionando con el original.', 'warn', 7000);
           showToast(audioData ? `🎬 Video "${f.name}" agregado · audio vinculado en la pista 🔗` : `🎬 Video "${f.name}" agregado (sin audio)`, 'info');
         }
       }
@@ -1798,12 +1862,13 @@ setAudioTracks((prev) => [...prev, linked]);
           const newTrack: AudioTrack = { id: uid(), assetId, name: f.name, url, duration: decoded.duration, offset: 0, start: playheadRef.current, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: [] };
           audioDataMap.set(newTrack.id, { channelData: decoded.channelData, sampleRate: decoded.sampleRate });
           newTrack.peaks = getPeaksForSegment(newTrack.id, 0, decoded.duration);
-          setAudioTracks((prev) => [...prev, newTrack]);
-          showToast(`🎵 Audio "${f.name}" agregado`, 'info');
-        }
-      }
-    }
-  }
+setAudioTracks((prev) => [...prev, newTrack]);
+showToast(`🎵 Audio "${f.name}" agregado`, 'info');
+}
+}
+}
+setImportProgress(null);
+}
 
   function toggleRelease(trackId: string) {
 const track = audioTracksRef.current.find((t) => t.id === trackId);
@@ -2190,8 +2255,10 @@ showToast(`❌ Subtítulos: ${e?.message || 'error'} — revisá la consola`, 'w
   }
 
   async function runExport() {
-    if (projectDuration === 0) return;
-    if (resInfo.plus && !isPlus) { showToast('🔒 Esta resolución requiere Clipedia Plus', 'warn'); return; }
+if (projectDuration === 0) return;
+const tooBig = clips.find((c) => (c.bytes ?? 0) > SAFE_PROC_BYTES);
+if (tooBig) { showToast(`❌ "${tooBig.name}" supera 1.5GB: el export en navegador todavía no puede procesarlo (pipeline streaming = Fase 6). Recortalo o usá un clip más liviano por ahora.`, 'warn', 9000); return; }
+if (resInfo.plus && !isPlus) { showToast('🔒 Esta resolución requiere Clipedia Plus', 'warn'); return; }
     setExporting(true);
     previewQueueRef.current = [];
     if (previewFFRef.current) { try { await previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
@@ -2534,6 +2601,20 @@ return (<div key={txt.id} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 
 </div>);
 };
 
+const importProgressUI = importProgress && typeof document !== 'undefined' ? createPortal(
+<div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm">
+<div className="w-[min(92vw,26rem)] rounded-2xl border border-cyan-400/40 bg-slate-950/95 px-5 py-4 shadow-2xl shadow-cyan-500/20">
+<p className="truncate text-sm font-bold text-cyan-200">📥 Importando {importProgress.idx + 1}/{importProgress.total}: {importProgress.file}</p>
+<p className="mt-1 text-xs text-slate-400">{importProgress.step}</p>
+<div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+<div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-cyan-400 to-violet-400" />
+</div>
+<p className="mt-2 text-[11px] text-slate-500">Los archivos pesados tardan en guardarse: es tu navegador trabajando, no la nube. 🔒</p>
+</div>
+</div>,
+document.body
+) : null;
+
   const exportModal = showExportModal && typeof document !== 'undefined' ? createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-2xl rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 shadow-2xl shadow-cyan-500/10 overflow-hidden max-h-[90vh] flex flex-col">
@@ -2704,6 +2785,7 @@ return (
         </div>
       )}
       {exportModal}
+{importProgressUI}
 {subtitleUI}
 {asrProgressUI}
       {transitionPickerUI}
