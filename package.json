@@ -15,6 +15,7 @@
     "@ffmpeg/util": "^0.12.2",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.3",
+    "mp4-muxer": "^5.2.2",
     "next": "16.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
