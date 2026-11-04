@@ -181,7 +181,7 @@ return null;
 // El ASC real del fuente es la ÚNICA verdad (el box mp4a puede mentir:
 // Blade Runner decía 44.1k/estéreo; el ASC dice 48k/5.1).
 export interface AudioSegmentDebug { codec: string; sr: number; ch: number; aot: number; freqIdx: number; chanCfg: number; ascHex: string; firstFrameHex: string; firstOffset: number; firstSize: number; adtsProbe: Uint8Array }
-export interface AudioSegmentResult { mp4: Uint8Array; fetchedBytes: number; ms: number; debug?: AudioSegmentDebug }
+export interface AudioSegmentResult { mp4: Uint8Array; fetchedBytes: number; ms: number; firstTs: number; debug?: AudioSegmentDebug }
 const ASC_FREQ_TABLE = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
 function parseASC(asc: Uint8Array): { aot: number; freqIdx: number; freq: number; chanCfg: number } {
 const bits: number[] = [];
@@ -281,5 +281,5 @@ const tsUs = Math.max(0, ((s.dts - dts0) / ts) * 1e6);
 muxer.finalize();
 const mp4 = new Uint8Array((muxer.target as any).buffer);
 log(`✅ Audio extraído: ${(fetchedBytes / 1048576).toFixed(1)}MB leídos · ${wanted.length} frames AAC · ~${(wanted.length * 1024 / sr).toFixed(1)}s en MP4 de ${(mp4.byteLength / 1048576).toFixed(1)}MB`);
-return { mp4, fetchedBytes, ms: performance.now() - tStart, debug };
+return { mp4, fetchedBytes, ms: performance.now() - tStart, firstTs: wanted[0].dts / ts, debug };
 }

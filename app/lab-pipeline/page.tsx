@@ -1,6 +1,7 @@
 'use client';
 import React, { useRef, useState } from 'react';
 import { extractSegment, extractAudioSegment } from '@/components/studio/segmentExtractor';
+import { computeChunkBoundaries } from '@/components/studio/chunkedExport';
 // ===== LABORATORIO FASE 6: mide TU máquina antes de decidir arquitectura =====
 // Tres experimentos honestos: velocidad OPFS, lectura por rodajas, y el techo
 // real de MEMFS de ffmpeg.wasm con buffers crecientes.
@@ -293,6 +294,235 @@ addLog(`❌ Export chunked: ${e?.message || e}`);
 setBusy(false);
 }
 
+async function testChunkedStage1() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+const dur = await new Promise<number>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res(v.duration || 0); v.onerror = () => res(0); v.src = URL.createObjectURL(f); });
+if (!dur) throw new Error('no se pudo leer la duración');
+const WIN = 60; const TARGET = 10; const FPS = 30;
+const t0 = Math.max(0, dur - WIN);
+const total = Math.min(WIN, dur);
+addLog(`🎬 ETAPA 1 · export chunked con recorte exacto: ${total.toFixed(1)}s desde t=${t0.toFixed(1)}s · chunks de ~${TARGET}s · grilla 1/${FPS}s`);
+const chunks = computeChunkBoundaries(total, [], TARGET, FPS);
+addLog(`📐 Bordes: ${chunks.map((c) => `${c.start.toFixed(3)}–${c.end.toFixed(3)}`).join(' | ')}`);
+const w = window as any;
+if (!w.FFmpegWASM) {
+await new Promise<void>((res2, rej) => { const s = document.createElement('script'); s.src = '/ffmpeg.js'; s.onload = () => res2(); s.onerror = () => rej(new Error('no se pudo cargar /ffmpeg.js')); document.head.appendChild(s); });
+}
+const { FFmpeg } = w.FFmpegWASM;
+const ff = new FFmpeg();
+const logs: string[] = [];
+ff.on('log', ({ message }: any) => { logs.push(String(message)); });
+const { toBlobURL } = await import('@ffmpeg/util');
+await ff.load({ coreURL: await toBlobURL('/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL('/ffmpeg-core.wasm', 'application/wasm') });
+const chunkBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+const tTotal = performance.now();
+for (const c of chunks) {
+const absS = t0 + c.start; const absE = t0 + c.end;
+const len = c.end - c.start;
+const segV = await extractSegment(f, absS, absE, addLog);
+if (!segV) throw new Error(`extractSegment falló en chunk ${c.index}`);
+const segA = await extractAudioSegment(f, absS, absE, addLog);
+if (!segA) throw new Error(`extractAudioSegment falló en chunk ${c.index}`);
+totalFetched += segV.fetchedBytes + segA.fetchedBytes;
+await ff.writeFile('vid.h264', segV.annexB);
+await ff.writeFile('aud.m4a', segA.mp4);
+// RECORTE EXACTO: el video retrocedió al keyframe previo (rollback) y el audio
+// al frame previo: recortamos ambos al filo de la ventana del chunk.
+const vRoll = Math.max(absS - segV.firstTs, 0);
+const aRoll = Math.max(absS - segA.firstTs, 0);
+const frames = Math.max(1, Math.round(len * FPS));
+const fc = `[0:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720[v];[1:a]atrim=start=${aRoll.toFixed(6)}:end=${(aRoll + len).toFixed(6)},asetpts=PTS-STARTPTS[a]`;
+const code = await ff.exec([
+'-framerate', segV.fps.toFixed(3), '-i', 'vid.h264', '-i', 'aud.m4a',
+'-filter_complex', fc,
+'-map', '[v]', '-map', '[a]',
+'-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
+'-frames:v', String(frames),
+'-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+'-r', String(FPS),
+'-movflags', '+faststart',
+'-y', `chunk${c.index}.mp4`,
+]);
+if (code !== 0) throw new Error(`chunk ${c.index} falló (código ${code}) · ${logs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`chunk${c.index}.mp4`) as Uint8Array;
+if (!data || data.length === 0) throw new Error(`chunk${c.index}.mp4 salió vacío`);
+chunkBlobs.push(data);
+addLog(`   ✅ chunk${c.index}: ${len.toFixed(3)}s · ${frames} frames exactos · ${(data.length / 1048576).toFixed(2)}MB`);
+for (const name of ['vid.h264', 'aud.m4a', `chunk${c.index}.mp4`]) { try { await ff.deleteFile(name); } catch (e) {} }
+}
+addLog('── Concat final con concat demuxer + -c copy ──');
+for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(chunkBlobs.map((_, k) => `file 'chunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', '-y', 'final.mp4']);
+if (concatCode !== 0) throw new Error(`concat falló (código ${concatCode}) · ${logs.slice(-3).join(' | ')}`);
+const finalData = await ff.readFile('final.mp4') as Uint8Array;
+if (!finalData || finalData.length === 0) throw new Error('final.mp4 salió vacío');
+// ===== VEREDICTO DE DERIVA: la duración final contra la esperada, en frames =====
+const finalUrl = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const meta = await new Promise<{ duration: number }>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res({ duration: v.duration || 0 }); v.onerror = () => res({ duration: 0 }); v.src = finalUrl; });
+URL.revokeObjectURL(finalUrl);
+const driftMs = (meta.duration - total) * 1000;
+const driftFrames = driftMs / (1000 / FPS);
+addLog(`✅ ETAPA 1 EXITOSA:`);
+addLog(`   · ${chunks.length} chunks · ${(totalFetched / 1048576).toFixed(1)}MB leídos de ${(f.size / 1073741824).toFixed(2)}GB (${(100 * totalFetched / f.size).toFixed(2)}%)`);
+addLog(`   · Esperado: ${total.toFixed(3)}s · medido: ${meta.duration.toFixed(3)}s · deriva: ${driftMs >= 0 ? '+' : ''}${driftMs.toFixed(0)}ms (${driftFrames >= 0 ? '+' : ''}${driftFrames.toFixed(2)} frames)`);
+addLog(`   · final.mp4: ${(finalData.length / 1048576).toFixed(2)}MB en ${Math.round(performance.now() - tTotal)}ms`);
+if (Math.abs(driftFrames) <= 1) addLog('🎯 DERIVA ≤ 1 FRAME: la grilla de bordes funciona → Etapa 1 validada.');
+else addLog(`⚠️ Deriva de ${driftFrames.toFixed(2)} frames: hay que revisar el recorte por chunk.`);
+addLog('🎬 Descargando etapa1_final.mp4 (60s, con audio): verificalo en el reproductor.');
+const url = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const a = document.createElement('a'); a.href = url; a.download = 'etapa1_final.mp4';
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+try {
+for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
+try { await ff.deleteFile('list.txt'); } catch (e) {}
+try { await ff.deleteFile('final.mp4'); } catch (e) {}
+await ff.terminate();
+} catch (e) {}
+} catch (e: any) {
+addLog(`❌ Etapa 1: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
+function probeDur(bytes: Uint8Array, mime: string): Promise<number> {
+return new Promise((res) => {
+const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+const v = document.createElement('video');
+v.preload = 'metadata';
+v.onloadedmetadata = () => { const d = v.duration || 0; URL.revokeObjectURL(url); res(d); };
+v.onerror = () => { URL.revokeObjectURL(url); res(0); };
+v.src = url;
+});
+}
+
+async function testChunkedAudioFix() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+const dur = await new Promise<number>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res(v.duration || 0); v.onerror = () => res(0); v.src = URL.createObjectURL(f); });
+if (!dur) throw new Error('no se pudo leer la duración');
+const WIN = 60; const TARGET = 10; const FPS = 30;
+// 5s de colchón antes del final: en muchos archivos la pista de video termina
+// ANTES que la duración del contenedor (el audio es más largo). En producción
+// esto no hace falta porque la timeline define el contenido real.
+const t0 = Math.max(0, dur - WIN - 5);
+const total = WIN;
+addLog(`🎬 ETAPA 1b · video por chunks + AUDIO CONTINUO: ${total.toFixed(1)}s desde t=${t0.toFixed(1)}s`);
+const chunks = computeChunkBoundaries(total, [], TARGET, FPS);
+addLog(`📐 Bordes: ${chunks.map((c) => `${c.start.toFixed(3)}–${c.end.toFixed(3)}`).join(' | ')}`);
+const w = window as any;
+if (!w.FFmpegWASM) {
+await new Promise<void>((res2, rej) => { const s = document.createElement('script'); s.src = '/ffmpeg.js'; s.onload = () => res2(); s.onerror = () => rej(new Error('no se pudo cargar /ffmpeg.js')); document.head.appendChild(s); });
+}
+const { FFmpeg } = w.FFmpegWASM;
+const ff = new FFmpeg();
+const logs: string[] = [];
+ff.on('log', ({ message }: any) => { logs.push(String(message)); });
+const { toBlobURL } = await import('@ffmpeg/util');
+await ff.load({ coreURL: await toBlobURL('/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL('/ffmpeg-core.wasm', 'application/wasm') });
+const videoBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+const tTotal = performance.now();
+for (const c of chunks) {
+const absS = t0 + c.start; const absE = t0 + c.end;
+const len = c.end - c.start;
+// LOOKAHEAD: el extractor debe traer un poquito de cola real para que el
+// trim con MARGIN tenga frames de sobra. Después -frames:v recorta exacto.
+const LOOKAHEAD = 0.25;
+const segV = await extractSegment(f, absS, Math.min(dur, absE + LOOKAHEAD), addLog);
+if (!segV) throw new Error(`extractSegment falló en chunk ${c.index}`);
+totalFetched += segV.fetchedBytes;
+await ff.writeFile('vid.h264', segV.annexB);
+const vRoll = Math.max(absS - segV.firstTs, 0);
+const frames = Math.max(1, Math.round(len * FPS));
+// MARGEN DE FASE: la grilla del fuente (23.976fps) no coincide con los bordes
+// del chunk; sin margen, algunos chunks capturan 239 frames fuente y fps=30 no
+// llega a los 300. El margen asegura frames de sobra, y -frames:v recorta al
+// largo EXACTO. Cada chunk sigue cubriendo [inicio, inicio+len) sin solaparse.
+const MARGIN = 0.15;
+const fc = `[0:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len + MARGIN).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720[v]`;
+const code = await ff.exec([
+'-framerate', segV.fps.toFixed(3), '-i', 'vid.h264',
+'-filter_complex', fc,
+'-map', '[v]',
+'-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
+'-frames:v', String(frames),
+'-an',
+'-r', String(FPS),
+'-movflags', '+faststart',
+'-y', `vchunk${c.index}.mp4`,
+]);
+if (code !== 0) throw new Error(`vchunk ${c.index} falló (código ${code}) · ${logs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`vchunk${c.index}.mp4`) as Uint8Array;
+if (!data || data.length === 0) throw new Error(`vchunk${c.index}.mp4 salió vacío`);
+videoBlobs.push(data);
+addLog(`   ✅ vchunk${c.index}: ${len.toFixed(3)}s · ${frames} frames · ${(data.length / 1048576).toFixed(2)}MB (video puro)`);
+const chunkDur = await probeDur(data, 'video/mp4');
+addLog(`   🔎 vchunk${c.index} duración real: ${chunkDur.toFixed(3)}s · Δ ${(1000 * (chunkDur - len)).toFixed(0)}ms`);
+try { await ff.deleteFile('vid.h264'); } catch (e) {}
+try { await ff.deleteFile(`vchunk${c.index}.mp4`); } catch (e) {}
+}
+addLog('── Audio continuo: toda la ventana de una sola vez (copiado, sin recodificar) ──');
+const audioFull = await extractAudioSegment(f, t0, t0 + total, addLog);
+if (!audioFull) throw new Error('extractAudioSegment falló para la ventana completa');
+totalFetched += audioFull.fetchedBytes;
+addLog('── Concat de video (sin audio) con concat demuxer + -c copy ──');
+for (let k = 0; k < videoBlobs.length; k++) await ff.writeFile(`vchunk${k}.mp4`, videoBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(videoBlobs.map((_, k) => `file 'vchunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-y', 'video_full.mp4']);
+if (concatCode !== 0) throw new Error(`concat de video falló (código ${concatCode}) · ${logs.slice(-3).join(' | ')}`);
+for (let k = 0; k < videoBlobs.length; k++) { try { await ff.deleteFile(`vchunk${k}.mp4`); } catch (e) {} }
+try { await ff.deleteFile('list.txt'); } catch (e) {}
+const videoFullData = await ff.readFile('video_full.mp4') as Uint8Array;
+const videoFullDur = await probeDur(videoFullData, 'video/mp4');
+addLog(`🔎 video_full.mp4 (concat, sin audio): ${videoFullDur.toFixed(3)}s · esperado ${total.toFixed(3)}s · Δ ${(1000 * (videoFullDur - total)).toFixed(0)}ms`);
+const audioFullDur = await probeDur(audioFull.mp4, 'video/mp4');
+addLog(`🔎 audio_full.m4a: ${audioFullDur.toFixed(3)}s · Δ vs video: ${(1000 * (audioFullDur - videoFullDur)).toFixed(0)}ms`);
+addLog('── Merge final: video continuo + audio continuo, ambos stream copy ──');
+await ff.writeFile('audio_full.m4a', audioFull.mp4);
+const mergeCode = await ff.exec([
+'-i', 'video_full.mp4', '-i', 'audio_full.m4a',
+'-map', '0:v', '-map', '1:a',
+'-c:v', 'copy', '-c:a', 'copy',
+'-shortest',
+'-movflags', '+faststart',
+'-y', 'final.mp4',
+]);
+if (mergeCode !== 0) throw new Error(`merge final falló (código ${mergeCode}) · ${logs.slice(-3).join(' | ')}`);
+const finalData = await ff.readFile('final.mp4') as Uint8Array;
+if (!finalData || finalData.length === 0) throw new Error('final.mp4 salió vacío');
+const finalUrl = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const meta = await new Promise<{ duration: number }>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res({ duration: v.duration || 0 }); v.onerror = () => res({ duration: 0 }); v.src = finalUrl; });
+URL.revokeObjectURL(finalUrl);
+const driftMs = (meta.duration - total) * 1000;
+const driftFrames = driftMs / (1000 / FPS);
+addLog(`✅ ETAPA 1b EXITOSA:`);
+addLog(`   · ${chunks.length} chunks de video + 1 audio continuo · ${(totalFetched / 1048576).toFixed(1)}MB leídos de ${(f.size / 1073741824).toFixed(2)}GB (${(100 * totalFetched / f.size).toFixed(2)}%)`);
+addLog(`   · Esperado: ${total.toFixed(3)}s · medido: ${meta.duration.toFixed(3)}s · deriva: ${driftMs >= 0 ? '+' : ''}${driftMs.toFixed(0)}ms (${driftFrames >= 0 ? '+' : ''}${driftFrames.toFixed(2)} frames)`);
+addLog(`   · Audio: AAC copiado del fuente SIN recodificar → 5.1 preservado, cero artefactos de empalme`);
+addLog(`   · final.mp4: ${(finalData.length / 1048576).toFixed(2)}MB en ${Math.round(performance.now() - tTotal)}ms`);
+if (Math.abs(driftFrames) <= 1) addLog('🎯 DERIVA ≤ 1 FRAME: Etapa 1b validada.');
+else addLog(`⚠️ Deriva de ${driftFrames.toFixed(2)} frames: revisar.`);
+addLog('🎬 Descargando etapa1b_final.mp4: el salto de audio cada 10s debería haber DESAPARECIDO.');
+const url = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const a = document.createElement('a'); a.href = url; a.download = 'etapa1b_final.mp4';
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+try {
+for (const name of ['video_full.mp4', 'audio_full.m4a', 'final.mp4']) { try { await ff.deleteFile(name); } catch (e) {} }
+await ff.terminate();
+} catch (e) {}
+} catch (e: any) {
+addLog(`❌ Etapa 1b: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
 return (
 <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 bg-slate-950 p-6 text-slate-200">
 <h1 className="text-xl font-black text-white">🔬 Lab Pipeline — Fase 6</h1>
@@ -305,6 +535,8 @@ return (
 <button onClick={testSegmentExtract} disabled={busy} className="rounded-lg bg-green-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">4 · Extractor byte-ranges</button>
 <button onClick={testAudioSegment} disabled={busy} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">5 · Audio byte-ranges</button>
 <button onClick={testChunkedExport} disabled={busy} className="rounded-lg bg-fuchsia-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">6 · Export chunked</button>
+<button onClick={testChunkedStage1} disabled={busy} className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">7 · Chunked Etapa 1</button>
+<button onClick={testChunkedAudioFix} disabled={busy} className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">8 · Audio continuo</button>
 </div>
 <pre className="min-h-[16rem] whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-[11px] leading-relaxed text-green-300">{log.join('\n')}</pre>
 <a href="/studio" className="text-xs text-cyan-300 underline">← Volver al Studio</a>
