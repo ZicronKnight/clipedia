@@ -523,6 +523,451 @@ addLog(`❌ Etapa 1b: ${e?.message || e}`);
 setBusy(false);
 }
 
+async function testMulticlipTransitions() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+addLog('🎬 ETAPA 2 · Dry-run: Timeline multiclip con transiciones y chunks protegidos');
+// 1. Definimos 3 "clips" sintéticos usando regiones del Blade Runner
+const syntheticClips = [
+{ name: 'Clip A', start: 100, end: 120, speed: 1, transition: { type: 'fade', duration: 1.0 } },
+{ name: 'Clip B', start: 500, end: 520, speed: 1, transition: { type: 'wipeleft', duration: 1.5 } },
+{ name: 'Clip C', start: 1000, end: 1020, speed: 1, transition: null },
+];
+// 2. Calculamos la geometría de la timeline (idéntico a Studio.tsx)
+const effLen = (c: any) => (c.end - c.start) / c.speed;
+const dAfter = (i: number) => {
+if (i < 0 || i >= syntheticClips.length - 1) return 0;
+const tr = syntheticClips[i].transition;
+if (!tr) return 0;
+return Math.min(tr.duration, effLen(syntheticClips[i]), effLen(syntheticClips[i + 1]));
+};
+const videoStarts: number[] = [];
+let acc = 0;
+for (let i = 0; i < syntheticClips.length; i++) {
+videoStarts.push(acc);
+acc += effLen(syntheticClips[i]) - dAfter(i);
+}
+const totalDuration = videoStarts[syntheticClips.length - 1] + effLen(syntheticClips[syntheticClips.length - 1]);
+addLog(`📐 Timeline: ${syntheticClips.length} clips · Duración total: ${totalDuration.toFixed(2)}s`);
+syntheticClips.forEach((c, i) => addLog(`   · ${c.name}: ${effLen(c).toFixed(1)}s (inicia en timeline: ${videoStarts[i].toFixed(2)}s)${c.transition ? ` → transición ${c.transition.type} de ${c.transition.duration}s` : ''}`));
+// 3. Calculamos las ventanas protegidas (donde un chunk NO puede cortar)
+const protectedWins: { s: number; e: number }[] = [];
+for (let i = 0; i < syntheticClips.length - 1; i++) {
+const d = dAfter(i);
+if (d > 0) {
+const winStart = videoStarts[i + 1]; // El inicio del solape en la timeline
+protectedWins.push({ s: winStart, e: winStart + d });
+addLog(`🛡️ Ventana protegida ${i + 1}: ${winStart.toFixed(2)}s – ${(winStart + d).toFixed(2)}s (${syntheticClips[i].transition?.type})`);
+}
+}
+// 4. Llamamos al calculador de chunks
+const TARGET = 10; const FPS = 30;
+const chunks = computeChunkBoundaries(totalDuration, protectedWins, TARGET, FPS);
+addLog(`🧩 Chunks generados (target ~${TARGET}s):`);
+let valid = true;
+chunks.forEach((c) => {
+let isProtected = false;
+for (const w of protectedWins) {
+// Un borde de chunk es 'c.end' (excepto el último). Si cae DENTRO de la ventana, es error.
+if (c.end > w.s + 0.01 && c.end < w.e - 0.01 && c.end < totalDuration - 0.01) {
+isProtected = true; valid = false;
+}
+}
+addLog(`   · Chunk ${c.index}: ${c.start.toFixed(2)}s – ${c.end.toFixed(2)}s (${(c.end - c.start).toFixed(2)}s) ${isProtected ? '❌ CORTA TRANSICIÓN' : '✅'}`);
+});
+if (valid) addLog('🎯 ÉXITO: Ningún chunk cortó una ventana de transición. La Etapa 2 (matemática) está validada.');
+else addLog('❌ ERROR: Un chunk cayó dentro de una transición. Hay que revisar computeChunkBoundaries.');
+} catch (e: any) {
+addLog(`❌ Test 9: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
+async function testMulticlipRender() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+addLog('🎬 ETAPA 2b · Render multiclip con transiciones xfade dentro de chunks');
+const syntheticClips = [
+{ name: 'Clip A', start: 100, end: 120, speed: 1, transition: { type: 'fade', duration: 1.0 } },
+{ name: 'Clip B', start: 500, end: 520, speed: 1, transition: { type: 'wipeleft', duration: 1.5 } },
+{ name: 'Clip C', start: 1000, end: 1020, speed: 1, transition: null },
+];
+const effLen = (c: any) => (c.end - c.start) / c.speed;
+const dAfter = (i: number) => {
+if (i < 0 || i >= syntheticClips.length - 1) return 0;
+const tr = syntheticClips[i].transition;
+if (!tr) return 0;
+return Math.min(tr.duration, effLen(syntheticClips[i]), effLen(syntheticClips[i + 1]));
+};
+const videoStarts: number[] = [];
+let acc = 0;
+for (let i = 0; i < syntheticClips.length; i++) {
+videoStarts.push(acc);
+acc += effLen(syntheticClips[i]) - dAfter(i);
+}
+const totalDuration = videoStarts[syntheticClips.length - 1] + effLen(syntheticClips[syntheticClips.length - 1]);
+addLog(`📐 Timeline: ${syntheticClips.length} clips · Duración total: ${totalDuration.toFixed(2)}s`);
+const protectedWins: { s: number; e: number }[] = [];
+for (let i = 0; i < syntheticClips.length - 1; i++) {
+const d = dAfter(i);
+if (d > 0) {
+const winStart = videoStarts[i + 1];
+protectedWins.push({ s: winStart, e: winStart + d });
+}
+}
+const TARGET = 10; const FPS = 30;
+const chunks = computeChunkBoundaries(totalDuration, protectedWins, TARGET, FPS);
+addLog(`🧩 ${chunks.length} chunks generados`);
+const w = window as any;
+if (!w.FFmpegWASM) {
+await new Promise<void>((res2, rej) => { const s = document.createElement('script'); s.src = '/ffmpeg.js'; s.onload = () => res2(); s.onerror = () => rej(new Error('no se pudo cargar /ffmpeg.js')); document.head.appendChild(s); });
+}
+const { FFmpeg } = w.FFmpegWASM;
+const ff = new FFmpeg();
+const logs: string[] = [];
+ff.on('log', ({ message }: any) => { logs.push(String(message)); });
+const { toBlobURL } = await import('@ffmpeg/util');
+await ff.load({ coreURL: await toBlobURL('/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL('/ffmpeg-core.wasm', 'application/wasm') });
+const chunkBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+const tTotal = performance.now();
+for (const c of chunks) {
+const chunkStart = c.start;
+const chunkEnd = c.end;
+const chunkDur = chunkEnd - chunkStart;
+addLog(`── Chunk ${c.index}: ${chunkStart.toFixed(2)}s–${chunkEnd.toFixed(2)}s (${chunkDur.toFixed(2)}s) ──`);
+const clipsInChunk: { clip: any; localStart: number; localEnd: number; fileStart: number; fileEnd: number }[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const clip = syntheticClips[i];
+const clipTLStart = videoStarts[i];
+const clipTLEnd = clipTLStart + effLen(clip);
+const overlapStart = Math.max(chunkStart, clipTLStart);
+const overlapEnd = Math.min(chunkEnd, clipTLEnd);
+if (overlapEnd <= overlapStart) continue;
+const localStart = overlapStart - chunkStart;
+const localEnd = overlapEnd - chunkStart;
+const clipLocalStart = overlapStart - clipTLStart;
+const clipLocalEnd = overlapEnd - clipTLStart;
+const fileStart = clip.start + clipLocalStart * clip.speed;
+const fileEnd = clip.start + clipLocalEnd * clip.speed;
+clipsInChunk.push({ clip, localStart, localEnd, fileStart, fileEnd });
+}
+addLog(`   Clips en este chunk: ${clipsInChunk.map((x) => x.clip.name).join(', ')}`);
+const clipSegments: any[] = [];
+const LOOKAHEAD = 0.25;
+for (const item of clipsInChunk) {
+const segV = await extractSegment(f, item.fileStart, item.fileEnd + LOOKAHEAD, addLog);
+if (!segV) throw new Error(`extractSegment falló para ${item.clip.name}`);
+const segA = await extractAudioSegment(f, item.fileStart, item.fileEnd, addLog);
+if (!segA) throw new Error(`extractAudioSegment falló para ${item.clip.name}`);
+totalFetched += segV.fetchedBytes + segA.fetchedBytes;
+clipSegments.push({ segV, segA, clip: item.clip, localStart: item.localStart, localEnd: item.localEnd, fileStart: item.fileStart, fileEnd: item.fileEnd });
+}
+const inputArgs: string[] = [];
+for (let i = 0; i < clipSegments.length; i++) {
+await ff.writeFile(`v${i}.h264`, clipSegments[i].segV.annexB);
+await ff.writeFile(`a${i}.m4a`, clipSegments[i].segA.mp4);
+inputArgs.push('-framerate', clipSegments[i].segV.fps.toFixed(3), '-i', `v${i}.h264`, '-i', `a${i}.m4a`);
+}
+let filterComplex = '';
+let currentVideoLabel = '';
+let currentAudioLabel = '';
+if (clipSegments.length === 1) {
+const seg = clipSegments[0];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+const aRoll = Math.max(0, seg.fileStart - seg.segA.firstTs);
+filterComplex = `[0:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720[vout];[1:a]atrim=start=${aRoll.toFixed(6)}:end=${(aRoll + len).toFixed(6)},asetpts=PTS-STARTPTS[aout]`;
+currentVideoLabel = 'vout';
+currentAudioLabel = 'aout';
+} else {
+let prevVideoLabel = '';
+let prevAudioLabel = '';
+let cumulativeOffset = 0;
+for (let i = 0; i < clipSegments.length; i++) {
+const seg = clipSegments[i];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+const aRoll = Math.max(0, seg.fileStart - seg.segA.firstTs);
+filterComplex += `[${i * 2}:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[v${i}];`;
+filterComplex += `[${i * 2 + 1}:a]atrim=start=${aRoll.toFixed(6)}:end=${(aRoll + len).toFixed(6)},asetpts=PTS-STARTPTS[a${i}];`;
+if (i === 0) {
+prevVideoLabel = `v${i}`;
+prevAudioLabel = `a${i}`;
+cumulativeOffset = len;
+} else {
+const prevClip = clipSegments[i - 1].clip;
+const tr = prevClip.transition;
+if (tr && tr.type !== 'none') {
+const d = Math.min(tr.duration, len, clipSegments[i - 1].localEnd - clipSegments[i - 1].localStart);
+const offset = Math.max(cumulativeOffset - d, 0);
+const xfadeType = ['fade', 'wipeleft', 'wiperight', 'dissolve'].includes(tr.type) ? tr.type : 'fade';
+filterComplex += `[${prevVideoLabel}][v${i}]xfade=transition=${xfadeType}:duration=${d}:offset=${offset}[vx${i}];`;
+filterComplex += `[${prevAudioLabel}][a${i}]acrossfade=d=${d}:c1=tri:c2=tri[ax${i}];`;
+prevVideoLabel = `vx${i}`;
+prevAudioLabel = `ax${i}`;
+cumulativeOffset += len - d;
+} else {
+filterComplex += `[${prevVideoLabel}][v${i}]concat=n=2:v=1:a=0[vc${i}];`;
+filterComplex += `[${prevAudioLabel}][a${i}]concat=n=2:v=0:a=1[ac${i}];`;
+prevVideoLabel = `vc${i}`;
+prevAudioLabel = `ac${i}`;
+cumulativeOffset += len;
+}
+}
+}
+filterComplex += `[${prevVideoLabel}]null[vout];[${prevAudioLabel}]anull[aout]`;
+currentVideoLabel = 'vout';
+currentAudioLabel = 'aout';
+}
+const code = await ff.exec([
+...inputArgs,
+'-filter_complex', filterComplex,
+'-map', `[${currentVideoLabel}]`, '-map', `[${currentAudioLabel}]`,
+'-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
+'-c:a', 'aac', '-b:a', '192k',
+'-r', String(FPS),
+'-movflags', '+faststart',
+'-y', `chunk${c.index}.mp4`,
+]);
+if (code !== 0) throw new Error(`chunk ${c.index} falló (código ${code}) · ${logs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`chunk${c.index}.mp4`) as Uint8Array;
+if (!data || data.length === 0) throw new Error(`chunk${c.index}.mp4 salió vacío`);
+chunkBlobs.push(data);
+addLog(`   ✅ chunk${c.index}.mp4: ${(data.length / 1048576).toFixed(2)}MB`);
+for (let i = 0; i < clipSegments.length; i++) {
+try { await ff.deleteFile(`v${i}.h264`); } catch (e) {}
+try { await ff.deleteFile(`a${i}.m4a`); } catch (e) {}
+}
+try { await ff.deleteFile(`chunk${c.index}.mp4`); } catch (e) {}
+}
+addLog('── Concat final con concat demuxer + -c copy ──');
+for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(chunkBlobs.map((_, k) => `file 'chunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', '-y', 'final.mp4']);
+if (concatCode !== 0) throw new Error(`concat falló (código ${concatCode}) · ${logs.slice(-3).join(' | ')}`);
+const finalData = await ff.readFile('final.mp4') as Uint8Array;
+if (!finalData || finalData.length === 0) throw new Error('final.mp4 salió vacío');
+const finalUrl = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const meta = await new Promise<{ duration: number }>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res({ duration: v.duration || 0 }); v.onerror = () => res({ duration: 0 }); v.src = finalUrl; });
+URL.revokeObjectURL(finalUrl);
+const driftMs = (meta.duration - totalDuration) * 1000;
+const driftFrames = driftMs / (1000 / FPS);
+addLog(`✅ ETAPA 2b EXITOSA:`);
+addLog(`   · ${chunks.length} chunks con transiciones xfade/acrossfade`);
+addLog(`   · ${(totalFetched / 1048576).toFixed(1)}MB leídos de ${(f.size / 1073741824).toFixed(2)}GB (${(100 * totalFetched / f.size).toFixed(2)}%)`);
+addLog(`   · Esperado: ${totalDuration.toFixed(3)}s · medido: ${meta.duration.toFixed(3)}s · deriva: ${driftMs >= 0 ? '+' : ''}${driftMs.toFixed(0)}ms (${driftFrames >= 0 ? '+' : ''}${driftFrames.toFixed(2)} frames)`);
+addLog(`   · final.mp4: ${(finalData.length / 1048576).toFixed(2)}MB en ${Math.round(performance.now() - tTotal)}ms`);
+if (Math.abs(driftFrames) <= 1) addLog('🎯 DERIVA ≤ 1 FRAME: Etapa 2b validada.');
+else addLog(`⚠️ Deriva de ${driftFrames.toFixed(2)} frames: revisar.`);
+addLog('🎬 Descargando etapa2b_final.mp4: verificá que las transiciones fade y wipeleft se vean bien.');
+const url = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const a = document.createElement('a'); a.href = url; a.download = 'etapa2b_final.mp4';
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+try {
+for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
+try { await ff.deleteFile('list.txt'); } catch (e) {}
+try { await ff.deleteFile('final.mp4'); } catch (e) {}
+await ff.terminate();
+} catch (e) {}
+} catch (e: any) {
+addLog(`❌ Etapa 2b: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
+async function testMulticlipAudioContinuo() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+addLog('🎬 ETAPA 2c · Multiclip: video por chunks + AUDIO CONTINUO con acrossfades');
+const syntheticClips = [
+{ name: 'Clip A', start: 100, end: 120, speed: 1, transition: { type: 'fade', duration: 1.0 } },
+{ name: 'Clip B', start: 500, end: 520, speed: 1, transition: { type: 'wipeleft', duration: 1.5 } },
+{ name: 'Clip C', start: 1000, end: 1020, speed: 1, transition: null },
+];
+const effLen = (c: any) => (c.end - c.start) / c.speed;
+const dAfter = (i: number) => {
+if (i < 0 || i >= syntheticClips.length - 1) return 0;
+const tr = syntheticClips[i].transition;
+if (!tr) return 0;
+return Math.min(tr.duration, effLen(syntheticClips[i]), effLen(syntheticClips[i + 1]));
+};
+const videoStarts: number[] = [];
+let acc = 0;
+for (let i = 0; i < syntheticClips.length; i++) {
+videoStarts.push(acc);
+acc += effLen(syntheticClips[i]) - dAfter(i);
+}
+const totalDuration = videoStarts[syntheticClips.length - 1] + effLen(syntheticClips[syntheticClips.length - 1]);
+addLog(`📐 Timeline: ${syntheticClips.length} clips · Duración total: ${totalDuration.toFixed(2)}s`);
+const protectedWins: { s: number; e: number }[] = [];
+for (let i = 0; i < syntheticClips.length - 1; i++) {
+const d = dAfter(i);
+if (d > 0) { const ws = videoStarts[i + 1]; protectedWins.push({ s: ws, e: ws + d }); }
+}
+const TARGET = 10; const FPS = 30;
+const chunks = computeChunkBoundaries(totalDuration, protectedWins, TARGET, FPS);
+addLog(`🧩 ${chunks.length} chunks de video generados`);
+const w = window as any;
+if (!w.FFmpegWASM) {
+await new Promise<void>((res2, rej) => { const s = document.createElement('script'); s.src = '/ffmpeg.js'; s.onload = () => res2(); s.onerror = () => rej(new Error('no se pudo cargar /ffmpeg.js')); document.head.appendChild(s); });
+}
+const { FFmpeg } = w.FFmpegWASM;
+const ff = new FFmpeg();
+const logs: string[] = [];
+ff.on('log', ({ message }: any) => { logs.push(String(message)); });
+const { toBlobURL } = await import('@ffmpeg/util');
+await ff.load({ coreURL: await toBlobURL('/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL('/ffmpeg-core.wasm', 'application/wasm') });
+const chunkBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+const tTotal = performance.now();
+const LOOKAHEAD = 0.25;
+// ===== FASE 1: chunks de VIDEO solamente =====
+for (const c of chunks) {
+const chunkStart = c.start; const chunkEnd = c.end;
+addLog(`── Chunk ${c.index}: ${chunkStart.toFixed(2)}s–${chunkEnd.toFixed(2)}s (video only) ──`);
+const clipsInChunk: any[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const clip = syntheticClips[i];
+const clipTLStart = videoStarts[i];
+const clipTLEnd = clipTLStart + effLen(clip);
+const overlapStart = Math.max(chunkStart, clipTLStart);
+const overlapEnd = Math.min(chunkEnd, clipTLEnd);
+if (overlapEnd <= overlapStart) continue;
+const localStart = overlapStart - chunkStart;
+const localEnd = overlapEnd - chunkStart;
+const fileStart = clip.start + (overlapStart - clipTLStart) * clip.speed;
+const fileEnd = clip.start + (overlapEnd - clipTLStart) * clip.speed;
+clipsInChunk.push({ clip, localStart, localEnd, fileStart, fileEnd });
+}
+addLog(`   Clips: ${clipsInChunk.map((x) => x.clip.name).join(', ')}`);
+const clipSegsV: any[] = [];
+for (const item of clipsInChunk) {
+const segV = await extractSegment(f, item.fileStart, item.fileEnd + LOOKAHEAD, addLog);
+if (!segV) throw new Error(`extractSegment falló para ${item.clip.name}`);
+totalFetched += segV.fetchedBytes;
+clipSegsV.push({ segV, clip: item.clip, localStart: item.localStart, localEnd: item.localEnd, fileStart: item.fileStart });
+}
+const inputArgs: string[] = [];
+for (let i = 0; i < clipSegsV.length; i++) {
+await ff.writeFile(`v${i}.h264`, clipSegsV[i].segV.annexB);
+inputArgs.push('-framerate', clipSegsV[i].segV.fps.toFixed(3), '-i', `v${i}.h264`);
+}
+let filterComplex = '';
+if (clipSegsV.length === 1) {
+const seg = clipSegsV[0];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+filterComplex = `[0:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[vout]`;
+} else {
+let prevLabel = ''; let cumulativeOffset = 0;
+for (let i = 0; i < clipSegsV.length; i++) {
+const seg = clipSegsV[i];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+filterComplex += `[${i}:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[v${i}];`;
+if (i === 0) { prevLabel = `v${i}`; cumulativeOffset = len; }
+else {
+const prevClip = clipSegsV[i - 1].clip;
+const tr = prevClip.transition;
+if (tr && tr.type !== 'none') {
+const d = Math.min(tr.duration, len, clipSegsV[i - 1].localEnd - clipSegsV[i - 1].localStart);
+const offset = Math.max(cumulativeOffset - d, 0);
+const xfadeType = ['fade', 'wipeleft', 'wiperight', 'dissolve'].includes(tr.type) ? tr.type : 'fade';
+filterComplex += `[${prevLabel}][v${i}]xfade=transition=${xfadeType}:duration=${d}:offset=${offset}[vx${i}];`;
+prevLabel = `vx${i}`; cumulativeOffset += len - d;
+} else {
+filterComplex += `[${prevLabel}][v${i}]concat=n=2:v=1:a=0[vc${i}];`;
+prevLabel = `vc${i}`; cumulativeOffset += len;
+}
+}
+}
+filterComplex += `[${prevLabel}]null[vout]`;
+}
+const code = await ff.exec([...inputArgs, '-filter_complex', filterComplex, '-map', '[vout]', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-movflags', '+faststart', '-y', `chunk${c.index}.mp4`]);
+if (code !== 0) throw new Error(`vchunk ${c.index} falló (código ${code}) · ${logs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`chunk${c.index}.mp4`) as Uint8Array;
+if (!data || data.length === 0) throw new Error(`vchunk${c.index}.mp4 salió vacío`);
+chunkBlobs.push(data);
+addLog(`   ✅ vchunk${c.index}: ${(data.length / 1048576).toFixed(2)}MB (video puro)`);
+for (let i = 0; i < clipSegsV.length; i++) { try { await ff.deleteFile(`v${i}.h264`); } catch (e) {} }
+try { await ff.deleteFile(`chunk${c.index}.mp4`); } catch (e) {}
+}
+// ===== FASE 2: concat de video =====
+addLog('── Concat de video (sin audio) ──');
+for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(chunkBlobs.map((_, k) => `file 'chunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-y', 'video_full.mp4']);
+if (concatCode !== 0) throw new Error(`concat de video falló (código ${concatCode})`);
+for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
+try { await ff.deleteFile('list.txt'); } catch (e) {}
+// ===== FASE 3: AUDIO CONTINUO multiclip con acrossfades (un solo encode) =====
+addLog('── Audio continuo multiclip (un solo encode = cero saltos) ──');
+const audioInputs: string[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const clip = syntheticClips[i];
+const segA = await extractAudioSegment(f, clip.start, clip.end, addLog);
+if (!segA) throw new Error(`extractAudioSegment falló para ${clip.name}`);
+totalFetched += segA.fetchedBytes;
+await ff.writeFile(`aud${i}.m4a`, segA.mp4);
+audioInputs.push('-i', `aud${i}.m4a`);
+}
+let audioFilter = '';
+const audioLabels: string[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const len = effLen(syntheticClips[i]);
+audioFilter += `[${i}:a]atrim=0:${len.toFixed(6)},asetpts=PTS-STARTPTS[ca${i}];`;
+audioLabels.push(`ca${i}`);
+}
+let prevALabel = audioLabels[0];
+for (let i = 1; i < audioLabels.length; i++) {
+const tr = syntheticClips[i - 1].transition;
+const d = tr && tr.type !== 'none' ? Math.min(tr.duration, effLen(syntheticClips[i - 1]), effLen(syntheticClips[i])) : 0;
+if (d > 0) audioFilter += `[${prevALabel}][${audioLabels[i]}]acrossfade=d=${d}:c1=tri:c2=tri[ax${i}];`;
+else audioFilter += `[${prevALabel}][${audioLabels[i]}]concat=n=2:v=0:a=1[ax${i}];`;
+prevALabel = `ax${i}`;
+}
+audioFilter += `[${prevALabel}]anull[aout]`;
+const audioCode = await ff.exec([...audioInputs, '-filter_complex', audioFilter, '-map', '[aout]', '-c:a', 'aac', '-b:a', '192k', '-y', 'audio_full.m4a']);
+if (audioCode !== 0) throw new Error(`audio continuo falló (código ${audioCode}) · ${logs.slice(-3).join(' | ')}`);
+for (let i = 0; i < syntheticClips.length; i++) { try { await ff.deleteFile(`aud${i}.m4a`); } catch (e) {} }
+// ===== FASE 4: merge final =====
+addLog('── Merge final: video continuo + audio continuo ──');
+const mergeCode = await ff.exec(['-i', 'video_full.mp4', '-i', 'audio_full.m4a', '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'copy', '-shortest', '-movflags', '+faststart', '-y', 'final.mp4']);
+if (mergeCode !== 0) throw new Error(`merge final falló (código ${mergeCode})`);
+const finalData = await ff.readFile('final.mp4') as Uint8Array;
+if (!finalData || finalData.length === 0) throw new Error('final.mp4 salió vacío');
+const finalUrl = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const meta = await new Promise<{ duration: number }>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res({ duration: v.duration || 0 }); v.onerror = () => res({ duration: 0 }); v.src = finalUrl; });
+URL.revokeObjectURL(finalUrl);
+const driftMs = (meta.duration - totalDuration) * 1000;
+const driftFrames = driftMs / (1000 / FPS);
+addLog(`✅ ETAPA 2c EXITOSA:`);
+addLog(`   · ${chunks.length} chunks de video + 1 audio continuo con acrossfades`);
+addLog(`   · ${(totalFetched / 1048576).toFixed(1)}MB leídos de ${(f.size / 1073741824).toFixed(2)}GB (${(100 * totalFetched / f.size).toFixed(2)}%)`);
+addLog(`   · Esperado: ${totalDuration.toFixed(3)}s · medido: ${meta.duration.toFixed(3)}s · deriva: ${driftMs >= 0 ? '+' : ''}${driftMs.toFixed(0)}ms (${driftFrames >= 0 ? '+' : ''}${driftFrames.toFixed(2)} frames)`);
+addLog(`   · final.mp4: ${(finalData.length / 1048576).toFixed(2)}MB en ${Math.round(performance.now() - tTotal)}ms`);
+if (Math.abs(driftFrames) <= 1) addLog('🎯 DERIVA ≤ 1 FRAME: Etapa 2c validada.');
+else addLog(`⚠️ Deriva de ${driftFrames.toFixed(2)} frames: revisar.`);
+addLog('🎬 Descargando etapa2c_final.mp4: los saltos de audio cada 10s deberían haber DESAPARECIDO.');
+const url = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const a = document.createElement('a'); a.href = url; a.download = 'etapa2c_final.mp4';
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+try {
+for (const name of ['video_full.mp4', 'audio_full.m4a', 'final.mp4']) { try { await ff.deleteFile(name); } catch (e) {} }
+await ff.terminate();
+} catch (e) {}
+} catch (e: any) {
+addLog(`❌ Etapa 2c: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
 return (
 <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 bg-slate-950 p-6 text-slate-200">
 <h1 className="text-xl font-black text-white">🔬 Lab Pipeline — Fase 6</h1>
@@ -537,6 +982,9 @@ return (
 <button onClick={testChunkedExport} disabled={busy} className="rounded-lg bg-fuchsia-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">6 · Export chunked</button>
 <button onClick={testChunkedStage1} disabled={busy} className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">7 · Chunked Etapa 1</button>
 <button onClick={testChunkedAudioFix} disabled={busy} className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">8 · Audio continuo</button>
+<button onClick={testMulticlipTransitions} disabled={busy} className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">9 · Multiclip (Dry-Run)</button>
+<button onClick={testMulticlipRender} disabled={busy} className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">10 · Multiclip (Render)</button>
+<button onClick={testMulticlipAudioContinuo} disabled={busy} className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">11 · Multiclip audio continuo</button>
 </div>
 <pre className="min-h-[16rem] whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-[11px] leading-relaxed text-green-300">{log.join('\n')}</pre>
 <a href="/studio" className="text-xs text-cyan-300 underline">← Volver al Studio</a>
