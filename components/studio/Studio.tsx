@@ -5,7 +5,8 @@ import { toBlobURL } from '@ffmpeg/util';
 import { putAsset, getAsset, saveProject, loadProject, clearProject, StoredProject } from '@/lib/projectStore';
 import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScissors, IconTrash, IconCrop, IconFit, IconPlay, IconPause, IconSkipBack, IconSkipForward, IconSparkles, IconPlayCorel, IconPauseCorel, Icon480p, IconSuperponer } from './icons';
 import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, asrSpeedFactor, readAsrPref, writeAsrPref, decodeSegment16k, transcribeSegment, groupWordsIntoCaptions } from './asr';
-import { extractSegment } from './segmentExtractor';
+import { extractSegment, extractAudioSegment } from './segmentExtractor';
+import { computeChunkBoundaries } from './chunkedExport';
 
 
 type TransitionType =
@@ -72,13 +73,15 @@ const MAX_PPS = 300;
 const MIN_LEN = 0.2;
 const MIN_OVERLAY_LEN = 0.3;
 const DRAG_THRESHOLD = 5;
-const WAVEFORM_SAMPLES = 150;
+const WAVEFORM_SAMPLES = 240;
+const HEAVY_PEAKS_PER_SEC = 64; // onda de archivos pesados: 64 columnas por segundo
 const HISTORY_LIMIT = 60;
 const PREVIEW_PROXY_HEIGHT = 360;
 const SKIP_HEAVY_BYTES = 2 * 1024 * 1024 * 1024; // >2GB: sin extracción de audio ni proxy al importar
 const SAFE_PROC_BYTES = 1.5 * 1024 * 1024 * 1024; // >1.5GB por clip: snippets y export se niegan (techo MEMFS de wasm)
+const EXTRACT_THRESHOLD = 300 * 1024 * 1024; // >300MB: el export chunked alimenta por byte-ranges
+const CHUNKED_AUDIO_MAX_SECS = 10 * 60; // v1: ventana máxima de audio por byte-ranges por clip
 let lastSegmentReason = '';
-const EXTRACT_THRESHOLD = 300 * 1024 * 1024; // >300MB: el snippet se alimenta por byte-ranges (Annex-B), no con el archivo entero
 const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 const UI_HZ = IS_MOBILE ? 15 : 30;
 
@@ -311,19 +314,21 @@ function objectPositionFor(clip: Clip) {
 }
 type AudioRawData = { channelData: Float32Array; sampleRate: number };
 const audioDataMap = new Map<string, AudioRawData>();
+// Onda de audio para archivos pesados: cache por asset (se comparte al dividir clips).
+const heavyWaveformCache = new Map<string, number[]>();
+const heavyWaveformJobs = new Set<string>();
 function getPeaksForSegment(id: string, offset: number, duration: number, samples = WAVEFORM_SAMPLES): number[] {
   const data = audioDataMap.get(id);
-  if (!data) return Array(samples).fill(0.1);
+  if (!data) return Array(samples).fill(0);
   const startSample = Math.floor(offset * data.sampleRate);
   const endSample = Math.min(Math.floor((offset + duration) * data.sampleRate), data.channelData.length);
   const segmentLength = endSample - startSample;
   if (segmentLength <= 0) return Array(samples).fill(0);
-  const blockSize = Math.max(Math.floor(segmentLength / samples), 1);
   const peaks: number[] = [];
   for (let i = 0; i < samples; i++) {
     let max = 0;
-    const blockStart = startSample + i * blockSize;
-    const blockEnd = Math.min(blockStart + blockSize, endSample);
+    const blockStart = startSample + Math.floor((i * segmentLength) / samples);
+    const blockEnd = Math.min(startSample + Math.floor(((i + 1) * segmentLength) / samples), endSample);
     for (let j = blockStart; j < blockEnd; j++) {
       const val = Math.abs(data.channelData[j] || 0);
       if (val > max) max = val;
@@ -332,12 +337,12 @@ function getPeaksForSegment(id: string, offset: number, duration: number, sample
   }
   return peaks;
 }
-async function decodeAudioBlob(blob: Blob): Promise<{ channelData: Float32Array; sampleRate: number; duration: number } | null> {
+async function decodeAudioBlob(blob: Blob, sharedContext?: AudioContext): Promise<{ channelData: Float32Array; sampleRate: number; duration: number } | null> {
   try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const ctx = sharedContext || new (window.AudioContext || (window as any).webkitAudioContext)();
     const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
     const out = { channelData: buf.getChannelData(0), sampleRate: buf.sampleRate, duration: buf.duration };
-    ctx.close();
+    if (!sharedContext) void ctx.close();
     return out;
   } catch { return null; }
 }
@@ -400,27 +405,77 @@ function loadFFmpegLib(): Promise<any> {
   });
 }
 
-function WaveformCanvas({ id, offset, duration, width, selected }: { id: string; offset: number; duration: number; width: number; selected: boolean }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    canvas.width = Math.max(Math.round(width), 1);
-    canvas.height = 48;
-    ctx.clearRect(0, 0, canvas.width, 48);
-    const peaks = getPeaksForSegment(id, offset, duration);
-    const barWidth = canvas.width / peaks.length;
-    peaks.forEach((peak, i) => {
-      const height = peak * 40;
-      const x = i * barWidth;
-      const y = (48 - height) / 2;
-      ctx.fillStyle = selected ? '#4ade80' : '#22c55e';
-      ctx.fillRect(x, y, Math.max(barWidth - 1, 1), height);
-    });
-  }, [id, offset, duration, width, selected]);
-  return <canvas ref={ref} className="absolute inset-0 h-full w-full" />;
+function WaveformCanvas({ id, offset, duration, sourceDuration, assetKey, peaks: fallbackPeaks, width, selected, speed, trackStart, scrollRef }: { id: string; offset: number; duration: number; sourceDuration: number; assetKey: string; peaks: number[]; width: number; selected: boolean; speed: number; trackStart: number; scrollRef: { current: HTMLDivElement | null } }) {
+const ref = useRef<HTMLCanvasElement>(null);
+const [view, setView] = useState<{ left: number; px: number } | null>(null);
+useEffect(() => {
+const el = scrollRef?.current;
+if (!el) return;
+let raf = 0;
+const update = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => setView({ left: el.scrollLeft, px: el.clientWidth })); };
+update();
+el.addEventListener('scroll', update, { passive: true });
+const ro = new ResizeObserver(update);
+ro.observe(el);
+return () => { el.removeEventListener('scroll', update); ro.disconnect(); cancelAnimationFrame(raf); };
+}, [scrollRef]);
+const pps = width / Math.max(duration, 0.001);
+const OVER_PX = 90;
+const visS = view ? Math.max(0, (view.left - OVER_PX) / pps - trackStart) : 0;
+const visE = view ? Math.min(duration, (view.left + view.px + OVER_PX) / pps - trackStart) : duration;
+const cssLeft = visS * pps;
+const cssWidth = Math.max(2, (visE - visS) * pps);
+useEffect(() => {
+const canvas = ref.current;
+if (!canvas) return;
+const ctx = canvas.getContext('2d');
+if (!ctx) return;
+const bars = Math.max(64, Math.min(2400, Math.round(cssWidth)));
+canvas.width = bars;
+canvas.height = 48;
+ctx.clearRect(0, 0, bars, 48);
+let vals: number[] | null = null;
+if (audioDataMap.has(id)) {
+const s0 = offset + visS * speed;
+const s1 = offset + visE * speed;
+vals = getPeaksForSegment(id, s0, Math.max(s1 - s0, 0.02), bars);
+} else {
+const hi = heavyWaveformCache.get(assetKey);
+const src = hi && hi.length > 1
+? { arr: hi, rate: HEAVY_PEAKS_PER_SEC }
+: (fallbackPeaks && fallbackPeaks.length > 1 ? { arr: fallbackPeaks, rate: fallbackPeaks.length / Math.max(sourceDuration, 0.001) } : null);
+if (!src) return;
+const a = Math.max(0, Math.floor((offset + visS * speed) * src.rate));
+const b = Math.min(src.arr.length, Math.max(a + 1, Math.ceil((offset + visE * speed) * src.rate)));
+vals = new Array(bars);
+const span = b - a;
+for (let i = 0; i < bars; i++) {
+const s = a + Math.floor((i * span) / bars);
+const e = Math.max(s + 1, a + Math.floor(((i + 1) * span) / bars));
+let m = 0;
+for (let j = s; j < e; j++) { const v = src.arr[j] || 0; if (v > m) m = v; }
+vals[i] = m;
+}
+}
+const center = 24;
+ctx.strokeStyle = 'rgba(148, 163, 184, 0.16)';
+ctx.lineWidth = 1;
+ctx.beginPath(); ctx.moveTo(0, center); ctx.lineTo(bars, center); ctx.stroke();
+const gradient = ctx.createLinearGradient(0, 5, 0, 43);
+if (selected) { gradient.addColorStop(0, '#a5f3fc'); gradient.addColorStop(0.52, '#5eead4'); gradient.addColorStop(1, '#34d399'); }
+else { gradient.addColorStop(0, '#67e8f9'); gradient.addColorStop(0.5, '#5eead4'); gradient.addColorStop(1, '#10b981'); }
+ctx.fillStyle = gradient;
+ctx.globalAlpha = 0.92;
+const barWidth = bars / vals.length;
+for (let i = 0; i < vals.length; i++) {
+const peak = clamp(Number(vals[i]) || 0, 0, 1);
+if (peak < 0.004) continue;
+const h = Math.max(1.5, peak * 38);
+ctx.fillRect(i * barWidth, center - h / 2, Math.max(1, barWidth * 0.8), h);
+}
+ctx.globalAlpha = 1;
+}, [id, offset, speed, duration, sourceDuration, assetKey, fallbackPeaks, visS, visE, cssWidth, selected]);
+return <canvas ref={ref} className="absolute bottom-0 top-0 h-full" style={{ left: cssLeft, width: cssWidth }} />;
 }
 
 function ClipFilmstrip({ clip }: { clip: Clip }) {
@@ -603,6 +658,7 @@ export default function Studio() {
   const [imageOverlays, setImageOverlays] = useState<ImageOverlay[]>([]);
   const [textOverlays, setTextOverlays] = useState<TextOverlay[]>([]);
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [, setWaveformRevision] = useState(0);
   const [videoOverlays, setVideoOverlays] = useState<VideoOverlay[]>([]);
   const [selectedVoId, setSelectedVoId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -932,7 +988,18 @@ for (const vo of proj.videoOverlays || []) {
 }
 
 // MIGRACIÓN 29/10: clips viejos con audio integrado pasan a audio vinculado
+// MIGRACIÓN FASE 6: clips pesados restaurados → pista vinculada sin decodificar
 for (const c of rc) {
+if ((c.bytes ?? 0) <= SKIP_HEAVY_BYTES) continue;
+if (ra.some((t) => t.sourceVideoId === c.id)) continue;
+const trackId = uid();
+ra.push({ id: trackId, assetId: c.assetId, name: `Audio de ${c.name}`, url: c.url, duration: c.duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: Array(WAVEFORM_SAMPLES).fill(0), sourceVideoId: c.id, released: false });
+c.muted = true;
+c.hasAudio = true;
+}
+// MIGRACIÓN 29/10: clips viejos con audio integrado pasan a audio vinculado
+for (const c of rc) {
+if ((c.bytes ?? 0) > SKIP_HEAVY_BYTES) continue; // pesados: ya migrados arriba
 if (c.hasAudio === false) continue;
 if (ra.some((t) => t.sourceVideoId === c.id)) continue;
 const dec = await extractAudioFromVideo(c.url);
@@ -1062,6 +1129,108 @@ ff.on('log', ({ message }: any) => { previewLogs.push(String(message)); if (prev
     return ff;
   }
 
+// Recupera el Blob original del clip sin volver a descargar su blob: URL.
+// Prioridad: caché en memoria → almacenamiento local del proyecto → URL como último recurso.
+// Esto evita duplicar videos grandes en RAM y también repara URLs blob vencidas.
+async function getClipSourceBlob(clip: Clip): Promise<Blob> {
+  const cached = clipBlobMap.get(clip.id);
+  if (cached) return cached;
+
+  if (clip.assetId) {
+    try {
+      const stored = await getAsset(clip.assetId);
+      if (stored) {
+        clipBlobMap.set(clip.id, stored);
+        // La URL anterior puede haber expirado aunque conserve el prefijo blob:.
+        // Regenerarla desde el asset local deja el clip utilizable también en el preview.
+        clip.url = URL.createObjectURL(stored);
+        return stored;
+      }
+    } catch (e) {
+      console.warn('[ClipBlob] No se pudo recuperar el asset local:', clip.name, e);
+    }
+  }
+
+  // No hacemos fetch(clip.url) cuando es una URL blob:. Puede haber quedado
+  // revocada y, además, volver a leerla duplica en RAM un archivo de varios GB.
+  // El Blob debe venir de la caché original o del almacenamiento local (IndexedDB).
+  throw new Error(
+    `No está disponible el archivo original de «${clip.name}» (clip ${clip.id}, asset ${clip.assetId || 'sin asset'}). ` +
+    'La vista previa no puede recuperarlo desde una URL temporal; volvé a seleccionar el archivo si el proyecto no lo guardó localmente.'
+  );
+}
+
+// Analiza audio AAC en ventanas pequeñas usando byte-ranges. Nunca decodifica
+// el video completo ni mantiene todo el audio de un archivo de varios GB en RAM.
+async function buildHeavyWaveform(assetId: string, blob: Blob, duration: number, alreadyQueued = false) {
+  if (!assetId || heavyWaveformCache.has(assetId) || (heavyWaveformJobs.has(assetId) && !alreadyQueued)) return;
+    heavyWaveformJobs.add(assetId);
+  const peaks = Array(Math.max(1, Math.ceil(duration * HEAVY_PEAKS_PER_SEC))).fill(0);
+  heavyWaveformCache.set(assetId, peaks.slice());
+  setWaveformRevision((v) => v + 1);
+  let waveformContext: AudioContext | null = null;
+  try {
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    waveformContext = new AudioContextCtor();
+    const windowSeconds = 30;
+    for (let t0 = 0; t0 < duration; t0 += windowSeconds) {
+      const t1 = Math.min(duration, t0 + windowSeconds);
+      const segment = await extractAudioSegment(blob, t0, t1, () => {});
+      if (!segment) {
+        if (t0 === 0) showToast('⚠️ No se pudo generar la forma de onda: el extractor visual necesita audio AAC compatible.', 'warn', 8000);
+        break;
+      }
+      const mp4Bytes = segment.mp4.slice().buffer as ArrayBuffer;
+      const decoded = await decodeAudioBlob(new Blob([mp4Bytes], { type: 'audio/mp4' }), waveformContext || undefined);
+      if (!decoded || !decoded.channelData.length) {
+        if (t0 === 0) showToast('⚠️ El navegador no pudo decodificar el fragmento de audio para dibujar la onda.', 'warn', 8000);
+        break;
+      }
+            const data = decoded.channelData;
+      const sr = decoded.sampleRate || 44100;
+      // Pico máximo real por columna temporal (64 columnas/segundo): resolución
+      // suficiente para cualquier zoom sin morir de memoria. (t0 = inicio de la
+      // ventana: el segmento decodificado ya viene rebasado a cero.)
+      for (let i = 0; i < data.length; i++) {
+        const sourceTime = t0 + i / sr;
+        if (sourceTime < 0 || sourceTime >= duration) continue;
+        const bin = Math.min(peaks.length - 1, Math.floor(sourceTime * HEAVY_PEAKS_PER_SEC));
+        const value = Math.abs(data[i] || 0);
+        if (value > peaks[bin]) peaks[bin] = value;
+      }
+      heavyWaveformCache.set(assetId, peaks.slice());
+      setWaveformRevision((v) => v + 1);
+      // Ceder el hilo entre ventanas para no perjudicar playback ni edición.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  } catch (error) {
+    console.warn('[Waveform] No se pudo completar la forma de onda:', error);
+  } finally {
+    if (waveformContext && waveformContext.state !== 'closed') {
+      try { await waveformContext.close(); } catch {}
+    }
+    heavyWaveformJobs.delete(assetId);
+    heavyWaveformCache.set(assetId, peaks.slice());
+    setWaveformRevision((v) => v + 1);
+  }
+}
+
+// Se activa tanto al importar como al restaurar proyectos antiguos. El assetId
+// permite compartir el análisis entre los dos lados de un clip dividido.
+useEffect(() => {
+  for (const track of audioTracks) {
+    if (!track.sourceVideoId || track.released) continue;
+    const clip = clips.find((item) => item.id === track.sourceVideoId);
+    if (!clip || (clip.bytes ?? 0) <= SKIP_HEAVY_BYTES || !clip.assetId) continue;
+    if (heavyWaveformCache.has(clip.assetId) || heavyWaveformJobs.has(clip.assetId)) continue;
+    heavyWaveformJobs.add(clip.assetId);
+    getClipSourceBlob(clip).then((blob) => buildHeavyWaveform(clip.assetId, blob, clip.duration, true)).catch((error) => {
+      heavyWaveformJobs.delete(clip.assetId);
+      console.warn('[Waveform] No se pudo recuperar el archivo para analizarlo:', error);
+    });
+  }
+}, [clips, audioTracks]);
+
 // ===== FASE 6 · PASO 2: entrada de FFmpeg por byte-ranges para clips pesados =====
 // Escalera de caminos: (1) clips chicos → archivo entero en MEMFS;
 // (2) clips grandes → byte-ranges Annex-B (RAM = solo la ventana);
@@ -1069,7 +1238,7 @@ ff.on('log', ({ message }: any) => { previewLogs.push(String(message)); if (prev
 //     (≤1.5GB), fallback a archivo entero; (4) si no, skip honesto con razón.
 async function segmentInputFor(clip: Clip, t0: number, t1: number, ff: any, base: string): Promise<{ mode: 'mp4' | 'h264'; fps: number; lead: number } | null> {
 let srcBlob: Blob;
-try { srcBlob = await (await fetch(clip.url)).blob(); } catch { lastSegmentReason = 'no se pudo abrir el blob del clip'; return null; }
+try { srcBlob = await getClipSourceBlob(clip); } catch (e) { lastSegmentReason = e instanceof Error ? e.message : 'no se pudo recuperar el archivo local'; return null; }
 const bytes = clip.bytes ?? srcBlob.size;
 // (1) Clips chicos: camino clásico de archivo entero
 if (bytes <= EXTRACT_THRESHOLD) {
@@ -1823,9 +1992,10 @@ setImportProgress({ file: f.name, step: 'Guardando en tu navegador…', idx: vi,
 try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
 const clipId = uid();
 clipBlobMap.set(clipId, f);
-setImportProgress({ file: f.name, step: f.size > SKIP_HEAVY_BYTES ? 'Archivo muy pesado: salteando extracción de audio…' : 'Extrayendo audio…', idx: vi, total: videos.length });
-const audioData = f.size > SKIP_HEAVY_BYTES ? null : await extractAudioFromVideo(url);
-          const newClip: Clip = { id: clipId, assetId, name: f.name, url, duration, trimStart: 0, trimEnd: duration, rotate: 0, speed: 1, fadeIn: 0, fadeOut: 0, muted: !!audioData, cropX: 0.5, cropY: 0.5, hasAudio: !!audioData, bytes: f.size, transition: { type: 'fade', duration: 0.5 } };
+setImportProgress({ file: f.name, step: f.size > SKIP_HEAVY_BYTES ? 'Preparando audio por fragmentos…' : 'Extrayendo audio…', idx: vi, total: videos.length });
+const isHeavy = f.size > SKIP_HEAVY_BYTES;
+const audioData = isHeavy ? null : await extractAudioFromVideo(url);
+const newClip: Clip = { id: clipId, assetId, name: f.name, url, duration, trimStart: 0, trimEnd: duration, rotate: 0, speed: 1, fadeIn: 0, fadeOut: 0, muted: isHeavy ? true : !!audioData, cropX: 0.5, cropY: 0.5, hasAudio: isHeavy ? true : !!audioData, bytes: f.size, transition: { type: 'fade', duration: 0.5 } };
 if (audioData) {
 audioDataMap.set(clipId, { channelData: audioData.channelData, sampleRate: audioData.sampleRate });
 const trackId = uid();
@@ -1833,12 +2003,21 @@ audioDataMap.set(trackId, audioData);
 const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: getPeaksForSegment(trackId, 0, duration), sourceVideoId: clipId, released: false };
 setAudioTracks((prev) => [...prev, linked]);
 }
+
+else if (isHeavy) {
+// FASE 6: los pesados no decodifican audio al importar (RAM). Pista vinculada
+// sin decodificar audio al importar: la onda se calcula después por byte-ranges;
+// el preview reproduce por streaming de disco y el export usa el extractor local.
+const trackId = uid();
+const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: Array(WAVEFORM_SAMPLES).fill(0), sourceVideoId: clipId, released: false };
+setAudioTracks((prev) => [...prev, linked]);
+}
                     setClips((prev) => [...prev, newClip]);
 setImportProgress({ file: f.name, step: 'Generando miniaturas…', idx: vi, total: videos.length });
 enqueueFilmstrip(assetId, url, duration);
 if (f.size <= SKIP_HEAVY_BYTES) enqueueProxy(assetId, url);
-else showToast('⚠️ Archivo >2GB: sin proxy ni waveform por memoria del navegador. Editar y previsualizar siguen funcionando con el original.', 'warn', 7000);
-          showToast(audioData ? `🎬 Video "${f.name}" agregado · audio vinculado en la pista 🔗` : `🎬 Video "${f.name}" agregado (sin audio)`, 'info');
+else showToast('🎵 Archivo pesado: la forma de onda se está calculando por fragmentos, sin cargar el audio completo en memoria.', 'info', 6000);
+          showToast(audioData || isHeavy ? `🎬 Video "${f.name}" agregado · audio vinculado en la pista 🔗` : `🎬 Video "${f.name}" agregado (sin audio)`, 'info');
         }
       }
     }
@@ -1986,6 +2165,13 @@ setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelec
         if (localFile - clip.trimStart >= MIN_LEN && clip.trimEnd - localFile >= MIN_LEN) {
 const partA: Clip = { ...clip, id: uid(), trimEnd: localFile, transition: { type: 'none', duration: 0 } };
 const partB: Clip = { ...clip, id: uid(), trimStart: localFile };
+// Al dividir un clip cambian sus IDs. Compartimos el Blob original con ambos
+// fragmentos: no se copia el video ni se vuelve a cargar en memoria.
+const originalBlob = clipBlobMap.get(clip.id);
+if (originalBlob) {
+  clipBlobMap.set(partA.id, originalBlob);
+  clipBlobMap.set(partB.id, originalBlob);
+}
 setClips((prev) => { const next = [...prev]; next.splice(index, 1, partA, partB); return next; });
 const lt = audioTracksRef.current.find((t) => t.sourceVideoId === clip.id && !t.released);
 if (lt) {
@@ -2254,11 +2440,375 @@ showToast(`❌ Subtítulos: ${e?.message || 'error'} — revisá la consola`, 'w
     setShowExportModal(true);
   }
 
+// ===== FASE 6 · PASO 3b: EXPORT ESCALABLE (CHUNKED) =====
+// Video por chunks alimentados por byte-ranges, audio continuo en un solo
+// encode, overlays por chunk restando chunkStart. Validado en /lab-pipeline
+// (tests 8-13) sobre Blade Runner 3.48GB: deriva ≤1 frame, 5.1 intacto.
+async function runExportChunked() {
+if (videoOverlays.length > 0) {
+showToast('⚠️ Export escalable v1 todavía no soporta capas de superposición con clips pesados. Quitá las capas o usa clips livianos.', 'warn', 9000);
+return;
+}
+const heavyIdx = clips.map((c, i) => ({ c, i })).filter(({ c }) => (c.bytes ?? 0) > EXTRACT_THRESHOLD);
+const tooLong = heavyIdx.find(({ c }) => effLen(c) > CHUNKED_AUDIO_MAX_SECS);
+if (tooLong) {
+showToast(`⚠️ "${tooLong.c.name}" supera los 10 min: recortalo para el export escalable v1 (techo de RAM del audio por byte-ranges).`, 'warn', 9000);
+return;
+}
+setExporting(true);
+previewQueueRef.current = [];
+if (previewFFRef.current) { try { await previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
+setExportProgress({ phase: 'preparing', percent: 0, speed: 0 });
+showToast('🧩 Clip pesado detectado → export escalable por chunks', 'info', 5000);
+const ffLogs: string[] = [];
+let ff: any = null;
+try {
+const { FFmpeg } = await loadFFmpegLib();
+ff = new FFmpeg();
+ff.on('log', ({ message }: any) => { console.log('[FFmpeg Chunked]', message); ffLogs.push(String(message)); if (ffLogs.length > 300) ffLogs.shift(); });
+const coreURL = await toBlobURL('/ffmpeg-core.js', 'text/javascript');
+const wasmURL = await toBlobURL('/ffmpeg-core.wasm', 'application/wasm');
+await ff.load({ coreURL, wasmURL });
+const FPS = 30; const CHUNK_TARGET = 60; const LOOKAHEAD = 0.25;
+const targetW = Math.round(REF_WIDTH * resInfo.factor);
+const targetH = Math.round(REF_HEIGHT * resInfo.factor);
+const videoCodecArgs: string[] = ['-c:v', 'libx264', '-preset', qualInfo.preset, '-crf', String(qualInfo.crf264), '-pix_fmt', 'yuv420p'];
+const starts = videoStarts;
+const total = projectDuration;
+// PRE-CHECK: cada clip pesado se prueba con una extracción de 1s ANTES de
+// arrancar (nada de morir a los 20 minutos de render por un códec raro).
+const willExtract = new Set<number>();
+for (const { c, i } of heavyIdx) {
+const blob = await getClipSourceBlob(c);
+const probe = await extractSegment(blob, c.trimStart, Math.min(c.trimEnd, c.trimStart + 1), () => {});
+if (probe) { willExtract.add(i); continue; }
+if ((c.bytes ?? 0) <= SAFE_PROC_BYTES) continue; // entero residente alcanza
+showToast(`❌ "${c.name}" no es H.264 y supera 1.5GB: el export escalable v1 no puede procesarlo.`, 'warn', 9000);
+throw new Error(`precheck: extractor falló para ${c.name}`);
+}
+// Ventanas protegidas (transiciones) + chunks
+const protectedWins: { s: number; e: number }[] = [];
+for (let i = 0; i < clips.length - 1; i++) {
+const d = blendLen(i);
+if (d > 0) protectedWins.push({ s: starts[i + 1], e: starts[i + 1] + d });
+}
+const chunks = computeChunkBoundaries(total, protectedWins, CHUNK_TARGET, FPS);
+// Recursos residentes: fuentes + imágenes + archivos enteros livianos
+const loadedFontFiles = new Set<string>();
+const fontPaths = new Set<string>();
+textOverlays.forEach((txt) => { fontPaths.add(FONT_VARIANTS[txt.font].regular); fontPaths.add(FONT_VARIANTS[txt.font].bold); });
+for (const p of fontPaths) {
+const fname = p.split('/').pop() as string;
+try {
+const fontRes = await fetch(p);
+if (!fontRes.ok) throw new Error(`HTTP ${fontRes.status}`);
+await ff.writeFile(fname, new Uint8Array(await fontRes.arrayBuffer()));
+loadedFontFiles.add(fname);
+} catch (e) { console.error(`[ExportChunked] No se pudo cargar la fuente ${p}.`, e); }
+}
+for (let i = 0; i < imageOverlays.length; i++) {
+const ires = await fetch(imageOverlays[i].url);
+await ff.writeFile(`img${i}.png`, new Uint8Array(await ires.arrayBuffer()));
+}
+const wholeFileFor = new Map<number, string>();
+for (let i = 0; i < clips.length; i++) {
+if (willExtract.has(i)) continue;
+const sourceBlob = await getClipSourceBlob(clips[i]);
+await ff.writeFile(`v${i}.mp4`, new Uint8Array(await sourceBlob.arrayBuffer()));
+wholeFileFor.set(i, `v${i}.mp4`);
+}
+const rotOf = (r: number) => r === 90 ? 'transpose=1,' : r === 180 ? 'hflip,vflip,' : r === 270 ? 'transpose=2,' : '';
+const fitChainFor = (c: Clip) => exportSettings.fit === 'recortar'
+? `scale=${REF_WIDTH}:${REF_HEIGHT}:force_original_aspect_ratio=increase,crop=${REF_WIDTH}:${REF_HEIGHT}:(iw-${REF_WIDTH})*${c.cropX}:(ih-${REF_HEIGHT})*${c.cropY}`
+: `scale=${REF_WIDTH}:${REF_HEIGHT}:force_original_aspect_ratio=decrease,pad=${REF_WIDTH}:${REF_HEIGHT}:(ow-iw)/2:(oh-ih)/2`;
+const chunkBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+renderStartRef.current = performance.now();
+// ===== FASE 1: VIDEO POR CHUNKS =====
+for (const chk of chunks) {
+const cs = chk.start; const ce = chk.end;
+setExportProgress({ phase: 'rendering', percent: Math.round((chk.index / chunks.length) * 85), speed: 0 });
+showToast(`🧩 Chunk ${chk.index + 1}/${chunks.length} · ${cs.toFixed(0)}s–${ce.toFixed(0)}s`, 'info', 2000);
+const inChunk: any[] = [];
+for (let i = 0; i < clips.length; i++) {
+const clip = clips[i];
+const tlS = starts[i]; const tlE = starts[i] + effLen(clip);
+const oS = Math.max(cs, tlS); const oE = Math.min(ce, tlE);
+if (oE <= oS) continue;
+const clipLocalStartTL = oS - tlS;
+inChunk.push({ idx: i, clip, localStart: oS - cs, len: oE - oS, clipLocalStartTL, fileStart: clip.trimStart + clipLocalStartTL * clip.speed, fileEnd: clip.trimStart + (oE - tlS) * clip.speed });
+}
+const inputArgs: string[] = [];
+const tempFiles: string[] = [];
+let fc = '';
+for (let k = 0; k < inChunk.length; k++) {
+const it = inChunk[k];
+const clip = it.clip;
+let trimA: number; let trimB: number;
+if (wholeFileFor.has(it.idx)) {
+inputArgs.push('-i', wholeFileFor.get(it.idx)!);
+trimA = it.fileStart; trimB = it.fileEnd;
+} else {
+const blob = await getClipSourceBlob(clip);
+const segV = await extractSegment(blob, it.fileStart, it.fileEnd + LOOKAHEAD, () => {});
+if (!segV) throw new Error(`extractSegment falló en "${clip.name}" (chunk ${chk.index})`);
+totalFetched += segV.fetchedBytes;
+const fname = `cv${chk.index}_${k}.h264`;
+await ff.writeFile(fname, segV.annexB);
+tempFiles.push(fname);
+inputArgs.push('-framerate', segV.fps.toFixed(3), '-i', fname);
+trimA = Math.max(0, it.fileStart - segV.firstTs);
+trimB = trimA + (it.fileEnd - it.fileStart);
+}
+const sp = clip.speed;
+const pts = sp === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${sp}`;
+const effL = effLen(clip);
+let vfades = '';
+const segTLs = it.clipLocalStartTL;
+const segTLe = segTLs + it.len;
+if (clip.fadeIn > 0 && segTLs < clip.fadeIn) vfades += `,fade=t=in:st=0:d=${Math.min(clip.fadeIn - segTLs, it.len).toFixed(3)}`;
+if (clip.fadeOut > 0 && segTLe > effL - clip.fadeOut) {
+const st = Math.max(0, (effL - clip.fadeOut) - segTLs);
+vfades += `,fade=t=out:st=${st.toFixed(3)}:d=${Math.min(clip.fadeOut, it.len - st).toFixed(3)}`;
+}
+const fFF = specToFF(FILTER_MAP[clip.filter || 'none'] || {});
+fc += `[${k}:v]trim=${trimA.toFixed(6)}:${trimB.toFixed(6)},${pts},${rotOf(clip.rotate)}fps=${FPS},${fitChainFor(clip)}${fFF ? ',' + fFF : ''}${vfades}[cv${k}];`;
+}
+let currentVideoLabel: string;
+if (inChunk.length === 1) currentVideoLabel = 'cv0';
+else {
+let prevLabel = 'cv0';
+let cumulative = inChunk[0].len;
+for (let k = 1; k < inChunk.length; k++) {
+const prevIdx = inChunk[k - 1].idx;
+if (prevIdx + 1 === inChunk[k].idx && blendLen(prevIdx) > 0) {
+const d = blendLen(prevIdx);
+const offset = Math.max(cumulative - d, 0);
+const xfadeType = XFADE_VALID.has(clips[prevIdx].transition!.type) ? clips[prevIdx].transition!.type : 'fade';
+fc += `[${prevLabel}][cv${k}]xfade=transition=${xfadeType}:duration=${d}:offset=${offset.toFixed(6)}[cx${k}];`;
+prevLabel = `cx${k}`;
+cumulative += inChunk[k].len - d;
+} else {
+fc += `[${prevLabel}][cv${k}]concat=n=2:v=1:a=0[cc${k}];`;
+prevLabel = `cc${k}`;
+cumulative += inChunk[k].len;
+}
+}
+currentVideoLabel = prevLabel;
+}
+// Overlays de IMAGEN (solape real: jamás PTS negativo)
+let nextInput = inChunk.length;
+for (let i = 0; i < imageOverlays.length; i++) {
+const img = imageOverlays[i];
+const oS = Math.max(img.start, cs); const oE = Math.min(img.end, ce);
+if (oE <= oS) continue;
+const idx = nextInput++;
+inputArgs.push('-loop', '1', '-i', `img${i}.png`);
+const localStart = oS - cs; const overlapDur = oE - oS;
+const durImg = img.end - img.start;
+const imgStartInWindow = oS - img.start;
+const imgWidth = Math.round((img.size / 100) * REF_WIDTH);
+let fades = '';
+if (img.fadeIn > 0) fades += `fade=t=in:st=0:d=${img.fadeIn}:alpha=1,`;
+if (img.fadeOut > 0) fades += `fade=t=out:st=${Math.max(durImg - img.fadeOut, 0)}:d=${img.fadeOut}:alpha=1,`;
+fc += `[${idx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${rotOf(img.rotate)}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB[imgc${i}];`;
+fc += `[${currentVideoLabel}][imgc${i}]overlay=x=${img.x}-overlay_w/2:y=${img.y}-overlay_h/2:eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[imgo${i}];`;
+currentVideoLabel = `imgo${i}`;
+}
+// Overlays de TEXTO (enable/alpha con tiempos corridos por chunkStart)
+let finalVideoLabel = currentVideoLabel;
+for (let i = 0; i < textOverlays.length; i++) {
+const txt = textOverlays[i];
+const oS = Math.max(txt.start, cs); const oE = Math.min(txt.end, ce);
+if (oE <= oS) continue;
+const S = txt.start - cs; const E = txt.end - cs;
+const variant = FONT_VARIANTS[txt.font];
+let fontFile = (txt.bold ? variant.bold : variant.regular).split('/').pop() as string;
+if (!loadedFontFiles.has(fontFile)) {
+const familyRegular = variant.regular.split('/').pop() as string;
+if (loadedFontFiles.has(familyRegular)) fontFile = familyRegular;
+else { const anyFont = Array.from(loadedFontFiles)[0]; if (!anyFont) continue; fontFile = anyFont; }
+}
+const textEscaped = txt.text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
+let alphaExpr = '';
+if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S.toFixed(6)})/${txt.fadeIn},(${E.toFixed(6)}-t)/${txt.fadeOut})))'`;
+else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S.toFixed(6)})/${txt.fadeIn}))'`;
+else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E.toFixed(6)}-t)/${txt.fadeOut}))'`;
+const outline = txt.outline ? ':borderw=4:bordercolor=black' : '';
+fc += `[${finalVideoLabel}]drawtext=text='${textEscaped}':x=${txt.x}-text_w/2:y=${txt.y}-text_h/2:fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[txtc${i}];`;
+finalVideoLabel = `txtc${i}`;
+}
+fc += `[${finalVideoLabel}]scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2[chunkv]`;
+const code = await ff.exec([...inputArgs, '-filter_complex', fc, '-map', '[chunkv]', '-an', ...videoCodecArgs, '-r', String(FPS), '-f', 'mp4', '-movflags', '+faststart', '-y', `chunk${chk.index}.mp4`]);
+if (code !== 0) throw new Error(`Chunk ${chk.index} falló (código ${code}) · ${ffLogs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`chunk${chk.index}.mp4`);
+if (!data || data.length === 0) throw new Error(`chunk${chk.index}.mp4 salió vacío`);
+chunkBlobs.push(data as Uint8Array);
+for (const tf of tempFiles) { try { await ff.deleteFile(tf); } catch (e) {} }
+try { await ff.deleteFile(`chunk${chk.index}.mp4`); } catch (e) {}
+}
+// ===== FASE 2: CONCAT DE VIDEO =====
+setExportProgress({ phase: 'rendering', percent: 88, speed: 0 });
+for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(chunkBlobs.map((_, k) => `file 'chunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-y', 'video_full.mp4']);
+if (concatCode !== 0) throw new Error(`Concat falló (código ${concatCode}) · ${ffLogs.slice(-3).join(' | ')}`);
+for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
+try { await ff.deleteFile('list.txt'); } catch (e) {}
+// ===== FASE 3: AUDIO CONTINUO (un solo encode = cero saltos) =====
+setExportProgress({ phase: 'rendering', percent: 91, speed: 0 });
+const audioFiles: string[] = [];
+const clipInputIdx: number[] = new Array(clips.length).fill(-1);
+const clipAudioRoll: number[] = new Array(clips.length).fill(0);
+for (let i = 0; i < clips.length; i++) {
+const clip = clips[i];
+if (clip.muted || clip.hasAudio === false) continue;
+if (wholeFileFor.has(i)) { clipInputIdx[i] = audioFiles.length; audioFiles.push(wholeFileFor.get(i)!); continue; }
+const blob = await getClipSourceBlob(clip);
+const segA = await extractAudioSegment(blob, clip.trimStart, clip.trimEnd, () => {});
+if (!segA) continue;
+totalFetched += segA.fetchedBytes;
+await ff.writeFile(`cax${i}.m4a`, segA.mp4);
+audioFiles.push(`cax${i}.m4a`);
+clipInputIdx[i] = audioFiles.length - 1;
+clipAudioRoll[i] = Math.max(0, clip.trimStart - segA.firstTs);
+}
+const trackInputIdx: number[] = new Array(audioTracks.length).fill(-1);
+const trackRoll: number[] = new Array(audioTracks.length).fill(0);
+const trackWasExtracted: boolean[] = new Array(audioTracks.length).fill(false);
+for (let j = 0; j < audioTracks.length; j++) {
+const aud = audioTracks[j];
+if (aud.muted) continue;
+const srcIdx = aud.sourceVideoId ? clips.findIndex((c) => c.id === aud.sourceVideoId) : -1;
+if (srcIdx >= 0 && wholeFileFor.has(srcIdx)) {
+trackInputIdx[j] = audioFiles.length; audioFiles.push(wholeFileFor.get(srcIdx)!);
+} else if (srcIdx >= 0 && willExtract.has(srcIdx) && !aud.released) {
+const g = trackGeom(aud);
+const blob = await getClipSourceBlob(clips[srcIdx]);
+const audioExtractMessages: string[] = [];
+const segA = await extractAudioSegment(blob, g.offset, g.offset + g.duration * g.speed, (message) => {
+  console.log('[Audio byte-ranges]', message);
+  audioExtractMessages.push(message);
+});
+if (!segA) {
+  const detail = audioExtractMessages.slice(-2).join(' · ') || 'el extractor no encontró una pista de audio compatible';
+  showToast(`⚠️ No se pudo extraer el audio de "${aud.name}": ${detail}`, 'warn', 10000);
+  throw new Error(`Audio del clip pesado no compatible: ${detail}`);
+}
+totalFetched += segA.fetchedBytes;
+await ff.writeFile(`sax${j}.m4a`, segA.mp4);
+audioFiles.push(`sax${j}.m4a`);
+trackInputIdx[j] = audioFiles.length - 1;
+trackRoll[j] = Math.max(0, g.offset - segA.firstTs);
+trackWasExtracted[j] = true;
+} else {
+const fname = `a${j}.${aud.url.includes('blob') ? 'mp4' : 'mp3'}`;
+await ff.writeFile(fname, new Uint8Array(await (await fetch(aud.url)).arrayBuffer()));
+audioFiles.push(fname);
+trackInputIdx[j] = audioFiles.length - 1;
+}
+}
+const audioInputArgs: string[] = [];
+audioFiles.forEach((f) => audioInputArgs.push('-i', f));
+let afc = '';
+const clipAudioLabels: string[] = [];
+for (let i = 0; i < clips.length; i++) {
+const clip = clips[i];
+if (!clip.muted && clip.hasAudio !== false && clipInputIdx[i] >= 0) {
+const sp = clip.speed;
+const pts = sp === 1 ? 'asetpts=PTS-STARTPTS' : `asetpts=(PTS-STARTPTS)/${sp}`;
+const tempo = sp === 1 ? '' : `,atempo=${sp}`;
+const roll = clipAudioRoll[i];
+afc += `[${clipInputIdx[i]}:a]atrim=${roll.toFixed(6)}:${(roll + (clip.trimEnd - clip.trimStart)).toFixed(6)},${pts}${tempo},volume=1.0[ca${i}];`;
+} else {
+afc += `anullsrc=r=44100:cl=stereo:d=${effLen(clip)}[ca${i}];`;
+}
+clipAudioLabels.push(`ca${i}`);
+}
+let prevAudioLabel = clipAudioLabels[0] ?? '';
+for (let i = 1; i < clipAudioLabels.length; i++) {
+const tr = clips[i - 1].transition;
+const d = tr && tr.type !== 'none' ? Math.min(tr.duration, effLen(clips[i - 1]), effLen(clips[i])) : 0;
+if (d > 0) afc += `[${prevAudioLabel}][${clipAudioLabels[i]}]acrossfade=d=${d}:c1=tri:c2=tri[ax${i}];`;
+else afc += `[${prevAudioLabel}][${clipAudioLabels[i]}]concat=n=2:v=0:a=1[ax${i}];`;
+prevAudioLabel = `ax${i}`;
+}
+const audioLabels: string[] = [];
+if (clips.length > 0) audioLabels.push(prevAudioLabel);
+audioTracks.forEach((aud, j) => {
+if (aud.muted || trackInputIdx[j] < 0) return;
+const g = trackGeom(aud);
+const cf = crossFades(aud);
+const delay = g.start * 1000;
+const pts = g.speed === 1 ? 'asetpts=PTS-STARTPTS' : `asetpts=(PTS-STARTPTS)/${g.speed}`;
+const tempo = g.speed === 1 ? '' : `,atempo=${g.speed}`;
+let afades = '';
+if (aud.fadeIn > 0) afades += `,afade=t=in:st=0:d=${aud.fadeIn}`;
+if (aud.fadeOut > 0) afades += `,afade=t=out:st=${Math.max(g.duration - aud.fadeOut, 0)}:d=${aud.fadeOut}`;
+if (cf.dIn > 0) afades += `,afade=t=in:st=0:d=${cf.dIn}`;
+if (cf.dOut > 0) afades += `,afade=t=out:st=${Math.max(g.duration - cf.dOut, 0)}:d=${cf.dOut}`;
+const roll = trackRoll[j];
+// Los segmentos AAC extraídos por byte-ranges se remuxean con timestamps
+// reiniciados en cero. En ese caso NO hay que volver a sumar g.offset:
+// el recorte ya empieza en el offset original solicitado. Para fuentes
+// completas (wholeFileFor), trackRoll=0 y sí corresponde usar g.offset.
+const audioTrimStart = trackWasExtracted[j] ? roll : g.offset;
+const audioTrimEnd = trackWasExtracted[j]
+  ? roll + g.duration * g.speed
+  : g.offset + g.duration * g.speed;
+afc += `[${trackInputIdx[j]}:a]atrim=${audioTrimStart.toFixed(6)}:${audioTrimEnd.toFixed(6)},${pts}${tempo},adelay=${delay}|${delay},volume=${aud.volume}${afades}[sa${j}];`;
+audioLabels.push(`sa${j}`);
+});
+let finalAudioLabel = 'outa';
+if (audioLabels.length > 0) {
+afc += `${audioLabels.map((l) => `[${l}]`).join('')}amix=inputs=${audioLabels.length}:duration=longest:dropout_transition=0[${finalAudioLabel}]`;
+} else {
+afc += `anullsrc=r=44100:cl=stereo[${finalAudioLabel}]`;
+}
+const audioCode = await ff.exec([...audioInputArgs, '-filter_complex', afc, '-map', `[${finalAudioLabel}]`, '-c:a', 'aac', '-b:a', qualInfo.bitrate, '-y', 'audio_full.m4a']);
+if (audioCode !== 0) throw new Error(`Audio falló (código ${audioCode}) · ${ffLogs.slice(-3).join(' | ')}`);
+for (const f of Array.from(new Set(audioFiles))) { try { await ff.deleteFile(f); } catch (e) {} }
+for (let i = 0; i < imageOverlays.length; i++) { try { await ff.deleteFile(`img${i}.png`); } catch (e) {} }
+// ===== FASE 4: MERGE FINAL =====
+setExportProgress({ phase: 'packaging', percent: 97, speed: 0 });
+const outputFileName = `${exportSettings.filename || 'clipedia_export'}.${fmtInfo.ext}`;
+const formatArgs: string[] = ['-f', exportSettings.format === 'mkv' ? 'matroska' : exportSettings.format];
+if (exportSettings.format !== 'mkv') formatArgs.push('-movflags', '+faststart');
+const mergeCode = await ff.exec(['-i', 'video_full.mp4', '-i', 'audio_full.m4a', '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'copy', '-t', total.toString(), ...formatArgs, '-y', outputFileName]);
+if (mergeCode !== 0) throw new Error(`Merge final falló (código ${mergeCode}) · ${ffLogs.slice(-3).join(' | ')}`);
+try { await ff.deleteFile('video_full.mp4'); } catch (e) {}
+try { await ff.deleteFile('audio_full.m4a'); } catch (e) {}
+setExportProgress({ phase: 'packaging', percent: 100, speed: 0 });
+const data = await ff.readFile(outputFileName);
+if (!data || data.length === 0) throw new Error('El archivo final salió vacío');
+setExportProgress({ phase: 'done', percent: 100, speed: 0 });
+const mime = fmtInfo.ext === 'mkv' ? 'video/x-matroska' : (fmtInfo.ext === 'mov' ? 'video/quicktime' : 'video/mp4');
+const url = URL.createObjectURL(new Blob([data], { type: mime }));
+const a = document.createElement('a');
+a.href = url; a.download = outputFileName;
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+URL.revokeObjectURL(url);
+const elapsed = Math.round((performance.now() - renderStartRef.current) / 1000);
+showToast(`✅ ¡Exportado: ${outputFileName}! (${(totalFetched / 1048576).toFixed(0)}MB leídos del disco · ${elapsed}s)`, 'info', 8000);
+setTimeout(() => { setShowExportModal(false); setExportProgress(null); }, 1500);
+} catch (error: any) {
+console.error('[ExportChunked] ERROR FATAL:', error);
+console.error('[ExportChunked] Últimas líneas FFmpeg:\n' + ffLogs.slice(-10).join('\n'));
+showToast(`❌ Error: ${error.message || 'Revisá la consola'}`, 'warn');
+setExportProgress(null);
+} finally {
+setExporting(false);
+if (ff) { try { await ff.terminate(); } catch (e) {} }
+}
+}
+
   async function runExport() {
 if (projectDuration === 0) return;
-const tooBig = clips.find((c) => (c.bytes ?? 0) > SAFE_PROC_BYTES);
-if (tooBig) { showToast(`❌ "${tooBig.name}" supera 1.5GB: el export en navegador todavía no puede procesarlo (pipeline streaming = Fase 6). Recortalo o usá un clip más liviano por ahora.`, 'warn', 9000); return; }
 if (resInfo.plus && !isPlus) { showToast('🔒 Esta resolución requiere Clipedia Plus', 'warn'); return; }
+// FASE 6 · PASO 3b: los clips pesados ya no se niegan: cambian de arquitectura.
+// El fusible de 1.5GB se jubiló con honores. 🫡
+const needsChunked = clips.some((c) => (c.bytes ?? 0) > SAFE_PROC_BYTES);
+if (needsChunked) { await runExportChunked(); return; }
     setExporting(true);
     previewQueueRef.current = [];
     if (previewFFRef.current) { try { await previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
@@ -3274,7 +3824,7 @@ const width = g.duration * pps; const left = g.start * pps;
 return (
 <div key={track.id} className="relative mt-1.5 h-[calc(2.5rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:mt-2 lg:h-12" style={{ width: Math.max(projectDuration * pps + 160, 700) }}>
 <div onClick={(e) => { e.stopPropagation(); selectOnly(track.id, 'audio'); }} onPointerDown={linked ? undefined : (e) => startOverlayTimeDrag(e, track.id, 'audio', 'move')} onPointerMove={linked ? undefined : moveOverlayTimeDrag} onPointerUp={linked ? undefined : endOverlayTimeDrag} onPointerCancel={linked ? undefined : endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 ${linked ? 'cursor-default border-green-400/40 bg-green-500/5' : isSelected ? 'cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado al video: sigue sus edits · tocá el candado para liberar' : 'Arrastrá para mover · bordes para recortar'}>
-<WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} width={width} selected={isSelected} />
+<WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
 {track.sourceVideoId && (
 <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>
 )}

@@ -32,6 +32,26 @@ await push(Math.max(0, file.size - tail), file.size);
 return { ok: !!mp4boxFile.moov, buffers };
 }
 
+// El análisis de la tabla de samples del audio se reutiliza entre ventanas.
+// Sin esta caché, una forma de onda larga volvería a parsear el moov cientos
+// de veces (y releería hasta 32MB por cada fragmento).
+type CachedAudioMetadata = { mp4boxFile: any; info: any; asc: Uint8Array | null };
+const audioMetadataCache = new WeakMap<Blob, Promise<CachedAudioMetadata | null>>();
+async function getCachedAudioMetadata(file: Blob, log: (s: string) => void): Promise<CachedAudioMetadata | null> {
+let pending = audioMetadataCache.get(file);
+if (!pending) {
+pending = (async () => {
+const MP4Box = await loadMp4Box();
+const mp4boxFile = MP4Box.createFile();
+const { ok, buffers } = await feedMoov(mp4boxFile, file, log);
+if (!ok) return null;
+return { mp4boxFile, info: mp4boxFile.getInfo(), asc: findAacDescription(buffers) };
+})();
+audioMetadataCache.set(file, pending);
+}
+return pending;
+}
+
 function findAvcCDescription(buffers: ArrayBuffer[]): Uint8Array | null {
 for (const buf of buffers) {
 const u8 = new Uint8Array(buf);
@@ -209,12 +229,10 @@ return h;
 
 export async function extractAudioSegment(file: Blob, t0: number, t1: number, log: (s: string) => void = () => {}): Promise<AudioSegmentResult | null> {
 const tStart = performance.now();
-const MP4Box = await loadMp4Box();
+const metadata = await getCachedAudioMetadata(file, log);
+if (!metadata) { log('⚠️ Audio: no se encontró el moov'); return null; }
+const { mp4boxFile, info } = metadata;
 const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
-const mp4boxFile = MP4Box.createFile();
-const { ok, buffers } = await feedMoov(mp4boxFile, file, log);
-if (!ok) { log('⚠️ Audio: no se encontró el moov'); return null; }
-const info = mp4boxFile.getInfo();
 const ainfo = info.audioTracks && info.audioTracks[0];
 if (!ainfo) { log('⚠️ Audio: el archivo no tiene pista de audio'); return null; }
 if (!/mp4a\.40\.2/.test(String(ainfo.codec || ''))) { log(`⚠️ Audio: códec ${ainfo.codec} no soportado (v1 solo AAC-LC)`); return null; }
@@ -248,7 +266,7 @@ if (offset >= r.s && offset + size <= r.e) return new Uint8Array(rangeBuffers.ge
 throw new Error('offset fuera de rangos');
 };
 // ===== ORDEN CANÓNICO: ASC → sr/ch → muxer =====
-const asc = findAacDescription(buffers);
+const asc = metadata.asc;
 if (!asc) { log('⚠️ Audio: no se encontró el esds/ASC del fuente'); return null; }
 const verdad = parseASC(asc);
 const sr = verdad.freq > 0 ? verdad.freq : (ainfo.sample_rate || 44100);

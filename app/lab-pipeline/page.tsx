@@ -968,6 +968,419 @@ addLog(`❌ Etapa 2c: ${e?.message || e}`);
 setBusy(false);
 }
 
+async function testOverlaysPorChunk() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+addLog('🎬 ETAPA 3a · Overlays por chunk: cada overlay resta chunkStart a sus tiempos');
+// Timeline sintética (misma geometría que el test 11)
+const syntheticClips = [
+{ name: 'Clip A', start: 100, end: 120, speed: 1, transition: { type: 'fade', duration: 1.0 } },
+{ name: 'Clip B', start: 500, end: 520, speed: 1, transition: { type: 'wipeleft', duration: 1.5 } },
+{ name: 'Clip C', start: 1000, end: 1020, speed: 1, transition: null },
+];
+const effLen = (c: any) => (c.end - c.start) / c.speed;
+const dAfter = (i: number) => {
+if (i < 0 || i >= syntheticClips.length - 1) return 0;
+const tr = syntheticClips[i].transition;
+if (!tr) return 0;
+return Math.min(tr.duration, effLen(syntheticClips[i]), effLen(syntheticClips[i + 1]));
+};
+const videoStarts: number[] = [];
+let acc = 0;
+for (let i = 0; i < syntheticClips.length; i++) { videoStarts.push(acc); acc += effLen(syntheticClips[i]) - dAfter(i); }
+const totalDuration = videoStarts[syntheticClips.length - 1] + effLen(syntheticClips[syntheticClips.length - 1]);
+const protectedWins: { s: number; e: number }[] = [];
+for (let i = 0; i < syntheticClips.length - 1; i++) {
+const d = dAfter(i);
+if (d > 0) { const ws = videoStarts[i + 1]; protectedWins.push({ s: ws, e: ws + d }); }
+}
+const TARGET = 10; const FPS = 30;
+const chunks = computeChunkBoundaries(totalDuration, protectedWins, TARGET, FPS);
+// Overlays de prueba, diseñados para CRUZAR bordes de chunk
+const TXT = { S: 8, E: 14, fadeIn: 1, fadeOut: 1 };
+const IMG = { S: 25, E: 35, fadeIn: 1, fadeOut: 1 };
+addLog(`📐 Timeline ${totalDuration.toFixed(2)}s · ${chunks.length} chunks · texto ${TXT.S}–${TXT.E}s · imagen ${IMG.S}–${IMG.E}s`);
+const w = window as any;
+if (!w.FFmpegWASM) {
+await new Promise<void>((res2, rej) => { const s = document.createElement('script'); s.src = '/ffmpeg.js'; s.onload = () => res2(); s.onerror = () => rej(new Error('no se pudo cargar /ffmpeg.js')); document.head.appendChild(s); });
+}
+const { FFmpeg } = w.FFmpegWASM;
+const ff = new FFmpeg();
+const logs: string[] = [];
+ff.on('log', ({ message }: any) => { logs.push(String(message)); });
+const { toBlobURL } = await import('@ffmpeg/util');
+await ff.load({ coreURL: await toBlobURL('/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL('/ffmpeg-core.wasm', 'application/wasm') });
+// Recursos persistentes: fuente + imagen de overlay (se escriben UNA vez)
+const fontRes = await fetch('/fonts/Roboto-Bold.ttf');
+if (!fontRes.ok) throw new Error('no se pudo cargar Roboto-Bold.ttf');
+await ff.writeFile('font.ttf', new Uint8Array(await fontRes.arrayBuffer()));
+const cv = document.createElement('canvas'); cv.width = 240; cv.height = 135;
+const ctx2 = cv.getContext('2d')!;
+ctx2.fillStyle = 'rgba(34,211,238,0.88)'; ctx2.fillRect(0, 0, 240, 135);
+ctx2.fillStyle = '#0f172a'; ctx2.font = 'bold 30px sans-serif'; ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+ctx2.fillText('CLIPEDIA', 120, 68);
+const imgBlob = await new Promise<Blob>((res) => cv.toBlob((b) => res(b!), 'image/png'));
+await ff.writeFile('ov.png', new Uint8Array(await imgBlob.arrayBuffer()));
+addLog('🧰 Recursos persistentes listos: font.ttf + ov.png (una sola escritura, todos los chunks los reusan)');
+const chunkBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+const tTotal = performance.now();
+const LOOKAHEAD = 0.25;
+for (const c of chunks) {
+const chunkStart = c.start; const chunkEnd = c.end;
+addLog(`── Chunk ${c.index}: ${chunkStart.toFixed(2)}s–${chunkEnd.toFixed(2)}s ──`);
+// Clips del chunk (geometría timeline→archivo del test 11)
+const clipsInChunk: any[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const clip = syntheticClips[i];
+const clipTLStart = videoStarts[i];
+const clipTLEnd = clipTLStart + effLen(clip);
+const overlapStart = Math.max(chunkStart, clipTLStart);
+const overlapEnd = Math.min(chunkEnd, clipTLEnd);
+if (overlapEnd <= overlapStart) continue;
+clipsInChunk.push({
+clip,
+localStart: overlapStart - chunkStart,
+localEnd: overlapEnd - chunkStart,
+fileStart: clip.start + (overlapStart - clipTLStart) * clip.speed,
+fileEnd: clip.start + (overlapEnd - clipTLStart) * clip.speed,
+});
+}
+const clipSegsV: any[] = [];
+for (const item of clipsInChunk) {
+const segV = await extractSegment(f, item.fileStart, item.fileEnd + LOOKAHEAD, () => {});
+if (!segV) throw new Error(`extractSegment falló para ${item.clip.name}`);
+totalFetched += segV.fetchedBytes;
+clipSegsV.push({ segV, clip: item.clip, localStart: item.localStart, localEnd: item.localEnd, fileStart: item.fileStart });
+}
+const inputArgs: string[] = [];
+for (let i = 0; i < clipSegsV.length; i++) {
+await ff.writeFile(`v${i}.h264`, clipSegsV[i].segV.annexB);
+inputArgs.push('-framerate', clipSegsV[i].segV.fps.toFixed(3), '-i', `v${i}.h264`);
+}
+// Cadena de video base (clips + xfade, igual al test 11)
+let fc = '';
+if (clipSegsV.length === 1) {
+const seg = clipSegsV[0];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+fc = `[0:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[vbase];`;
+} else {
+let prevLabel = ''; let cumulativeOffset = 0;
+for (let i = 0; i < clipSegsV.length; i++) {
+const seg = clipSegsV[i];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+fc += `[${i}:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[v${i}];`;
+if (i === 0) { prevLabel = `v${i}`; cumulativeOffset = len; }
+else {
+const tr = clipSegsV[i - 1].clip.transition;
+if (tr && tr.type !== 'none') {
+const d = Math.min(tr.duration, len, clipSegsV[i - 1].localEnd - clipSegsV[i - 1].localStart);
+const offset = Math.max(cumulativeOffset - d, 0);
+const xfadeType = ['fade', 'wipeleft', 'wiperight', 'dissolve'].includes(tr.type) ? tr.type : 'fade';
+fc += `[${prevLabel}][v${i}]xfade=transition=${xfadeType}:duration=${d}:offset=${offset}[vx${i}];`;
+prevLabel = `vx${i}`; cumulativeOffset += len - d;
+} else {
+fc += `[${prevLabel}][v${i}]concat=n=2:v=1:a=0[vc${i}];`;
+prevLabel = `vc${i}`; cumulativeOffset += len;
+}
+}
+}
+fc += `[${prevLabel}]null[vbase];`;
+}
+let currentV = 'vbase';
+// REGLA ÚNICA: cada overlay resta chunkStart a sus tiempos; las expresiones no cambian
+const txtHit = TXT.E > chunkStart && TXT.S < chunkEnd;
+const imgHit = IMG.E > chunkStart && IMG.S < chunkEnd;
+if (imgHit) {
+const imgIdx = clipSegsV.length;
+inputArgs.push('-loop', '1', '-i', 'ov.png');
+// SOLAPE real imagen∩chunk. El arranque local SIEMPRE es ≥ 0 (nada de setpts
+// negativo, que era lo que estiraba el chunk 5s y congelaba/duplicaba la imagen).
+const oS = Math.max(IMG.S, chunkStart);
+const oE = Math.min(IMG.E, chunkEnd);
+const localStart = oS - chunkStart;
+const overlapDur = oE - oS;
+const durImg = IMG.E - IMG.S;
+const imgStartInWindow = oS - IMG.S;
+let imgFades = '';
+if (IMG.fadeIn > 0) imgFades += `fade=t=in:st=0:d=${IMG.fadeIn}:alpha=1,`;
+if (IMG.fadeOut > 0) imgFades += `fade=t=out:st=${(durImg - IMG.fadeOut).toFixed(6)}:d=${IMG.fadeOut}:alpha=1,`;
+// Fades en la línea de tiempo de la ventana completa; al recortar al solape,
+// los que quedan fuera se descartan solos (fades cruzando borde de chunk = OK).
+fc += `[${imgIdx}:v]scale=240:-2,format=rgba,${imgFades}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB[imgf];`;
+fc += `[${currentV}][imgf]overlay=x=W-w-24:y=24:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[vimg];`;
+currentV = 'vimg';
+}
+if (txtHit) {
+const S3 = TXT.S - chunkStart; const E3 = TXT.E - chunkStart;
+const alphaExpr = `max(0,min(1,min((t-${S3.toFixed(6)})/${TXT.fadeIn},(${E3.toFixed(6)}-t)/${TXT.fadeOut})))`;
+fc += `[${currentV}]drawtext=text='EXPORT ESCALABLE':fontfile=font.ttf:fontsize=52:fontcolor=white:borderw=4:bordercolor=black:x=(w-text_w)/2:y=h*0.82:alpha='${alphaExpr}':enable='between(t,${S3.toFixed(6)},${E3.toFixed(6)})'[vtxt]`;
+currentV = 'vtxt';
+}
+addLog(`   overlays en chunk: ${txtHit ? `texto[${(TXT.S - chunkStart).toFixed(1)}..${(TXT.E - chunkStart).toFixed(1)}]` : ''}${txtHit && imgHit ? ' + ' : ''}${imgHit ? `imagen[${(IMG.S - chunkStart).toFixed(1)}..${(IMG.E - chunkStart).toFixed(1)}]` : ''}${!txtHit && !imgHit ? 'ninguno' : ''}`);
+fc = fc.replace(/;$/, '');
+const code = await ff.exec([...inputArgs, '-filter_complex', fc, '-map', `[${currentV}]`, '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-movflags', '+faststart', '-y', `chunk${c.index}.mp4`]);
+if (code !== 0) throw new Error(`chunk ${c.index} falló (código ${code}) · ${logs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`chunk${c.index}.mp4`) as Uint8Array;
+if (!data || data.length === 0) throw new Error(`chunk${c.index}.mp4 salió vacío`);
+chunkBlobs.push(data);
+addLog(`   ✅ chunk${c.index}: ${(data.length / 1048576).toFixed(2)}MB`);
+for (let i = 0; i < clipSegsV.length; i++) { try { await ff.deleteFile(`v${i}.h264`); } catch (e) {} }
+try { await ff.deleteFile(`chunk${c.index}.mp4`); } catch (e) {}
+}
+addLog('── Concat final (video con overlays) ──');
+for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(chunkBlobs.map((_, k) => `file 'chunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', '-y', 'final.mp4']);
+if (concatCode !== 0) throw new Error(`concat falló (código ${concatCode}) · ${logs.slice(-3).join(' | ')}`);
+const finalData = await ff.readFile('final.mp4') as Uint8Array;
+if (!finalData || finalData.length === 0) throw new Error('final.mp4 salió vacío');
+const finalUrl = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const meta = await new Promise<{ duration: number }>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res({ duration: v.duration || 0 }); v.onerror = () => res({ duration: 0 }); v.src = finalUrl; });
+URL.revokeObjectURL(finalUrl);
+const driftFrames = ((meta.duration - totalDuration) * 1000) / (1000 / FPS);
+addLog(`✅ ETAPA 3a EXITOSA:`);
+addLog(`   · ${(totalFetched / 1048576).toFixed(1)}MB leídos de ${(f.size / 1073741824).toFixed(2)}GB (${(100 * totalFetched / f.size).toFixed(2)}%)`);
+addLog(`   · Esperado: ${totalDuration.toFixed(3)}s · medido: ${meta.duration.toFixed(3)}s · deriva: ${driftFrames >= 0 ? '+' : ''}${driftFrames.toFixed(2)} frames`);
+addLog(`   · final: ${(finalData.length / 1048576).toFixed(2)}MB en ${Math.round(performance.now() - tTotal)}ms`);
+addLog('🎬 Descargando etapa3a_final.mp4: verificá texto (8–14s) e imagen (25–35s) cruzando bordes de chunk.');
+const url = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const a = document.createElement('a'); a.href = url; a.download = 'etapa3a_final.mp4';
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+try {
+for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
+for (const name of ['list.txt', 'final.mp4', 'font.ttf', 'ov.png']) { try { await ff.deleteFile(name); } catch (e) {} }
+await ff.terminate();
+} catch (e) {}
+} catch (e: any) {
+addLog(`❌ Etapa 3a: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
+async function testEnsayoFinal() {
+const f = fileRef.current; if (!f) { addLog('⚠️ Primero elegí un archivo'); return; }
+setBusy(true);
+try {
+addLog('🎬 ENSAYO FINAL · multiclip + transiciones + overlays por chunk + audio continuo');
+const syntheticClips = [
+{ name: 'Clip A', start: 100, end: 120, speed: 1, transition: { type: 'fade', duration: 1.0 } },
+{ name: 'Clip B', start: 500, end: 520, speed: 1, transition: { type: 'wipeleft', duration: 1.5 } },
+{ name: 'Clip C', start: 1000, end: 1020, speed: 1, transition: null },
+];
+const effLen = (c: any) => (c.end - c.start) / c.speed;
+const dAfter = (i: number) => {
+if (i < 0 || i >= syntheticClips.length - 1) return 0;
+const tr = syntheticClips[i].transition;
+if (!tr) return 0;
+return Math.min(tr.duration, effLen(syntheticClips[i]), effLen(syntheticClips[i + 1]));
+};
+const videoStarts: number[] = [];
+let acc = 0;
+for (let i = 0; i < syntheticClips.length; i++) { videoStarts.push(acc); acc += effLen(syntheticClips[i]) - dAfter(i); }
+const totalDuration = videoStarts[syntheticClips.length - 1] + effLen(syntheticClips[syntheticClips.length - 1]);
+const protectedWins: { s: number; e: number }[] = [];
+for (let i = 0; i < syntheticClips.length - 1; i++) {
+const d = dAfter(i);
+if (d > 0) { const ws = videoStarts[i + 1]; protectedWins.push({ s: ws, e: ws + d }); }
+}
+const TARGET = 10; const FPS = 30;
+const chunks = computeChunkBoundaries(totalDuration, protectedWins, TARGET, FPS);
+const TXT = { S: 8, E: 14, fadeIn: 1, fadeOut: 1 };
+const IMG = { S: 25, E: 35, fadeIn: 1, fadeOut: 1 };
+addLog(`📐 Timeline ${totalDuration.toFixed(2)}s · ${chunks.length} chunks · texto ${TXT.S}–${TXT.E}s · imagen ${IMG.S}–${IMG.E}s`);
+const w = window as any;
+if (!w.FFmpegWASM) {
+await new Promise<void>((res2, rej) => { const s = document.createElement('script'); s.src = '/ffmpeg.js'; s.onload = () => res2(); s.onerror = () => rej(new Error('no se pudo cargar /ffmpeg.js')); document.head.appendChild(s); });
+}
+const { FFmpeg } = w.FFmpegWASM;
+const ff = new FFmpeg();
+const logs: string[] = [];
+ff.on('log', ({ message }: any) => { logs.push(String(message)); });
+const { toBlobURL } = await import('@ffmpeg/util');
+await ff.load({ coreURL: await toBlobURL('/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL('/ffmpeg-core.wasm', 'application/wasm') });
+const fontRes = await fetch('/fonts/Roboto-Bold.ttf');
+await ff.writeFile('font.ttf', new Uint8Array(await fontRes.arrayBuffer()));
+const cv = document.createElement('canvas'); cv.width = 240; cv.height = 135;
+const ctx2 = cv.getContext('2d')!;
+ctx2.fillStyle = 'rgba(34,211,238,0.88)'; ctx2.fillRect(0, 0, 240, 135);
+ctx2.fillStyle = '#0f172a'; ctx2.font = 'bold 30px sans-serif'; ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+ctx2.fillText('CLIPEDIA', 120, 68);
+const imgBlob = await new Promise<Blob>((res) => cv.toBlob((b) => res(b!), 'image/png'));
+await ff.writeFile('ov.png', new Uint8Array(await imgBlob.arrayBuffer()));
+const chunkBlobs: Uint8Array[] = [];
+let totalFetched = 0;
+const tTotal = performance.now();
+const LOOKAHEAD = 0.25;
+// ===== FASE 1: chunks de video CON overlays =====
+for (const c of chunks) {
+const chunkStart = c.start; const chunkEnd = c.end;
+addLog(`── Chunk ${c.index}: ${chunkStart.toFixed(2)}s–${chunkEnd.toFixed(2)}s ──`);
+const clipsInChunk: any[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const clip = syntheticClips[i];
+const clipTLStart = videoStarts[i];
+const clipTLEnd = clipTLStart + effLen(clip);
+const overlapStart = Math.max(chunkStart, clipTLStart);
+const overlapEnd = Math.min(chunkEnd, clipTLEnd);
+if (overlapEnd <= overlapStart) continue;
+clipsInChunk.push({
+clip,
+localStart: overlapStart - chunkStart,
+localEnd: overlapEnd - chunkStart,
+fileStart: clip.start + (overlapStart - clipTLStart) * clip.speed,
+fileEnd: clip.start + (overlapEnd - clipTLStart) * clip.speed,
+});
+}
+const clipSegsV: any[] = [];
+for (const item of clipsInChunk) {
+const segV = await extractSegment(f, item.fileStart, item.fileEnd + LOOKAHEAD, () => {});
+if (!segV) throw new Error(`extractSegment falló para ${item.clip.name}`);
+totalFetched += segV.fetchedBytes;
+clipSegsV.push({ segV, clip: item.clip, localStart: item.localStart, localEnd: item.localEnd, fileStart: item.fileStart });
+}
+const inputArgs: string[] = [];
+for (let i = 0; i < clipSegsV.length; i++) {
+await ff.writeFile(`v${i}.h264`, clipSegsV[i].segV.annexB);
+inputArgs.push('-framerate', clipSegsV[i].segV.fps.toFixed(3), '-i', `v${i}.h264`);
+}
+let fc = '';
+if (clipSegsV.length === 1) {
+const seg = clipSegsV[0];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+fc = `[0:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[vbase];`;
+} else {
+let prevLabel = ''; let cumulativeOffset = 0;
+for (let i = 0; i < clipSegsV.length; i++) {
+const seg = clipSegsV[i];
+const len = seg.localEnd - seg.localStart;
+const vRoll = Math.max(0, seg.fileStart - seg.segV.firstTs);
+fc += `[${i}:v]trim=start=${vRoll.toFixed(6)}:end=${(vRoll + len).toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=-2:720,format=yuv420p[v${i}];`;
+if (i === 0) { prevLabel = `v${i}`; cumulativeOffset = len; }
+else {
+const tr = clipSegsV[i - 1].clip.transition;
+if (tr && tr.type !== 'none') {
+const d = Math.min(tr.duration, len, clipSegsV[i - 1].localEnd - clipSegsV[i - 1].localStart);
+const offset = Math.max(cumulativeOffset - d, 0);
+const xfadeType = ['fade', 'wipeleft', 'wiperight', 'dissolve'].includes(tr.type) ? tr.type : 'fade';
+fc += `[${prevLabel}][v${i}]xfade=transition=${xfadeType}:duration=${d}:offset=${offset}[vx${i}];`;
+prevLabel = `vx${i}`; cumulativeOffset += len - d;
+} else {
+fc += `[${prevLabel}][v${i}]concat=n=2:v=1:a=0[vc${i}];`;
+prevLabel = `vc${i}`; cumulativeOffset += len;
+}
+}
+}
+fc += `[${prevLabel}]null[vbase];`;
+}
+let currentV = 'vbase';
+const txtHit = TXT.E > chunkStart && TXT.S < chunkEnd;
+const imgHit = IMG.E > chunkStart && IMG.S < chunkEnd;
+if (imgHit) {
+const imgIdx = clipSegsV.length;
+inputArgs.push('-loop', '1', '-i', 'ov.png');
+const oS = Math.max(IMG.S, chunkStart);
+const oE = Math.min(IMG.E, chunkEnd);
+const localStart = oS - chunkStart;
+const overlapDur = oE - oS;
+const durImg = IMG.E - IMG.S;
+const imgStartInWindow = oS - IMG.S;
+let imgFades = '';
+if (IMG.fadeIn > 0) imgFades += `fade=t=in:st=0:d=${IMG.fadeIn}:alpha=1,`;
+if (IMG.fadeOut > 0) imgFades += `fade=t=out:st=${(durImg - IMG.fadeOut).toFixed(6)}:d=${IMG.fadeOut}:alpha=1,`;
+fc += `[${imgIdx}:v]scale=240:-2,format=rgba,${imgFades}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB[imgf];`;
+fc += `[${currentV}][imgf]overlay=x=W-w-24:y=24:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[vimg];`;
+currentV = 'vimg';
+}
+if (txtHit) {
+const S3 = TXT.S - chunkStart; const E3 = TXT.E - chunkStart;
+const alphaExpr = `max(0,min(1,min((t-${S3.toFixed(6)})/${TXT.fadeIn},(${E3.toFixed(6)}-t)/${TXT.fadeOut})))`;
+fc += `[${currentV}]drawtext=text='ENSAYO FINAL':fontfile=font.ttf:fontsize=52:fontcolor=white:borderw=4:bordercolor=black:x=(w-text_w)/2:y=h*0.82:alpha='${alphaExpr}':enable='between(t,${S3.toFixed(6)},${E3.toFixed(6)})'[vtxt]`;
+currentV = 'vtxt';
+}
+fc = fc.replace(/;$/, '');
+const code = await ff.exec([...inputArgs, '-filter_complex', fc, '-map', `[${currentV}]`, '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-movflags', '+faststart', '-y', `chunk${c.index}.mp4`]);
+if (code !== 0) throw new Error(`chunk ${c.index} falló (código ${code}) · ${logs.slice(-3).join(' | ')}`);
+const data = await ff.readFile(`chunk${c.index}.mp4`) as Uint8Array;
+if (!data || data.length === 0) throw new Error(`chunk${c.index}.mp4 salió vacío`);
+chunkBlobs.push(data);
+addLog(`   ✅ vchunk${c.index}: ${(data.length / 1048576).toFixed(2)}MB`);
+for (let i = 0; i < clipSegsV.length; i++) { try { await ff.deleteFile(`v${i}.h264`); } catch (e) {} }
+try { await ff.deleteFile(`chunk${c.index}.mp4`); } catch (e) {}
+}
+// ===== FASE 2: concat de video =====
+addLog('── Concat de video (sin audio) ──');
+for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
+await ff.writeFile('list.txt', new TextEncoder().encode(chunkBlobs.map((_, k) => `file 'chunk${k}.mp4'`).join('\n')));
+const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-y', 'video_full.mp4']);
+if (concatCode !== 0) throw new Error(`concat de video falló (código ${concatCode})`);
+for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
+try { await ff.deleteFile('list.txt'); } catch (e) {}
+// ===== FASE 3: audio continuo con acrossfades =====
+addLog('── Audio continuo multiclip (un solo encode) ──');
+const audioInputs: string[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const clip = syntheticClips[i];
+const segA = await extractAudioSegment(f, clip.start, clip.end, () => {});
+if (!segA) throw new Error(`extractAudioSegment falló para ${clip.name}`);
+totalFetched += segA.fetchedBytes;
+await ff.writeFile(`aud${i}.m4a`, segA.mp4);
+audioInputs.push('-i', `aud${i}.m4a`);
+}
+let audioFilter = '';
+const audioLabels: string[] = [];
+for (let i = 0; i < syntheticClips.length; i++) {
+const len = effLen(syntheticClips[i]);
+audioFilter += `[${i}:a]atrim=0:${len.toFixed(6)},asetpts=PTS-STARTPTS[ca${i}];`;
+audioLabels.push(`ca${i}`);
+}
+let prevALabel = audioLabels[0];
+for (let i = 1; i < audioLabels.length; i++) {
+const tr = syntheticClips[i - 1].transition;
+const d = tr && tr.type !== 'none' ? Math.min(tr.duration, effLen(syntheticClips[i - 1]), effLen(syntheticClips[i])) : 0;
+if (d > 0) audioFilter += `[${prevALabel}][${audioLabels[i]}]acrossfade=d=${d}:c1=tri:c2=tri[ax${i}];`;
+else audioFilter += `[${prevALabel}][${audioLabels[i]}]concat=n=2:v=0:a=1[ax${i}];`;
+prevALabel = `ax${i}`;
+}
+audioFilter += `[${prevALabel}]anull[aout]`;
+const audioCode = await ff.exec([...audioInputs, '-filter_complex', audioFilter, '-map', '[aout]', '-c:a', 'aac', '-b:a', '192k', '-y', 'audio_full.m4a']);
+if (audioCode !== 0) throw new Error(`audio falló (código ${audioCode}) · ${logs.slice(-3).join(' | ')}`);
+for (let i = 0; i < syntheticClips.length; i++) { try { await ff.deleteFile(`aud${i}.m4a`); } catch (e) {} }
+// ===== FASE 4: merge final =====
+addLog('── Merge final: video + audio (stream copy) ──');
+const mergeCode = await ff.exec(['-i', 'video_full.mp4', '-i', 'audio_full.m4a', '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'copy', '-shortest', '-movflags', '+faststart', '-y', 'final.mp4']);
+if (mergeCode !== 0) throw new Error(`merge final falló (código ${mergeCode})`);
+const finalData = await ff.readFile('final.mp4') as Uint8Array;
+if (!finalData || finalData.length === 0) throw new Error('final.mp4 salió vacío');
+const finalUrl = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const meta = await new Promise<{ duration: number }>((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => res({ duration: v.duration || 0 }); v.onerror = () => res({ duration: 0 }); v.src = finalUrl; });
+URL.revokeObjectURL(finalUrl);
+const driftFrames = ((meta.duration - totalDuration) * 1000) / (1000 / FPS);
+addLog(`✅ ENSAYO FINAL EXITOSO:`);
+addLog(`   · ${(totalFetched / 1048576).toFixed(1)}MB leídos de ${(f.size / 1073741824).toFixed(2)}GB (${(100 * totalFetched / f.size).toFixed(2)}%)`);
+addLog(`   · Esperado: ${totalDuration.toFixed(3)}s · medido: ${meta.duration.toFixed(3)}s · deriva: ${driftFrames >= 0 ? '+' : ''}${driftFrames.toFixed(2)} frames`);
+addLog(`   · final: ${(finalData.length / 1048576).toFixed(2)}MB en ${Math.round(performance.now() - tTotal)}ms`);
+if (Math.abs(driftFrames) <= 1) addLog('🎯 DERIVA ≤ 1 FRAME: fase de laboratorio CERRADA. Listo para integrar al Studio.');
+addLog('🎬 Descargando ensayo_final.mp4: transiciones + overlays + audio 5.1 continuo, todo junto.');
+const url = URL.createObjectURL(new Blob([finalData], { type: 'video/mp4' }));
+const a = document.createElement('a'); a.href = url; a.download = 'ensayo_final.mp4';
+document.body.appendChild(a); a.click(); document.body.removeChild(a);
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+try {
+for (const name of ['video_full.mp4', 'audio_full.m4a', 'final.mp4', 'font.ttf', 'ov.png']) { try { await ff.deleteFile(name); } catch (e) {} }
+await ff.terminate();
+} catch (e) {}
+} catch (e: any) {
+addLog(`❌ Ensayo final: ${e?.message || e}`);
+}
+setBusy(false);
+}
+
 return (
 <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 bg-slate-950 p-6 text-slate-200">
 <h1 className="text-xl font-black text-white">🔬 Lab Pipeline — Fase 6</h1>
@@ -985,6 +1398,8 @@ return (
 <button onClick={testMulticlipTransitions} disabled={busy} className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">9 · Multiclip (Dry-Run)</button>
 <button onClick={testMulticlipRender} disabled={busy} className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">10 · Multiclip (Render)</button>
 <button onClick={testMulticlipAudioContinuo} disabled={busy} className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">11 · Multiclip audio continuo</button>
+<button onClick={testOverlaysPorChunk} disabled={busy} className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-bold text-black disabled:opacity-40">12 · Overlays por chunk</button>
+<button onClick={testEnsayoFinal} disabled={busy} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-40">13 · Ensayo final</button>
 </div>
 <pre className="min-h-[16rem] whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-[11px] leading-relaxed text-green-300">{log.join('\n')}</pre>
 <a href="/studio" className="text-xs text-cyan-300 underline">← Volver al Studio</a>
