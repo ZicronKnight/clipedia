@@ -354,6 +354,68 @@ async function extractAudioFromVideo(videoUrl: string) {
   } catch (e) { console.error('Error extrayendo audio:', e); return null; }
 }
 
+// ===== RECORTE DE SILENCIOS: intervalos de habla =====
+// Une intervalos crudos (palabras o ráfagas de energía) en tramos de habla:
+// cierra huecos < mergeGap, descarta tramos < minSpeech, agrega colchón pad.
+const SILENCE_LEAD_PAD = 0.18; // lead extra: una consonante mordida se nota más que un poco de silencio extra
+function mergeSpeechIntervals(raw: { s: number; e: number }[], mergeGap: number, minSpeech: number, padIn: number, padOut: number, clampA: number, clampB: number): { s: number; e: number }[] {
+const sorted = raw.filter((x) => x.e > x.s).sort((a, b) => a.s - b.s);
+const merged: { s: number; e: number }[] = [];
+for (const x of sorted) {
+const lastM = merged[merged.length - 1];
+if (lastM && x.s - lastM.e <= mergeGap) lastM.e = Math.max(lastM.e, x.e);
+else merged.push({ s: x.s, e: x.e });
+}
+const out: { s: number; e: number }[] = [];
+for (const m of merged) {
+if (m.e - m.s < minSpeech) continue;
+const s = clamp(m.s - padIn, clampA, clampB);
+const e = clamp(m.e + padOut, clampA, clampB);
+const lastO = out[out.length - 1];
+if (lastO && s <= lastO.e) lastO.e = Math.max(lastO.e, e);
+else out.push({ s, e });
+}
+return out.filter((x) => x.e - x.s >= MIN_LEN);
+}
+// Método rápido: RMS por ventana de 20ms con umbral adaptativo al piso de ruido.
+function energySpeechIntervals(data: Float32Array, sr: number, mergeGap: number, minSpeech: number, padIn: number, padOut: number): { s: number; e: number }[] {
+const hopSec = 0.02;
+const hop = Math.max(1, Math.round(sr * hopSec));
+const n = Math.floor(data.length / hop);
+const rms = new Float32Array(n);
+for (let i = 0; i < n; i++) {
+let sum = 0;
+const base = i * hop;
+const end = Math.min(data.length, base + hop);
+for (let j = base; j < end; j++) { const v = data[j] || 0; sum += v * v; }
+rms[i] = Math.sqrt(sum / Math.max(1, end - base));
+}
+const sortedRms = Array.from(rms).sort((a, b) => a - b);
+const floor = sortedRms[Math.floor(sortedRms.length * 0.25)] || 0;
+const thrHigh = Math.max(0.006, floor * 2.5);   // puerta de entrada: "acá hay habla"
+const thrLow = thrHigh * 0.45;                  // puerta de salida: onsets suaves pasan por acá
+const hang = Math.max(2, Math.round(0.3 / hopSec));   // aguanta dips de 300ms DENTRO de una frase
+const maxBack = Math.max(2, Math.round(0.5 / hopSec)); // retroceso máx. para cazar el onset
+const raw: { s: number; e: number }[] = [];
+let inSpeech = false; let start = 0; let lastLow = 0;
+const pushCore = (a: number, b: number) => {
+let s2 = a;
+while (s2 > 0 && a - s2 < maxBack && rms[s2 - 1] >= thrLow * 0.7) s2--; // caza la respiración/consonante previa
+raw.push({ s: s2 * hopSec, e: (b + 1) * hopSec });
+};
+for (let i = 0; i < n; i++) {
+const v = rms[i];
+if (!inSpeech) {
+if (v >= thrHigh) { inSpeech = true; start = i; lastLow = i; }
+} else {
+if (v >= thrLow) lastLow = i;
+else if (i - lastLow >= hang) { pushCore(start, lastLow); inSpeech = false; }
+}
+}
+if (inSpeech) pushCore(start, lastLow);
+return mergeSpeechIntervals(raw, mergeGap, minSpeech, padIn, padOut, 0, data.length / sr);
+}
+
 // ===== FILMSTRIP: miniaturas de clips cacheadas por asset =====
 const filmstripCache = new Map<string, string[]>();
 function seekVideoTo(v: HTMLVideoElement, t: number) {
@@ -688,6 +750,12 @@ const [importOpen, setImportOpen] = useState(false);
 const [importStep, setImportStep] = useState<string | null>(null);
 const [importProgress, setImportProgress] = useState<{ file: string; step: string; idx: number; total: number } | null>(null);
 const [subtitleFor, setSubtitleFor] = useState<string | null>(null);
+const [silenceFor, setSilenceFor] = useState<string | null>(null);
+const [silenceCfg, setSilenceCfg] = useState<{ method: 'whisper' | 'energy'; minSilence: number; pad: number }>({ method: 'whisper', minSilence: 0.6, pad: 0.15 });
+const [silencePlan, setSilencePlan] = useState<{ segments: { s: number; e: number }[]; kept: number; removed: number } | null>(null);
+const [silenceBusy, setSilenceBusy] = useState(false);
+const [silencePct, setSilencePct] = useState(0);
+const [silenceMsg, setSilenceMsg] = useState<string | null>(null);
 const [asrProgress, setAsrProgress] = useState<{ phase: 'model' | 'transcribe'; pct: number } | null>(null);
 const [proxiesOn, setProxiesOn] = useState(false);
   useEffect(() => { setProxiesOn(proxiesEnabled); }, []);
@@ -2435,6 +2503,95 @@ showToast(`❌ Subtítulos: ${e?.message || 'error'} — revisá la consola`, 'w
 }
 }
 
+// ===== RECORTE DE SILENCIOS: detectar tramos de habla y aplicar el corte =====
+async function detectSilences(clip: Clip) {
+setSilenceBusy(true);
+setSilencePlan(null);
+setSilenceMsg(null);
+try {
+const audio: any = await decodeSegment16k(clip.url, clip.trimStart, clip.trimEnd);
+if (!audio) { setSilenceMsg('⚠️ No se pudo extraer el audio de este clip.'); return; }
+// decodeSegment16k puede devolver el PCM en distintas formas según asr.ts:
+const pcm: Float32Array | null =
+audio instanceof Float32Array ? audio :
+typeof audio?.getChannelData === 'function' ? (audio.getChannelData(0) as Float32Array) :
+audio?.channelData instanceof Float32Array ? audio.channelData :
+audio?.samples instanceof Float32Array ? audio.samples :
+audio?.pcm instanceof Float32Array ? audio.pcm :
+audio?.data instanceof Float32Array ? audio.data : null;
+const srHz = typeof audio?.sampleRate === 'number' && audio.sampleRate > 0 ? audio.sampleRate : 16000;
+const span = clip.trimEnd - clip.trimStart;
+let local: { s: number; e: number }[] = [];
+if (silenceCfg.method === 'whisper') {
+const pref = readAsrPref();
+const modelId = (pref?.model || 'base') as AsrModelId;
+const model = ASR_MODELS.find((m) => m.id === modelId) || ASR_MODELS[0];
+const lang = (pref?.lang || 'es') as AsrLanguage;
+const words = await transcribeSegment({ modelId: model.id, hf: model.hf, language: lang, audio, onModelProgress: (pct) => setSilencePct(pct) });
+console.log('[Silencios] palabras de Whisper:', words?.length ?? 0);
+if (words?.[0]) console.log('[Silencios] muestra de palabra:', JSON.stringify(words[0]));
+// CAMBIO DE ROLES: los timestamps de palabra de Whisper vienen "azulejados"
+// (la "palabra" de 2.36s del log lo prueba): entre palabras NO hay huecos
+// reales, así que Whisper NO puede marcar silencios. La ENERGÍA pone los
+// bordes precisos (ráfagas y huecos reales); Whisper solo VETA las ráfagas
+// donde nadie habló (música o ruido sin transcripción encima).
+const wordZones = (words || []).map((w: any) => {
+const s = Number(w.start ?? w.t0 ?? w.from);
+const e = Number(w.end ?? w.t1 ?? w.to);
+return Number.isFinite(s) ? { s, e: Number.isFinite(e) && e > s ? e : s + 0.4 } : null;
+}).filter((x): x is { s: number; e: number } => x !== null);
+if (pcm && pcm.length) {
+const sound = energySpeechIntervals(pcm, srHz, 0.25, 0.12, 0.06, 0.06);
+const validated = sound.filter((b) => {
+const bl = b.e - b.s;
+if (bl <= 0) return false;
+const ov = wordZones.reduce((a, w) => a + Math.max(0, Math.min(b.e, w.e) - Math.max(b.s, w.s)), 0);
+return ov / bl >= 0.25;
+});
+console.log(`[Silencios] ráfagas de energía validadas por Whisper: ${validated.length} de ${sound.length}`);
+local = mergeSpeechIntervals(validated, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad, 0, span);
+} else {
+local = mergeSpeechIntervals(wordZones, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad, 0, span);
+}
+} else {
+if (!pcm || pcm.length === 0) { setSilenceMsg('⚠️ El audio decodificado no trajo muestras utilizables para el modo Energía.'); return; }
+setSilencePct(40);
+local = energySpeechIntervals(pcm, srHz, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad);
+setSilencePct(90);
+}
+console.log('[Silencios] tramos de habla detectados:', local.length);
+const segments = local.map((x) => ({ s: clip.trimStart + x.s, e: clip.trimStart + x.e }));
+const kept = segments.reduce((a, x) => a + (x.e - x.s), 0);
+const removed = Math.max(0, span - kept);
+if (!segments.length) { setSilenceMsg('⚠️ No se detectó habla en este clip: nada que recortar. Probá bajando el "silencio mínimo" o cambiá de método.'); return; }
+if (removed < 0.25) { setSilenceMsg(`✨ Casi no hay silencios acá: solo se cortarían ${removed.toFixed(2)}s. Si querés recortar igual, bajá el "silencio mínimo" o el colchón.`); return; }
+setSilencePlan({ segments, kept, removed });
+} catch (e: any) {
+console.error('[Silencios]', e);
+setSilenceMsg(`❌ ${e?.message || 'error inesperado'} (detalle en consola)`);
+} finally {
+setSilenceBusy(false);
+setSilencePct(0);
+}
+}
+function applySilencePlan() {
+const clip = clips.find((c) => c.id === silenceFor);
+if (!clip || !silencePlan) return;
+const idx = clips.findIndex((c) => c.id === clip.id);
+const segs = silencePlan.segments;
+const newClips = segs.map((sg, i) => ({ ...clip, id: uid(), trimStart: sg.s, trimEnd: sg.e, transition: i === segs.length - 1 ? clip.transition : { type: 'none' as TransitionType, duration: 0 } }));
+setClips((prev) => { const n = [...prev]; n.splice(idx, 1, ...newClips); return n; });
+setAudioTracks((prev) => {
+const lt = prev.find((t) => t.sourceVideoId === clip.id && !t.released);
+if (!lt) return prev;
+const i2 = prev.findIndex((t) => t.id === lt.id);
+const repl = newClips.map((nc) => ({ ...lt, id: uid(), sourceVideoId: nc.id, fadeIn: 0, fadeOut: 0 }));
+const n = [...prev]; n.splice(i2, 1, ...repl); return n;
+});
+showToast(`✂️ Silencios recortados: ${segs.length} tramos de habla · ${silencePlan.removed.toFixed(1)}s eliminados`, 'info', 6000);
+setSilenceFor(null); setSilencePlan(null);
+}
+
   function openExportModal() {
     if (projectDuration === 0) { showToast('⚠️ No hay nada en la timeline para exportar', 'warn'); return; }
     setShowExportModal(true);
@@ -3291,6 +3448,46 @@ onConfirm={(m, l, r) => generateSubtitles(subtitleClip, m, l, r)}
 />,
 document.body
 ) : null;
+
+const silenceClip = clips.find((c) => c.id === silenceFor) ?? null;
+const silenceUI = silenceClip ? createPortal(
+<div className="fixed inset-0 z-[165] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm" onClick={() => { if (!silenceBusy) { setSilenceFor(null); setSilencePlan(null); } }}>
+<div className="w-[min(94vw,30rem)] rounded-2xl border border-amber-400/40 bg-slate-950/95 p-5 shadow-2xl shadow-amber-500/10" onClick={(e) => e.stopPropagation()}>
+<h2 className="text-sm font-black text-white">✂️ Recortar silencios · <span className="text-amber-300">{silenceClip.name}</span></h2>
+{!silencePlan ? (
+<>
+<p className="mt-2 text-[11px] leading-relaxed text-slate-400">Se detectan los tramos donde hay habla y el clip se reemplaza por esos tramos: los silencios desaparecen de la timeline sin recodificar nada.</p>
+{(silenceClip.bytes ?? 0) > SKIP_HEAVY_BYTES && (<p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">⚠️ Clip pesado: el análisis decodifica su audio en memoria; puede tardar en archivos muy largos.</p>)}
+<label className="mt-3 block text-xs font-semibold text-slate-300">Método de detección
+<select value={silenceCfg.method} disabled={silenceBusy} onChange={(e) => setSilenceCfg((s) => ({ ...s, method: e.target.value as 'whisper' | 'energy' }))} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+<option value="whisper">🎙 Modo Voz (reconoce palabras)</option>
+<option value="energy">⚡ Modo Audio (reconoce sonidos)</option>
+</select></label>
+<label className="mt-3 block text-xs text-slate-400">Silencio mínimo a cortar: <span className="font-mono text-amber-300">{silenceCfg.minSilence.toFixed(1)}s</span>
+<input type="range" min={0.02} max={2} step={0.05} disabled={silenceBusy} value={silenceCfg.minSilence} onChange={(e) => setSilenceCfg((s) => ({ ...s, minSilence: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
+<label className="mt-2 block text-xs text-slate-400">Colchón alrededor del habla: <span className="font-mono text-amber-300">{silenceCfg.pad.toFixed(2)}s</span>
+<input type="range" min={0} max={0.5} step={0.05} disabled={silenceBusy} value={silenceCfg.pad} onChange={(e) => setSilenceCfg((s) => ({ ...s, pad: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
+{silenceMsg && (<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">{silenceMsg}</p>)}
+{silenceBusy && (<div className="mt-3"><p className="text-[11px] font-semibold text-amber-200">{silenceCfg.method === 'whisper' ? `🎙 Whisper escuchando… ${silencePct}%` : '⚡ Midiendo energía del audio…'}</p><div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-fuchsia-400 transition-all duration-200" style={{ width: `${silenceCfg.method === 'whisper' ? silencePct : 70}%` }} /></div></div>)}
+<div className="mt-4 flex gap-2">
+<button onClick={() => { setSilenceFor(null); setSilencePlan(null); }} disabled={silenceBusy} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition-colors hover:border-slate-500 disabled:opacity-40">Cancelar</button>
+<button onClick={() => detectSilences(silenceClip)} disabled={silenceBusy} className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60">{silenceBusy ? 'Analizando…' : '🔍 Detectar'}</button>
+</div>
+</>
+) : (
+<>
+<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100">Se encontraron <strong>{silencePlan.segments.length} tramos de habla</strong> ({silencePlan.kept.toFixed(1)}s útiles). Se eliminarán <strong>{silencePlan.removed.toFixed(1)}s</strong> de silencio.</p>
+<p className="mt-2 text-[11px] leading-relaxed text-slate-400">El clip se reemplazará por {silencePlan.segments.length} bloques contiguos con cortes duros entre ellos. Si tiene audio vinculado 🔗, se divide junto con el video. Podés deshacer con Ctrl+Z.</p>
+<div className="mt-4 flex gap-2">
+<button onClick={() => setSilencePlan(null)} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition-colors hover:border-slate-500">← Volver</button>
+<button onClick={applySilencePlan} className="flex-1 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95">✂️ Aplicar recorte</button>
+</div>
+</>
+)}
+</div>
+</div>,
+document.body
+) : null;
 const asrProgressUI = asrProgress ? createPortal(
 <div className="fixed inset-0 z-[170] flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm">
 <div className="w-[min(92vw,24rem)] rounded-2xl border border-fuchsia-400/40 bg-slate-950/95 px-5 py-4 shadow-2xl shadow-fuchsia-500/20">
@@ -3337,9 +3534,10 @@ return (
       {exportModal}
 {importProgressUI}
 {subtitleUI}
+{silenceUI}
 {asrProgressUI}
       {transitionPickerUI}
-      <div className="pointer-events-none fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="pointer-events-none fixed inset-0 z-[300] flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
           {toasts.map((t) => (
             <div key={t.id} className={`rounded-lg border px-5 py-2.5 text-sm shadow-2xl backdrop-blur ${t.kind === 'warn' ? 'border-amber-400/40 bg-amber-950/90 text-amber-200' : 'border-cyan-400/40 bg-cyan-950/90 text-cyan-200'}`}>{t.msg}</div>
@@ -3571,6 +3769,11 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
 className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20 disabled:opacity-40"
 title={!selectedClip.hasAudio ? 'Este clip no tiene audio para transcribir' : 'Generar subtítulos con Whisper, 100% en tu dispositivo'}>
 🎙 Subtítulos automáticos
+</button>
+<button onClick={() => { setSilenceFor(selectedClip.id); setSilencePlan(null); setSilenceMsg(null); }} disabled={!selectedClip.hasAudio}
+className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 py-2 text-sm font-semibold text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-40"
+title={!selectedClip.hasAudio ? 'Este clip no tiene audio para analizar' : 'Detecta los tramos hablados y elimina los silencios de la timeline'}>
+✂️ Recortar silencios
 </button>
                 {isCover && (
                   <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-2">
