@@ -2296,7 +2296,7 @@ showToast('🎵 Audio vinculado en la pista de audio', 'info');
   function updateTextOverlay(id: string, patch: Partial<TextOverlay>) { setTextOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
 function applyStyleToAllSubtitles(src: TextOverlay) {
 const total = textOverlaysRef.current.filter((t) => t.kind === 'subtitulo').length;
-setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline } : t)));
+setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur } : t)));
 showToast(`📑 Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info');
 }
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
