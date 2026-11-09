@@ -35,15 +35,21 @@ filter?: FilterType;
 type ImageOverlay = {
   id: string; assetId: string; name: string; url: string; start: number; end: number;
   x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270; fadeIn: number; fadeOut: number;
+animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
 lane?: number; laneId?: string;
 };
 
+type OverlayAnim = 'none' | 'from-left' | 'from-right' | 'from-top' | 'from-bottom' | 'zoom-in' | 'zoom-out';
+type OverlayAnimOut = 'none' | 'to-left' | 'to-right' | 'to-top' | 'to-bottom' | 'zoom-in' | 'zoom-out';
+const ANIM_IN_LABELS: Record<OverlayAnim, string> = { 'none': 'Sin animación', 'from-left': '↩️ Desde la izquierda', 'from-right': '↪️ Desde la derecha', 'from-top': '⬇️ Desde arriba', 'from-bottom': '⬆️ Desde abajo', 'zoom-in': '🔍 Zoom creciendo', 'zoom-out': '🔭 Zoom encogiendo' };
+const ANIM_OUT_LABELS: Record<OverlayAnimOut, string> = { 'none': 'Sin animación', 'to-left': '⬅️ Hacia la izquierda', 'to-right': '➡️ Hacia la derecha', 'to-top': '⬆️ Hacia arriba', 'to-bottom': '⬇️ Hacia abajo', 'zoom-in': '🔍 Zoom creciendo', 'zoom-out': '🔭 Zoom encogiendo' };
 type OverlayShape = 'none' | 'round' | 'circle';
 type VideoOverlay = {
 id: string; assetId: string; name: string; url: string;
 start: number; end: number; offset: number;
 x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270;
 fadeIn: number; fadeOut: number; muted: boolean; shape: OverlayShape; hasAudio?: boolean; srcW?: number; srcH?: number;
+animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
 lane?: number; laneId?: string;
 };
 
@@ -51,7 +57,7 @@ type TextOverlay = {
   id: string; text: string; start: number; end: number; x: number; y: number; size: number; bold: boolean;
   font: 'sans' | 'serif' | 'mono' | 'roboto' | 'playfair' | 'montserrat' | 'opensans' | 'lato' | 'oswald' | 'raleway' | 'poppins' | 'merriweather' | 'nunito';
   color: string; fadeIn: number; fadeOut: number; outline?: boolean;
-kind?: 'texto' | 'subtitulo'; laneId?: string;
+kind?: 'texto' | 'subtitulo'; laneId?: string; animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
 };
 type AudioTrack = {
   id: string; assetId: string; name: string; url: string; duration: number; offset: number; start: number;
@@ -283,6 +289,58 @@ const FONT_FACE_CSS = `@font-face { font-family: 'Roboto'; src: url('/fonts/Robo
 let counter = 0;
 function uid() { counter += 1; return `clip-${Date.now()}-${counter}`; }
 function clamp(v: number, min: number, max: number) { return Math.min(Math.max(v, min), max); }
+// ===== ANIMACIONES DE ENTRADA/SALIDA DE OVERLAYS =====
+// Convención de paridad: los slides recorren EXACTAMENTE un canvas de distancia
+// (refW/refH), igual en el preview que (en la Etapa 2) en las expresiones FFmpeg.
+// Easing smoothstep: suave al arranque y al freno, sin rebotes raros.
+function animOffsets(a: { animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number; start: number; end: number }, t: number, refW: number, refH: number): { dx: number; dy: number; f: number } {
+const smooth = (p: number) => p * p * (3 - 2 * p);
+const di = Math.max(0.05, a.animInDur ?? 0.5);
+const doo = Math.max(0.05, a.animOutDur ?? 0.5);
+const ei = a.animIn && a.animIn !== 'none' ? smooth(clamp((t - a.start) / di, 0, 1)) : 1;
+const eo = a.animOut && a.animOut !== 'none' ? smooth(clamp((t - (a.end - doo)) / doo, 0, 1)) : 0;
+let dx = 0; let dy = 0; let f = 1;
+const vin = 1 - ei;
+if (a.animIn === 'from-left') dx -= refW * vin;
+if (a.animIn === 'from-right') dx += refW * vin;
+if (a.animIn === 'from-top') dy -= refH * vin;
+if (a.animIn === 'from-bottom') dy += refH * vin;
+if (a.animIn === 'zoom-in') f *= 0.6 + 0.4 * ei;
+if (a.animIn === 'zoom-out') f *= 1.3 - 0.3 * ei;
+if (a.animOut === 'to-left') dx -= refW * eo;
+if (a.animOut === 'to-right') dx += refW * eo;
+if (a.animOut === 'to-top') dy -= refH * eo;
+if (a.animOut === 'to-bottom') dy += refH * eo;
+if (a.animOut === 'zoom-out') f *= 1 - 0.4 * eo;
+if (a.animOut === 'zoom-in') f *= 1 + 0.3 * eo;
+return { dx, dy, f };
+}
+// ===== PARIDAD DE EXPORT: mismas animaciones como expresiones FFmpeg =====
+// ein/eout replican el smoothstep del preview; dx/dy mueven el overlay y f
+// escala el bitmap (scale eval=frame). t = tiempo del grafo (ya corrido por
+// chunkStart en el export chunked).
+function animExprFF(a: { animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number }, S: number, E: number, refW: number, refH: number): { dx: string; dy: string; f: string | null } {
+const ein = a.animIn && a.animIn !== 'none' ? (() => { const d = Math.max(0.05, a.animInDur ?? 0.5); const p = `clip((t-${S.toFixed(6)})/${d.toFixed(6)},0,1)`; return `(${p}*${p}*(3-2*${p}))`; })() : null;
+const eout = a.animOut && a.animOut !== 'none' ? (() => { const d = Math.max(0.05, a.animOutDur ?? 0.5); const q = `clip((t-${(E - d).toFixed(6)})/${d.toFixed(6)},0,1)`; return `(${q}*${q}*(3-2*${q}))`; })() : null;
+const dxT: string[] = [];
+const dyT: string[] = [];
+if (a.animIn === 'from-left') dxT.push(`-${refW}*(1-${ein})`);
+if (a.animIn === 'from-right') dxT.push(`${refW}*(1-${ein})`);
+if (a.animIn === 'from-top') dyT.push(`-${refH}*(1-${ein})`);
+if (a.animIn === 'from-bottom') dyT.push(`${refH}*(1-${ein})`);
+if (a.animOut === 'to-left') dxT.push(`-${refW}*${eout}`);
+if (a.animOut === 'to-right') dxT.push(`${refW}*${eout}`);
+if (a.animOut === 'to-top') dyT.push(`-${refH}*${eout}`);
+if (a.animOut === 'to-bottom') dyT.push(`${refH}*${eout}`);
+const dx = dxT.length ? dxT.join('+') : '0';
+const dy = dyT.length ? dyT.join('+') : '0';
+const fT: string[] = [];
+if (a.animIn === 'zoom-in') fT.push(`(0.6+0.4*${ein})`);
+if (a.animIn === 'zoom-out') fT.push(`(1.3-0.3*${ein})`);
+if (a.animOut === 'zoom-out') fT.push(`(1-0.4*${eout})`);
+if (a.animOut === 'zoom-in') fT.push(`(1+0.3*${eout})`);
+return { dx, dy, f: fT.length ? fT.join('*') : null };
+}
 function effLen(c: Clip) { return (c.trimEnd - c.trimStart) / c.speed; }
 function formatTime(t: number) {
   const m = Math.floor(t / 60); const s = Math.floor(t % 60); const d = Math.floor((t % 1) * 10);
@@ -3021,8 +3079,10 @@ const imgWidth = Math.round((img.size / 100) * REF_WIDTH);
 let fades = '';
 if (img.fadeIn > 0) fades += `fade=t=in:st=0:d=${img.fadeIn}:alpha=1,`;
 if (img.fadeOut > 0) fades += `fade=t=out:st=${Math.max(durImg - img.fadeOut, 0)}:d=${img.fadeOut}:alpha=1,`;
-fc += `[${idx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${rotOf(img.rotate)}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB[imgc${ov.idx}];`;
-fc += `[${currentVideoLabel}][imgc${ov.idx}]overlay=x=${img.x}-overlay_w/2:y=${img.y}-overlay_h/2:eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[imgo${ov.idx}];`;
+const anC = animExprFF(img, img.start - cs, img.end - cs, REF_WIDTH, REF_HEIGHT);
+const zoomPartC = anC.f ? `,scale=w='max(2,trunc(iw*(${anC.f})))':h='max(2,trunc(ih*(${anC.f})))':eval=frame` : '';
+fc += `[${idx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${rotOf(img.rotate)}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartC}[imgc${ov.idx}];`;
+fc += `[${currentVideoLabel}][imgc${ov.idx}]overlay=x='${img.x}-overlay_w/2+(${anC.dx})':y='${img.y}-overlay_h/2+(${anC.dy})':eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[imgo${ov.idx}];`;
 currentVideoLabel = `imgo${ov.idx}`;
 } else if (ov.family === 'video') {
 const vo = videoOverlays[ov.idx];
@@ -3049,16 +3109,18 @@ if (vo.rotate === 90) vrot = 'transpose=1,';
 else if (vo.rotate === 180) vrot = 'hflip,vflip,';
 else if (vo.rotate === 270) vrot = 'transpose=2,';
 const maskFile = voMaskFile[ov.idx];
+const anV = animExprFF(vo, vo.start - cs, vo.end - cs, REF_WIDTH, REF_HEIGHT);
+const zoomPartV = anV.f ? `,scale=w='max(2,trunc(iw*(${anV.f})))':h='max(2,trunc(ih*(${anV.f})))':eval=frame` : '';
 if (maskFile) {
 const midx = nextInput++;
 inputArgs.push('-loop', '1', '-i', maskFile);
 fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba[vo${ov.idx}_rgb];`;
 fc += `[${midx}:v]format=gray[vo${ov.idx}_mkg];`;
-fc += `[vo${ov.idx}_rgb][vo${ov.idx}_mkg]alphamerge,${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB[vo${ov.idx}_f];`;
+fc += `[vo${ov.idx}_rgb][vo${ov.idx}_mkg]alphamerge,${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartV}[vo${ov.idx}_f];`;
 } else {
-fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB[vo${ov.idx}_f];`;
+fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartV}[vo${ov.idx}_f];`;
 }
-fc += `[${currentVideoLabel}][vo${ov.idx}_f]overlay=x=${vo.x}-overlay_w/2:y=${vo.y}-overlay_h/2:eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[vo${ov.idx}_out];`;
+fc += `[${currentVideoLabel}][vo${ov.idx}_f]overlay=x='${vo.x}-overlay_w/2+(${anV.dx})':y='${vo.y}-overlay_h/2+(${anV.dy})':eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[vo${ov.idx}_out];`;
 currentVideoLabel = `vo${ov.idx}_out`;
 } else {
 const txt = textOverlays[ov.idx];
@@ -3079,7 +3141,8 @@ if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-$
 else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S.toFixed(6)})/${txt.fadeIn}))'`;
 else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E.toFixed(6)}-t)/${txt.fadeOut}))'`;
 const outline = txt.outline ? ':borderw=4:bordercolor=black' : '';
-fc += `[${currentVideoLabel}]drawtext=text='${textEscaped}':x=${txt.x}-text_w/2:y=${txt.y}-text_h/2:fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[txtc${ov.idx}];`;
+const anCT = animExprFF(txt, S, E, REF_WIDTH, REF_HEIGHT);
+fc += `[${currentVideoLabel}]drawtext=text='${textEscaped}':x='${txt.x}-text_w/2+(${anCT.dx})':y='${txt.y}-text_h/2+(${anCT.dy})':fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[txtc${ov.idx}];`;
 currentVideoLabel = `txtc${ov.idx}`;
 }
 }
@@ -3413,8 +3476,10 @@ let irot = '';
 if (img.rotate === 90) irot = 'transpose=1,';
 else if (img.rotate === 180) irot = 'hflip,vflip,';
 else if (img.rotate === 270) irot = 'transpose=2,';
-filterComplex += `[${imgInputIdx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${irot}trim=0:${dur},setpts=PTS+${img.start}/TB[img${i}_f];`;
-filterComplex += `[${cur}][img${i}_f]overlay=x=${img.x}-overlay_w/2:y=${img.y}-overlay_h/2:eof_action=pass:enable='between(t,${img.start},${img.end})'[img${i}_out];`;
+const an = animExprFF(img, img.start, img.end, REF_WIDTH, REF_HEIGHT);
+const zoomPart = an.f ? `,scale=w='max(2,trunc(iw*(${an.f})))':h='max(2,trunc(ih*(${an.f})))':eval=frame` : '';
+filterComplex += `[${imgInputIdx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${irot}trim=0:${dur},setpts=PTS+${img.start}/TB${zoomPart}[img${i}_f];`;
+filterComplex += `[${cur}][img${i}_f]overlay=x='${img.x}-overlay_w/2+(${an.dx})':y='${img.y}-overlay_h/2+(${an.dy})':eof_action=pass:enable='between(t,${img.start},${img.end})'[img${i}_out];`;
 return `img${i}_out`;
 };
 const appendVo = (i: number, cur: string): string => {
@@ -3432,14 +3497,16 @@ if (vo.rotate === 90) vrot = 'transpose=1,';
 else if (vo.rotate === 180) vrot = 'hflip,vflip,';
 else if (vo.rotate === 270) vrot = 'transpose=2,';
 const mi = voMaskIdx[i];
+const anV = animExprFF(vo, vo.start, vo.end, REF_WIDTH, REF_HEIGHT);
+const zoomPartV = anV.f ? `,scale=w='max(2,trunc(iw*(${anV.f})))':h='max(2,trunc(ih*(${anV.f})))':eval=frame` : '';
 if (mi !== null && mi !== undefined) {
 filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba[vo${i}_rgb];`;
 filterComplex += `[${mi}:v]format=gray[mask${i}g];`;
-filterComplex += `[vo${i}_rgb][mask${i}g]alphamerge,${vrot}${fades}setpts=PTS+${vo.start}/TB[vo${i}_f];`;
+filterComplex += `[vo${i}_rgb][mask${i}g]alphamerge,${vrot}${fades}setpts=PTS+${vo.start}/TB${zoomPartV}[vo${i}_f];`;
 } else {
-filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${vo.start}/TB[vo${i}_f];`;
+filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${vo.start}/TB${zoomPartV}[vo${i}_f];`;
 }
-filterComplex += `[${cur}][vo${i}_f]overlay=x=${vo.x}-overlay_w/2:y=${vo.y}-overlay_h/2:eof_action=pass:enable='between(t,${vo.start},${vo.end})'[vo${i}_out];`;
+filterComplex += `[${cur}][vo${i}_f]overlay=x='${vo.x}-overlay_w/2+(${anV.dx})':y='${vo.y}-overlay_h/2+(${anV.dy})':eof_action=pass:enable='between(t,${vo.start},${vo.end})'[vo${i}_out];`;
 return `vo${i}_out`;
 };
 const appendText = (i: number, cur: string): string => {
@@ -3462,7 +3529,8 @@ if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-$
 else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S})/${txt.fadeIn}))'`;
 else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E}-t)/${txt.fadeOut}))'`;
 const outline = (txt as any).outline ? ':borderw=4:bordercolor=black' : '';
-filterComplex += `[${cur}]drawtext=text='${textEscaped}':x=${txt.x}-text_w/2:y=${txt.y}-text_h/2:fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S},${E})'[txt${i}_out];`;
+const anT = animExprFF(txt, S, E, REF_WIDTH, REF_HEIGHT);
+filterComplex += `[${cur}]drawtext=text='${textEscaped}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S},${E})'[txt${i}_out];`;
 return `txt${i}_out`;
 };
 const overlayOrder: { family: 'image' | 'text' | 'subtitle' | 'video'; idx: number; key: number }[] = [
@@ -3583,6 +3651,7 @@ audioLabels.push(`va${i}`);
       setTimeout(() => { setShowExportModal(false); setExportProgress(null); }, 1500);
     } catch (error: any) {
       console.error('[Export] ERROR FATAL:', error);
+console.error('[Export] filterComplex completo:\n' + filterComplex);
       console.error('[Export] Últimas líneas FFmpeg:\n' + ffLogs.slice(-10).join('\n'));
       showToast(`❌ Error: ${error.message || 'Revisá la consola'}`, 'warn');
       setExportProgress(null);
@@ -3923,13 +3992,14 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
                   {activeImages.map((activeImage, ai) => {
                     const windowLen = activeImage.end - activeImage.start;
                     const localInWindow = playhead - activeImage.start;
+const an = animOffsets(activeImage, playhead, REF_WIDTH, REF_HEIGHT);
                     let alpha = 1;
                     if (activeImage.fadeIn > 0 && localInWindow < activeImage.fadeIn) alpha = Math.max(localInWindow / activeImage.fadeIn, 0);
                     if (activeImage.fadeOut > 0 && localInWindow > windowLen - activeImage.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeImage.fadeOut, 0);
                     return (
                       <div key={activeImage.id} onPointerDown={(e) => startOverlayPosDrag(e, 'image', activeImage.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
                         className="pointer-events-auto absolute cursor-move touch-none select-none"
-                        style={{ left: activeImage.x, top: activeImage.y, width: (activeImage.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${activeImage.rotate}deg)`, opacity: alpha, zIndex: paintKeyOf(activeImage.laneId, 'image', ai) }}
+                        style={{ left: activeImage.x, top: activeImage.y, width: (activeImage.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f}) rotate(${activeImage.rotate}deg)`, opacity: alpha, zIndex: paintKeyOf(activeImage.laneId, 'image', ai) }}
                         title="Arrastrá para mover la imagen">
                         <img src={activeImage.url} alt="Overlay" className="pointer-events-none h-auto w-full" draggable={false} />
                       </div>
@@ -3938,13 +4008,14 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
                   {activeTexts.map((activeText, ati) => {
                     const windowLen = activeText.end - activeText.start;
                     const localInWindow = playhead - activeText.start;
+const an = animOffsets(activeText, playhead, REF_WIDTH, REF_HEIGHT);
                     let alpha = 1;
                     if (activeText.fadeIn > 0 && localInWindow < activeText.fadeIn) alpha = Math.max(localInWindow / activeText.fadeIn, 0);
                     if (activeText.fadeOut > 0 && localInWindow > windowLen - activeText.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeText.fadeOut, 0);
                     return (
                       <div key={activeText.id} onPointerDown={(e) => startOverlayPosDrag(e, 'text', activeText.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
                         className="pointer-events-auto absolute cursor-move touch-none select-none"
-                        style={{ left: activeText.x, top: activeText.y, transform: 'translate(-50%, -50%)', opacity: alpha, zIndex: paintKeyOf(activeText.laneId, activeText.kind === 'subtitulo' ? 'subtitle' : 'text', ati) }}
+                        style={{ left: activeText.x, top: activeText.y, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f})`, opacity: alpha, zIndex: paintKeyOf(activeText.laneId, activeText.kind === 'subtitulo' ? 'subtitle' : 'text', ati) }}
                         title="Arrastrá para mover el texto">
                         <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: activeText.outline ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)' : '0 2px 10px rgba(0,0,0,0.85)' }}>
                           {activeText.text}
@@ -3955,6 +4026,7 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
 {videoOverlays.map((vo, vi) => {
 const inWin = playhead >= vo.start && playhead <= vo.end;
 const wl = vo.end - vo.start; const liw = playhead - vo.start;
+const an = animOffsets(vo, playhead, REF_WIDTH, REF_HEIGHT);
 let voAlpha = 1;
 if (vo.fadeIn > 0 && liw < vo.fadeIn) voAlpha = Math.max(liw / vo.fadeIn, 0);
 if (vo.fadeOut > 0 && liw > wl - vo.fadeOut) voAlpha = Math.max((wl - liw) / vo.fadeOut, 0);
@@ -3962,7 +4034,7 @@ const voClip = vo.shape === 'circle' ? 'circle(closest-side at 50% 50%)' : vo.sh
 return (
 <div key={vo.id} onPointerDown={(e) => startOverlayPosDrag(e, 'video', vo.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag} onPointerCancel={endOverlayPosDrag}
 className="pointer-events-auto absolute cursor-move touch-none select-none"
-style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${vo.rotate}deg)`, opacity: voAlpha, visibility: inWin && !isLaneMuted(vo.laneId) ? 'visible' : 'hidden', clipPath: voClip, zIndex: paintKeyOf(vo.laneId, 'video', vi) }}
+style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f}) rotate(${vo.rotate}deg)`, opacity: voAlpha, visibility: inWin && !isLaneMuted(vo.laneId) ? 'visible' : 'hidden', clipPath: voClip, zIndex: paintKeyOf(vo.laneId, 'video', vi) }}
 title="Arrastrá para mover la superposición">
 <video ref={(el) => { if (el) voElementsRef.current.set(vo.id, el); else voElementsRef.current.delete(vo.id); }}
 src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-events-none h-auto w-full" />
@@ -4128,6 +4200,17 @@ title="Cambiar dónde vive el audio de este clip">
                 <button onClick={() => updateImageOverlay(selectedImage.id, { rotate: ((selectedImage.rotate + 90) % 360) as ImageOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-pink-400 hover:text-pink-400">⟲ Rotar imagen ({selectedImage.rotate}°)</button>
                 <label className="block select-none text-xs text-slate-400">Fade in: {selectedImage.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeIn} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade out: {selectedImage.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeOut} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+<label className="block select-none text-xs text-slate-400">✨ Animación de entrada
+<select value={selectedImage.animIn || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
+{(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((k) => (<option key={k} value={k}>{ANIM_IN_LABELS[k]}</option>))}
+</select></label>
+{(selectedImage.animIn && selectedImage.animIn !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedImage.animInDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedImage.animInDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>)}
+<label className="block select-none text-xs text-slate-400">✨ Animación de salida
+<select value={selectedImage.animOut || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
+{(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((k) => (<option key={k} value={k}>{ANIM_OUT_LABELS[k]}</option>))}
+</select></label>
+{(selectedImage.animOut && selectedImage.animOut !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración salida: {(selectedImage.animOutDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedImage.animOutDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>)}
+
                 <p className="text-[11px] leading-relaxed text-slate-500"> De {selectedImage.start.toFixed(1)}s a {selectedImage.end.toFixed(1)}s</p>
                 <button onClick={() => { setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImage.id)); setSelectedImageId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar imagen</button>
               </div>
@@ -4146,6 +4229,17 @@ title="Cambiar dónde vive el audio de este clip">
                 <label className="block select-none text-xs text-slate-400">Tamaño: {selectedText.size}px<input type="range" min={16} max={400} step={2} value={selectedText.size} onChange={(e) => updateTextOverlay(selectedText.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade in: {selectedText.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeIn} onChange={(e) => updateTextOverlay(selectedText.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
                 <label className="block select-none text-xs text-slate-400">Fade out: {selectedText.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeOut} onChange={(e) => updateTextOverlay(selectedText.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+<label className="block select-none text-xs text-slate-400">✨ Animación de entrada
+<select value={selectedText.animIn || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+{(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).filter((k) => k !== 'zoom-in' && k !== 'zoom-out').map((k) => (<option key={k} value={k}>{ANIM_IN_LABELS[k]}</option>))}
+</select></label>
+{(selectedText.animIn && selectedText.animIn !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedText.animInDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedText.animInDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>)}
+<label className="block select-none text-xs text-slate-400">✨ Animación de salida
+<select value={selectedText.animOut || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+{(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).filter((k) => k !== 'zoom-in' && k !== 'zoom-out').map((k) => (<option key={k} value={k}>{ANIM_OUT_LABELS[k]}</option>))}
+</select></label>
+{(selectedText.animOut && selectedText.animOut !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración salida: {(selectedText.animOutDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedText.animOutDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>)}
+
 
 {selectedText.kind === 'subtitulo' && (
 <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, fades y posición de este subtítulo a todos los de la pista SUB">
@@ -4192,6 +4286,17 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
 </div>
 <label className="block select-none text-xs text-slate-400">Fade in (opacidad): {selectedVo.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeIn} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out (opacidad): {selectedVo.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeOut} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+<label className="block select-none text-xs text-slate-400">✨ Animación de entrada
+<select value={selectedVo.animIn || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+{(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((k) => (<option key={k} value={k}>{ANIM_IN_LABELS[k]}</option>))}
+</select></label>
+{(selectedVo.animIn && selectedVo.animIn !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedVo.animInDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedVo.animInDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>)}
+<label className="block select-none text-xs text-slate-400">✨ Animación de salida
+<select value={selectedVo.animOut || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+{(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((k) => (<option key={k} value={k}>{ANIM_OUT_LABELS[k]}</option>))}
+</select></label>
+{(selectedVo.animOut && selectedVo.animOut !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración salida: {(selectedVo.animOutDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedVo.animOutDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>)}
+
 <button onClick={() => updateVideoOverlay(selectedVo.id, { muted: !selectedVo.muted })} disabled={selectedVo.hasAudio === false} className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${selectedVo.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'}`}>{selectedVo.muted ? '🔇 Sin audio (click para activar)' : '🔊 Con audio'}</button>
 <p className="text-[11px] leading-relaxed text-slate-500"> De {selectedVo.start.toFixed(1)}s a {selectedVo.end.toFixed(1)}s · empieza en {selectedVo.offset.toFixed(1)}s del archivo</p>
 <button onClick={() => { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVo.id)); setSelectedVoId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar capa</button>
