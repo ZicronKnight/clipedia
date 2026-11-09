@@ -35,6 +35,7 @@ filter?: FilterType;
 type ImageOverlay = {
   id: string; assetId: string; name: string; url: string; start: number; end: number;
   x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270; fadeIn: number; fadeOut: number;
+lane?: number; laneId?: string;
 };
 
 type OverlayShape = 'none' | 'round' | 'circle';
@@ -43,18 +44,30 @@ id: string; assetId: string; name: string; url: string;
 start: number; end: number; offset: number;
 x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270;
 fadeIn: number; fadeOut: number; muted: boolean; shape: OverlayShape; hasAudio?: boolean; srcW?: number; srcH?: number;
+lane?: number; laneId?: string;
 };
 
 type TextOverlay = {
   id: string; text: string; start: number; end: number; x: number; y: number; size: number; bold: boolean;
   font: 'sans' | 'serif' | 'mono' | 'roboto' | 'playfair' | 'montserrat' | 'opensans' | 'lato' | 'oswald' | 'raleway' | 'poppins' | 'merriweather' | 'nunito';
   color: string; fadeIn: number; fadeOut: number; outline?: boolean;
-kind?: 'texto' | 'subtitulo';
+kind?: 'texto' | 'subtitulo'; laneId?: string;
 };
 type AudioTrack = {
   id: string; assetId: string; name: string; url: string; duration: number; offset: number; start: number;
-  volume: number; fadeIn: number; fadeOut: number; muted: boolean; peaks: number[]; sourceVideoId?: string; released?: boolean;
+  volume: number; fadeIn: number; fadeOut: number; muted: boolean; peaks: number[]; sourceVideoId?: string; released?: boolean; laneId?: string;
 };
+
+type TimelineLaneKind = 'audio' | 'image' | 'video' | 'text' | 'subtitle';
+type TimelineLane = { id: string; kind: TimelineLaneKind; name: string; muted: boolean };
+const TIMELINE_GUTTER_WIDTH = 78;
+const DEFAULT_TIMELINE_LANES: TimelineLane[] = [
+  { id: 'subtitle-1', kind: 'subtitle', name: 'SUB1', muted: false },
+  { id: 'text-1', kind: 'text', name: 'T1', muted: false },
+  { id: 'image-1', kind: 'image', name: 'I1', muted: false },
+  { id: 'video-1', kind: 'video', name: 'V2', muted: false },
+  { id: 'audio-1', kind: 'audio', name: 'A1', muted: false },
+];
 type AspectRatio = '16:9' | '9:16' | '1:1' | '4:3';
 type Resolution = '480p' | '720p' | '1080p' | '4K';
 type ExportFormat = 'mp4' | 'mov' | 'mkv';
@@ -450,8 +463,10 @@ async function captureFilmstrip(url: string, duration: number): Promise<string[]
 
 type TrimDrag = { id: string; edge: 'start' | 'end'; startX: number; origStart: number; origEnd: number };
 type MoveDrag = { id: string; startX: number; active: boolean };
-type OverlayTimeDrag = { id: string; type: 'text' | 'image' | 'audio' | 'video'; mode: 'move' | 'start' | 'end'; startX: number; origStart: number; origEnd: number; origDuration?: number; origOffset?: number };
+type OverlayDragItem = { id: string; type: 'text' | 'image' | 'audio' | 'video'; origStart: number; origEnd: number; origDuration?: number; origOffset?: number };
+type OverlayTimeDrag = { id: string; type: 'text' | 'image' | 'audio' | 'video'; mode: 'move' | 'start' | 'end' | 'lane'; startX: number; origStart: number; origEnd: number; origDuration?: number; origOffset?: number; group?: OverlayDragItem[] };
 type PanDrag = { id: string; startX: number; startY: number; origX: number; origY: number };
+type TimelinePanDrag = { pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number; moved: boolean };
 type Toast = { id: number; msg: string; kind: 'info' | 'warn' };
 type StageRect = { left: number; top: number; width: number; height: number };
 
@@ -722,6 +737,9 @@ export default function Studio() {
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
   const [, setWaveformRevision] = useState(0);
   const [videoOverlays, setVideoOverlays] = useState<VideoOverlay[]>([]);
+  const [timelineLanes, setTimelineLanes] = useState<TimelineLane[]>(DEFAULT_TIMELINE_LANES);
+  const [activeLaneIds, setActiveLaneIds] = useState<Record<TimelineLaneKind, string>>({ audio: 'audio-1', image: 'image-1', video: 'video-1', text: 'text-1', subtitle: 'subtitle-1' });
+  const [selectedEventIds, setSelectedEventIds] = useState<string[]>([]);
   const [selectedVoId, setSelectedVoId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -743,6 +761,7 @@ export default function Studio() {
   const [stage, setStage] = useState<StageRect | null>(null);
   const [histVersion, setHistVersion] = useState(0);
   const [pps, setPps] = useState(DEFAULT_PPS);
+  const [timelinePanning, setTimelinePanning] = useState(false);
   const [transitionPicker, setTransitionPicker] = useState<number | null>(null);
   const [previewTransitions, setPreviewTransitions] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
@@ -766,6 +785,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const previewBoxRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const timelinePanRef = useRef<TimelinePanDrag | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -797,6 +817,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
   const pendingAnchorRef = useRef<{ time: number; offsetX: number } | null>(null);
   const renderStartRef = useRef(0);
   const playheadLineRef = useRef<HTMLDivElement>(null);
+  const playheadHeadRef = useRef<HTMLDivElement>(null);
   const tcMobileRef = useRef<HTMLSpanElement>(null);
   const tcDesktopRef = useRef<HTMLSpanElement>(null);
   const lastUiTenthRef = useRef(-1);
@@ -1081,10 +1102,36 @@ c.muted = true;
         const rt: TextOverlay[] = proj.textOverlays || [];
 // Migración: los subtítulos de rondas anteriores (outline=true) pasan a la pista SUB
 rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'subtitulo'; });
+        // Migración compatible: se conservan las filas numéricas que ya existían y se
+        // convierten en identificadores estables para poder agregar/reordenar pistas.
+        const storedLanes = (proj as StoredProject & { timelineLanes?: TimelineLane[] }).timelineLanes;
+        let restoredLanes: TimelineLane[] = storedLanes?.length ? storedLanes.map((l) => ({ ...l, muted: !!l.muted })) : [];
+        const ensureLane = (kind: TimelineLaneKind, index: number) => {
+          const id = `${kind}-${index + 1}`;
+          let lane = restoredLanes.find((l) => l.id === id);
+          if (!lane) {
+            const prefix = kind === 'subtitle' ? 'SUB' : kind === 'text' ? 'T' : kind === 'audio' ? 'A' : kind === 'image' ? 'I' : 'V';
+            lane = { id, kind, name: `${prefix}${kind === 'video' ? index + 2 : index + 1}`, muted: false };
+            restoredLanes.push(lane);
+          }
+          return lane.id;
+        };
+        if (!storedLanes?.length) {
+          ensureLane('subtitle', 0); ensureLane('text', 0);
+          for (let i = 0; i < Math.max(1, ri.reduce((m, x) => Math.max(m, (x.lane ?? 0) + 1), 1)); i++) ensureLane('image', i);
+          for (let i = 0; i < Math.max(1, rv.reduce((m, x) => Math.max(m, (x.lane ?? 0) + 1), 1)); i++) ensureLane('video', i);
+          // Los proyectos anteriores dibujaban cada audio en su propia fila.
+          for (let i = 0; i < Math.max(1, ra.length); i++) ensureLane('audio', i);
+        }
+        ri.forEach((img) => { if (!img.laneId) img.laneId = ensureLane('image', img.lane ?? 0); });
+        rv.forEach((vo) => { if (!vo.laneId) vo.laneId = ensureLane('video', vo.lane ?? 0); });
+        rt.forEach((txt) => { const kind: TimelineLaneKind = txt.kind === 'subtitulo' ? 'subtitle' : 'text'; if (!txt.laneId) txt.laneId = ensureLane(kind, 0); });
+        ra.forEach((aud, i) => { if (!aud.laneId) aud.laneId = ensureLane('audio', storedLanes?.length ? 0 : i); });
         if (cancelled) return;
-        if (rc.length || ri.length || rt.length || ra.length || rv.length || missing) {
+        if (rc.length || ri.length || rt.length || ra.length || rv.length || missing || restoredLanes.length) {
           applyingRef.current = true;
-          setClips(rc); setImageOverlays(ri); setTextOverlays(rt); setAudioTracks(ra); setVideoOverlays(rv);
+          setClips(rc); setImageOverlays(ri); setTextOverlays(rt); setAudioTracks(ra); setVideoOverlays(rv); setTimelineLanes(restoredLanes);
+          setActiveLaneIds({ audio: restoredLanes.find((l) => l.kind === 'audio')?.id || 'audio-1', image: restoredLanes.find((l) => l.kind === 'image')?.id || 'image-1', video: restoredLanes.find((l) => l.kind === 'video')?.id || 'video-1', text: restoredLanes.find((l) => l.kind === 'text')?.id || 'text-1', subtitle: restoredLanes.find((l) => l.kind === 'subtitle')?.id || 'subtitle-1' });
           if (proj.settings) setExportSettings((s) => ({ ...s, ...proj.settings }));
           setTimeout(() => { applyingRef.current = false; }, 80);
           showToast(missing ? `📂 Proyecto restaurado (${missing} elemento(s) sin archivo local)` : '📂 Proyecto restaurado desde tu navegador', 'info');
@@ -1096,10 +1143,10 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
   }, []);
 
   // ===== HISTORIA (UNDO/REDO) =====
-  const snapshotOf = (c: Clip[], i: ImageOverlay[], t: TextOverlay[], a: AudioTrack[], v: VideoOverlay[]) => JSON.stringify([c, i, t, a, v]);
+  const snapshotOf = (c: Clip[], i: ImageOverlay[], t: TextOverlay[], a: AudioTrack[], v: VideoOverlay[], lanes: TimelineLane[]) => JSON.stringify([c, i, t, a, v, lanes]);
   useEffect(() => {
     if (applyingRef.current) return;
-    const snap = snapshotOf(clips, imageOverlays, textOverlays, audioTracks, videoOverlays);
+    const snap = snapshotOf(clips, imageOverlays, textOverlays, audioTracks, videoOverlays, timelineLanes);
     if (snap === lastSnapshotRef.current) return;
     const timer = setTimeout(() => {
       if (applyingRef.current) return;
@@ -1111,12 +1158,12 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
       setHistVersion((v) => v + 1);
     }, 400);
     return () => clearTimeout(timer);
-  }, [clips, imageOverlays, textOverlays, audioTracks, videoOverlays]);
+  }, [clips, imageOverlays, textOverlays, audioTracks, videoOverlays, timelineLanes]);
 
   const applySnapshot = useCallback((s: string) => {
     applyingRef.current = true;
-    const [c, i, t, a, v] = JSON.parse(s);
-    setClips(c); setImageOverlays(i); setTextOverlays(t); setAudioTracks(a); setVideoOverlays(v || []);
+    const [c, i, t, a, v, lanes] = JSON.parse(s);
+    setClips(c); setImageOverlays(i); setTextOverlays(t); setAudioTracks(a); setVideoOverlays(v || []); if (lanes) { setTimelineLanes(lanes); setActiveLaneIds({ audio: lanes.find((l: TimelineLane) => l.kind === 'audio')?.id || 'audio-1', image: lanes.find((l: TimelineLane) => l.kind === 'image')?.id || 'image-1', video: lanes.find((l: TimelineLane) => l.kind === 'video')?.id || 'video-1', text: lanes.find((l: TimelineLane) => l.kind === 'text')?.id || 'text-1', subtitle: lanes.find((l: TimelineLane) => l.kind === 'subtitle')?.id || 'subtitle-1' }); }
     lastSnapshotRef.current = s;
     setHistVersion((v) => v + 1);
     setTimeout(() => { applyingRef.current = false; }, 80);
@@ -1138,11 +1185,11 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
   useEffect(() => {
     const t = setTimeout(() => {
       if (applyingRef.current) return;
-      const proj: StoredProject = { version: 1, savedAt: Date.now(), settings: exportSettings, clips, imageOverlays, textOverlays, audioTracks, videoOverlays };
+      const proj = { version: 1, savedAt: Date.now(), settings: exportSettings, clips, imageOverlays, textOverlays, audioTracks, videoOverlays, timelineLanes } as StoredProject;
       saveProject(proj).catch((e) => console.error('[Autosave] Error guardando:', e));
     }, 1200);
     return () => clearTimeout(t);
-  }, [clips, imageOverlays, textOverlays, audioTracks, videoOverlays, exportSettings]);
+  }, [clips, imageOverlays, textOverlays, audioTracks, videoOverlays, timelineLanes, exportSettings]);
 
   // ===== MODO PREVIEW DE TRANSICIONES: huella digital de la pista de video =====
   const fp = clips.map((c) => `${c.id}:${c.trimStart.toFixed(3)}:${c.trimEnd.toFixed(3)}:${c.speed}`).join('|');
@@ -1690,22 +1737,10 @@ const plainTextOverlays = textOverlays.filter((t) => t.kind !== 'subtitulo');
   const previewRotate = activeClip?.rotate ?? 0;
   const videoElemW = stage ? (previewRotate === 90 || previewRotate === 270 ? stage.height : stage.width) : 0;
   const videoElemH = stage ? (previewRotate === 90 || previewRotate === 270 ? stage.width : stage.height) : 0;
-  const activeImage = imageOverlays.find((img) => playhead >= img.start && playhead <= img.end);
-  const activeText = textOverlays.find((txt) => playhead >= txt.start && playhead <= txt.end);
-  let imageAlpha = 1;
-  if (activeImage) {
-    const windowLen = activeImage.end - activeImage.start;
-    const localInWindow = playhead - activeImage.start;
-    if (activeImage.fadeIn > 0 && localInWindow < activeImage.fadeIn) imageAlpha = Math.max(localInWindow / activeImage.fadeIn, 0);
-    if (activeImage.fadeOut > 0 && localInWindow > windowLen - activeImage.fadeOut) imageAlpha = Math.max((windowLen - localInWindow) / activeImage.fadeOut, 0);
-  }
-  let textAlpha = 1;
-  if (activeText) {
-    const windowLen = activeText.end - activeText.start;
-    const localInWindow = playhead - activeText.start;
-    if (activeText.fadeIn > 0 && localInWindow < activeText.fadeIn) textAlpha = Math.max(localInWindow / activeText.fadeIn, 0);
-    if (activeText.fadeOut > 0 && localInWindow > windowLen - activeText.fadeOut) textAlpha = Math.max((windowLen - localInWindow) / activeText.fadeOut, 0);
-  }
+  // La composición de preview admite varias imágenes y textos al mismo tiempo,
+  // igual que el render final y las pistas independientes de la timeline.
+  const activeImages = imageOverlays.filter((img) => playhead >= img.start && playhead <= img.end && !isLaneMuted(img.laneId));
+  const activeTexts = textOverlays.filter((txt) => playhead >= txt.start && playhead <= txt.end && !isLaneMuted(txt.laneId));
 
   function showToast(msg: string, kind: Toast['kind'] = 'info', ms = 3200) {
     const id = Date.now() + Math.random();
@@ -1794,7 +1829,7 @@ if (isActive) {
 const targetTime = g.offset + localTime * g.speed;
 if (Math.abs(audio.currentTime - targetTime) > 0.5) audio.currentTime = targetTime;
 if (Math.abs(audio.playbackRate - g.speed) > 0.01) audio.playbackRate = g.speed;
-let volume = track.muted ? 0 : track.volume;
+let volume = (track.muted || isLaneMuted(track.laneId)) ? 0 : track.volume;
 if (track.fadeIn > 0 && localTime < track.fadeIn) volume *= localTime / track.fadeIn;
 if (track.fadeOut > 0 && localTime > g.duration - track.fadeOut) volume *= (g.duration - localTime) / track.fadeOut;
 // CROSSFADE DE TRANSICIÓN: las pistas vinculadas se entrelazan en el solape
@@ -1806,7 +1841,7 @@ if (isPlaying && audio.paused) audio.play().catch(() => {});
 else if (!isPlaying && !audio.paused) audio.pause();
 } else { if (!audio.paused) audio.pause(); }
 });
-}, [playhead, playing, audioTracks]);
+}, [playhead, playing, audioTracks, timelineLanes]);
 // ===== SYNC DE CAPAS DE VIDEO: cada <video> sigue al playhead dentro de su ventana =====
 
 // ===== SYNC DE CAPAS DE VIDEO: cada <video> sigue al playhead dentro de su ventana =====
@@ -1816,16 +1851,16 @@ const t = playheadRef.current;
 videoOverlaysRef.current.forEach((vo) => {
 const el = voElementsRef.current.get(vo.id);
 if (!el) return;
-const active = t >= vo.start && t <= vo.end;
+const active = t >= vo.start && t <= vo.end && !isLaneMuted(vo.laneId);
 if (active) {
 const target = vo.offset + (t - vo.start);
 if (Math.abs(el.currentTime - target) > 0.5) el.currentTime = target;
-el.muted = vo.muted;
+el.muted = vo.muted || isLaneMuted(vo.laneId);
 if (isPlaying && el.paused) el.play().catch(() => {});
 else if (!isPlaying && !el.paused) el.pause();
 } else if (!el.paused) el.pause();
 });
-}, [playhead, playing, videoOverlays]);
+}, [playhead, playing, videoOverlays, timelineLanes]);
 
  const proxyToastRef = useRef(false);
 
@@ -1948,7 +1983,9 @@ showToast('⚡ Preview usando proxy 480p', 'info');
 
     // DOM directo a 60fps: línea y timecodes sin re-render
     const line = playheadLineRef.current;
-    if (line) line.style.left = `${t * ppsRef.current}px`;
+    if (line) line.style.left = `${TIMELINE_GUTTER_WIDTH + t * ppsRef.current}px`;
+    const head = playheadHeadRef.current;
+    if (head) head.style.left = `${t * ppsRef.current}px`;
     const tc = formatTime(t);
     if (tcMobileRef.current) tcMobileRef.current.textContent = tc;
     if (tcDesktopRef.current) tcDesktopRef.current.textContent = tc;
@@ -2019,7 +2056,9 @@ v.play().catch(() => {});
   useEffect(() => {
     if (playingRef.current) return;
     const line = playheadLineRef.current;
-    if (line) line.style.left = `${playhead * pps}px`;
+    if (line) line.style.left = `${TIMELINE_GUTTER_WIDTH + playhead * pps}px`;
+    const head = playheadHeadRef.current;
+    if (head) head.style.left = `${playhead * pps}px`;
     const tc = formatTime(playhead);
     if (tcMobileRef.current) tcMobileRef.current.textContent = tc;
     if (tcDesktopRef.current) tcDesktopRef.current.textContent = tc;
@@ -2068,7 +2107,7 @@ if (audioData) {
 audioDataMap.set(clipId, { channelData: audioData.channelData, sampleRate: audioData.sampleRate });
 const trackId = uid();
 audioDataMap.set(trackId, audioData);
-const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: getPeaksForSegment(trackId, 0, duration), sourceVideoId: clipId, released: false };
+const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: getPeaksForSegment(trackId, 0, duration), sourceVideoId: clipId, released: false, laneId: activeLaneIds.audio };
 setAudioTracks((prev) => [...prev, linked]);
 }
 
@@ -2077,7 +2116,7 @@ else if (isHeavy) {
 // sin decodificar audio al importar: la onda se calcula después por byte-ranges;
 // el preview reproduce por streaming de disco y el export usa el extractor local.
 const trackId = uid();
-const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: Array(WAVEFORM_SAMPLES).fill(0), sourceVideoId: clipId, released: false };
+const linked: AudioTrack = { id: trackId, assetId, name: `Audio de ${f.name}`, url, duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: Array(WAVEFORM_SAMPLES).fill(0), sourceVideoId: clipId, released: false, laneId: activeLaneIds.audio };
 setAudioTracks((prev) => [...prev, linked]);
 }
                     setClips((prev) => [...prev, newClip]);
@@ -2094,7 +2133,7 @@ else showToast('🎵 Archivo pesado: la forma de onda se está calculando por fr
         const url = URL.createObjectURL(f);
         const assetId = uid();
         try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
-        const newOverlay: ImageOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 20, rotate: 0, fadeIn: 0, fadeOut: 0 };
+        const newOverlay: ImageOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 20, rotate: 0, fadeIn: 0, fadeOut: 0, laneId: activeLaneIds.image };
         setImageOverlays((prev) => [...prev, newOverlay]);
         showToast(`🖼️ Imagen "${f.name}" agregada`, 'info');
       }
@@ -2106,7 +2145,7 @@ else showToast('🎵 Archivo pesado: la forma de onda se está calculando por fr
         try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
         const decoded = await decodeAudioBlob(f);
         if (decoded) {
-          const newTrack: AudioTrack = { id: uid(), assetId, name: f.name, url, duration: decoded.duration, offset: 0, start: playheadRef.current, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: [] };
+          const newTrack: AudioTrack = { id: uid(), assetId, name: f.name, url, duration: decoded.duration, offset: 0, start: playheadRef.current, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: [], laneId: activeLaneIds.audio };
           audioDataMap.set(newTrack.id, { channelData: decoded.channelData, sampleRate: decoded.sampleRate });
           newTrack.peaks = getPeaksForSegment(newTrack.id, 0, decoded.duration);
 setAudioTracks((prev) => [...prev, newTrack]);
@@ -2143,7 +2182,7 @@ if (!clip.hasAudio) { showToast('⚠️ Este video no tiene pista de audio', 'wa
 const data = audioDataMap.get(clip.id);
 const trackId = uid();
 if (data) audioDataMap.set(trackId, data);
-setAudioTracks((prev) => [...prev, { id: trackId, assetId: clip.assetId, name: `Audio de ${clip.name}`, url: clip.url, duration: clip.duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: data ? getPeaksForSegment(trackId, 0, clip.duration) : [], sourceVideoId: clip.id, released: false }]);
+setAudioTracks((prev) => [...prev, { id: trackId, assetId: clip.assetId, name: `Audio de ${clip.name}`, url: clip.url, duration: clip.duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: data ? getPeaksForSegment(trackId, 0, clip.duration) : [], sourceVideoId: clip.id, released: false, laneId: activeLaneIds.audio }]);
 updateClip(clip.id, { muted: true });
 showToast('🎵 Audio vinculado en la pista de audio', 'info');
 }
@@ -2204,17 +2243,87 @@ showToast(`📑 Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info')
 }
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
 function updateVideoOverlay(id: string, patch: Partial<VideoOverlay>) { setVideoOverlays((prev) => prev.map((v) => (v.id === id ? { ...v, ...patch } : v))); }
-  function selectOnly(id: string, type: 'clip' | 'image' | 'text' | 'audio' | 'video') {
-setSelectedId(type === 'clip' ? id : null); setSelectedImageId(type === 'image' ? id : null);
-setSelectedTextId(type === 'text' ? id : null); setSelectedAudioId(type === 'audio' ? id : null);
-setSelectedVoId(type === 'video' ? id : null);
-}
+  function selectOnly(id: string, type: 'clip' | 'image' | 'text' | 'audio' | 'video', additive = false) {
+    if (additive) setSelectedEventIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+    else setSelectedEventIds([id]);
+    setSelectedId(type === 'clip' ? id : null); setSelectedImageId(type === 'image' ? id : null);
+    setSelectedTextId(type === 'text' ? id : null); setSelectedAudioId(type === 'audio' ? id : null);
+    setSelectedVoId(type === 'video' ? id : null);
+  }
+  function isEventSelected(id: string) { return selectedEventIds.includes(id); }
+  function isLaneMuted(laneId?: string) { return !!timelineLanes.find((lane) => lane.id === laneId)?.muted; }
+  function laneList(kind: TimelineLaneKind) { return timelineLanes.filter((lane) => lane.kind === kind); }
+  function addTimelineLane(kind: TimelineLaneKind) {
+    const prefix = kind === 'subtitle' ? 'SUB' : kind === 'text' ? 'T' : kind === 'audio' ? 'A' : kind === 'image' ? 'I' : 'V';
+    const existingNumbers = laneList(kind).map((x) => Number(x.name.match(/\d+/)?.[0] || 0));
+    const nextNumber = Math.max(kind === 'video' ? 1 : 0, ...existingNumbers) + 1;
+    const lane: TimelineLane = { id: uid(), kind, name: `${prefix}${nextNumber}`, muted: false };
+    setTimelineLanes((prev) => [...prev, lane]);
+    setActiveLaneIds((prev) => ({ ...prev, [kind]: lane.id }));
+    showToast(`➕ Pista ${lane.name} creada`, 'info');
+  }
+  function moveTimelineLane(laneId: string, direction: -1 | 1) {
+    setTimelineLanes((prev) => {
+      const lane = prev.find((x) => x.id === laneId); if (!lane) return prev;
+      const same = prev.filter((x) => x.kind === lane.kind); const from = same.findIndex((x) => x.id === laneId); const to = from + direction;
+      if (to < 0 || to >= same.length) return prev;
+      const reordered = [...same]; const [item] = reordered.splice(from, 1); reordered.splice(to, 0, item);
+      let cursor = 0;
+      const next = prev.map((x) => x.kind === lane.kind ? reordered[cursor++] : x);
+      const prefix = lane.kind === 'subtitle' ? 'SUB' : lane.kind === 'text' ? 'T' : lane.kind === 'audio' ? 'A' : lane.kind === 'image' ? 'I' : 'V';
+      let n = 0;
+      return next.map((x) => x.kind === lane.kind ? { ...x, name: `${prefix}${lane.kind === 'video' ? ++n + 1 : ++n}` } : x);
+    });
+  }
+  function toggleTimelineLaneMute(laneId: string) {
+    setTimelineLanes((prev) => prev.map((lane) => lane.id === laneId ? { ...lane, muted: !lane.muted } : lane));
+  }
+  function renderLaneControls(lane: TimelineLane) {
+    const siblings = laneList(lane.kind); const index = siblings.findIndex((x) => x.id === lane.id);
+    const count = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === lane.id).length : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === lane.id).length : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === lane.id).length : textOverlays.filter((x) => x.laneId === lane.id).length;
+    const active = activeLaneIds[lane.kind] === lane.id;
+    return (
+      <div data-lane-controls="true" className={`sticky left-0 z-30 flex min-h-[48px] w-[78px] shrink-0 flex-col justify-center gap-px rounded-l-lg border border-r border-slate-700/80 px-1 py-0.5 shadow-[4px_0_12px_rgba(2,6,23,0.28)] ${lane.muted ? 'bg-red-950/90' : active ? 'bg-[#0b2034]' : 'bg-[#091729]'}`}>
+        <button type="button" onClick={() => setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }))} className="flex h-3 min-w-0 items-center justify-center gap-1 rounded px-0.5 leading-none hover:bg-white/5" title={`Seleccionar ${lane.name} como pista destino`}>
+          <span className={`text-[11px] font-black tracking-wide ${lane.muted ? 'text-red-200' : active ? 'text-cyan-200' : 'text-slate-100'}`}>{lane.name}</span>
+          <span className="text-[8px] tabular-nums text-slate-500">{count}</span>
+          {active && <span className="h-1 w-1 rounded-full bg-cyan-400 shadow-[0_0_5px_rgba(34,211,238,.8)]" />}
+        </button>
+        <div className="grid grid-cols-3 gap-0.5">
+          <button type="button" onClick={() => addTimelineLane(lane.kind)} className="flex h-[15px] items-center justify-center rounded border border-cyan-500/20 bg-cyan-500/[0.08] text-[11px] font-semibold leading-none text-cyan-300 transition hover:border-cyan-400/60 hover:bg-cyan-500/20" title={`Agregar pista ${lane.kind}`}>+</button>
+          <button type="button" onClick={() => moveTimelineLane(lane.id, -1)} disabled={index <= 0} className="flex h-[15px] items-center justify-center rounded border border-slate-700/80 bg-slate-800/65 text-[10px] leading-none text-slate-300 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:cursor-default disabled:opacity-25" title="Subir pista">↑</button>
+          <button type="button" onClick={() => moveTimelineLane(lane.id, 1)} disabled={index >= siblings.length - 1} className="flex h-[15px] items-center justify-center rounded border border-slate-700/80 bg-slate-800/65 text-[10px] leading-none text-slate-300 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:cursor-default disabled:opacity-25" title="Bajar pista">↓</button>
+        </div>
+        <div className="grid grid-cols-2 gap-0.5">
+          <button type="button" onClick={() => toggleTimelineLaneMute(lane.id)} className={`flex h-[15px] items-center justify-center rounded border transition ${lane.muted ? 'border-red-400/40 bg-red-500/20 text-red-200' : 'border-slate-700/80 bg-slate-800/65 text-slate-300 hover:border-cyan-400/40 hover:text-cyan-200'}`} title={lane.kind === 'audio' ? (lane.muted ? 'Activar sonido de la pista' : 'Silenciar pista') : (lane.muted ? 'Mostrar pista' : 'Ocultar pista')}>
+            {lane.kind === 'audio' ? (lane.muted ? '♫̸' : '♫') : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden="true"><path d="M2.5 12s3.3-6 9.5-6 9.5 6 9.5 6-3.3 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" />{lane.muted && <path d="m4 4 16 16" />}</svg>}
+          </button>
+          <button type="button" onClick={() => deleteTimelineLane(lane.id)} className="flex h-[15px] items-center justify-center rounded border border-slate-700/80 bg-slate-800/65 text-[11px] leading-none text-slate-400 transition hover:border-red-400/60 hover:bg-red-500/15 hover:text-red-300" title="Eliminar pista">×</button>
+        </div>
+      </div>
+    );
+  }
+  function deleteTimelineLane(laneId: string) {
+    const lane = timelineLanes.find((x) => x.id === laneId); if (!lane) return;
+    const siblings = timelineLanes.filter((x) => x.kind === lane.kind);
+    if (siblings.length <= 1) { showToast('⚠️ Tiene que quedar al menos una pista de cada tipo', 'warn'); return; }
+    const target = siblings.find((x) => x.id !== laneId)!;
+    const items = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === laneId) : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === laneId) : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === laneId) : textOverlays.filter((x) => x.laneId === laneId);
+    if (items.length && !window.confirm(`${lane.name} contiene ${items.length} clip(s). ¿Moverlos a ${target.name} y eliminar la pista?`)) return;
+    if (lane.kind === 'audio') setAudioTracks((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
+    else if (lane.kind === 'image') setImageOverlays((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
+    else if (lane.kind === 'video') setVideoOverlays((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
+    else setTextOverlays((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
+    setTimelineLanes((prev) => { const filtered = prev.filter((x) => x.id !== laneId); const prefix = lane.kind === 'subtitle' ? 'SUB' : lane.kind === 'text' ? 'T' : lane.kind === 'audio' ? 'A' : lane.kind === 'image' ? 'I' : 'V'; let n = 0; return filtered.map((x) => x.kind === lane.kind ? { ...x, name: `${prefix}${lane.kind === 'video' ? ++n + 1 : ++n}` } : x); });
+    setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: prev[lane.kind] === laneId ? target.id : prev[lane.kind] }));
+    showToast(`🗑️ Pista ${lane.name} eliminada`, 'info');
+  }
   function selectAndSeek(id: string) { selectOnly(id, 'clip'); }
 
   function newProject() {
     if (!window.confirm('¿Empezar un proyecto nuevo? Se descarta el actual (y su autoguardado).')) return;
     applyingRef.current = true;
-    setClips([]); setImageOverlays([]); setTextOverlays([]); setAudioTracks([]); setVideoOverlays([]);
+    setClips([]); setImageOverlays([]); setTextOverlays([]); setAudioTracks([]); setVideoOverlays([]); setTimelineLanes(DEFAULT_TIMELINE_LANES); setActiveLaneIds({ audio: 'audio-1', image: 'image-1', video: 'video-1', text: 'text-1', subtitle: 'subtitle-1' }); setSelectedEventIds([]);
 setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
     setPlayhead(0); playheadRef.current = 0;
     historyPast.current = []; historyFuture.current = []; lastSnapshotRef.current = '';
@@ -2298,26 +2407,73 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
   }
 
   function deleteSelected() {
+    const ids = new Set(selectedEventIds);
+    if (ids.size > 1) {
+      const removedClipIds = new Set(clips.filter((c) => ids.has(c.id)).map((c) => c.id));
+      setClips((prev) => prev.filter((c) => !ids.has(c.id)));
+      setImageOverlays((prev) => prev.filter((x) => !ids.has(x.id)));
+      setTextOverlays((prev) => prev.filter((x) => !ids.has(x.id)));
+      setVideoOverlays((prev) => prev.filter((x) => !ids.has(x.id)));
+      setAudioTracks((prev) => prev.filter((x) => !ids.has(x.id) && !(x.sourceVideoId && removedClipIds.has(x.sourceVideoId) && !x.released)).map((x) => x.sourceVideoId && removedClipIds.has(x.sourceVideoId) ? { ...x, sourceVideoId: undefined } : x));
+      setSelectedEventIds([]); setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
+      showToast(`🗑️ ${ids.size} elementos eliminados`, 'info');
+      return;
+    }
     if (selectedAudioId) { setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudioId)); setSelectedAudioId(null); }
     else if (selectedImageId) { setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImageId)); setSelectedImageId(null); }
     else if (selectedTextId) { setTextOverlays((prev) => prev.filter((a) => a.id !== selectedTextId)); setSelectedTextId(null); }
-else if (selectedVoId) { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVoId)); setSelectedVoId(null); }
+    else if (selectedVoId) { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVoId)); setSelectedVoId(null); }
     else if (selectedId) {
-const cid = selectedId;
-const hadRel = audioTracksRef.current.some((t) => t.sourceVideoId === cid && t.released);
-setClips((prev) => prev.filter((c) => c.id !== cid));
-setAudioTracks((prev) => prev.filter((t) => !(t.sourceVideoId === cid && !t.released)).map((t) => (t.sourceVideoId === cid ? { ...t, sourceVideoId: undefined } : t)));
-if (hadRel) showToast('🔓 El video se borró: su audio liberado quedó como pista independiente', 'info');
-setSelectedId(null);
-}
+      const cid = selectedId;
+      const hadRel = audioTracksRef.current.some((t) => t.sourceVideoId === cid && t.released);
+      setClips((prev) => prev.filter((c) => c.id !== cid));
+      setAudioTracks((prev) => prev.filter((t) => !(t.sourceVideoId === cid && !t.released)).map((t) => (t.sourceVideoId === cid ? { ...t, sourceVideoId: undefined } : t)));
+      if (hadRel) showToast('🔓 El video se borró: su audio liberado quedó como pista independiente', 'info');
+      setSelectedId(null);
+    }
+    setSelectedEventIds([]);
+  }
+
+  function startTimelinePan(e: React.PointerEvent<HTMLDivElement>) {
+    // El gesto de un dedo queda reservado al desplazamiento táctil nativo.
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    // Solo se inicia desde el fondo de una pista, nunca desde un clip, botón o regla.
+    if (!target.closest('[data-lanerow]')) return;
+    if (target.closest('[data-lane-controls], [data-timeline-ui], button, input, select, textarea, [data-timeline-event]')) return;
+    const container = timelineScrollRef.current;
+    if (!container) return;
+    e.preventDefault();
+    timelinePanRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop, moved: false };
+    try { container.setPointerCapture(e.pointerId); } catch {}
+    setTimelinePanning(true);
+  }
+  function moveTimelinePan(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = timelinePanRef.current; const container = timelineScrollRef.current;
+    if (!drag || !container || drag.pointerId !== e.pointerId) return;
+    const dx = e.clientX - drag.startX; const dy = e.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+    drag.moved = true;
+    e.preventDefault();
+    container.scrollLeft = drag.scrollLeft - dx;
+    container.scrollTop = drag.scrollTop - dy;
+  }
+  function endTimelinePan(e?: React.PointerEvent<HTMLDivElement>) {
+    const drag = timelinePanRef.current;
+    if (!drag || (e && drag.pointerId !== e.pointerId)) return;
+    const container = timelineScrollRef.current;
+    try { if (container?.hasPointerCapture(drag.pointerId)) container.releasePointerCapture(drag.pointerId); } catch {}
+    timelinePanRef.current = null;
+    setTimelinePanning(false);
   }
 
   function timeFromPointer(e: React.PointerEvent) { const rect = rulerRef.current?.getBoundingClientRect(); if (!rect) return 0; return (e.clientX - rect.left) / pps; }
   function reorderToPointer(e: React.PointerEvent, dragId: string) {
-    const t = timeFromPointer(e); const list = clipsRef.current; const dragged = list.find((c) => c.id === dragId); if (!dragged) return;
-    const others = list.filter((c) => c.id !== dragId); let acc = 0; let idx = others.length;
+    const t = timeFromPointer(e); const list = clipsRef.current; const groupIds = selectedEventIds.includes(dragId) ? selectedEventIds : [dragId];
+    const draggedGroup = list.filter((c) => groupIds.includes(c.id)); if (!draggedGroup.length) return;
+    const others = list.filter((c) => !groupIds.includes(c.id)); let acc = 0; let idx = others.length;
     for (let i = 0; i < others.length; i++) { const len = effLen(others[i]); if (t < acc + len / 2) { idx = i; break; } acc += len; }
-    const next = [...others]; next.splice(idx, 0, dragged);
+    const next = [...others]; next.splice(idx, 0, ...draggedGroup);
     const same = next.length === list.length && next.every((c, i) => c.id === list[i].id);
     if (!same) {
       setClips(next);
@@ -2336,11 +2492,23 @@ setSelectedId(null);
     setClips((prev) => prev.map((cl) => { if (cl.id !== d.id) return cl; if (d.edge === 'start') { const ns = Math.min(Math.max(d.origStart + delta, 0), d.origEnd - MIN_LEN); return { ...cl, trimStart: ns }; } const ne = Math.min(Math.max(d.origEnd + delta, d.origStart + MIN_LEN), cl.duration); return { ...cl, trimEnd: ne }; }));
   }
   function endTrimDrag() { trimDragRef.current = null; }
-  function startMoveDrag(e: React.PointerEvent, clip: Clip) { if (e.button !== 0) return; e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); moveDragRef.current = { id: clip.id, startX: e.clientX, active: false }; }
+  function startMoveDrag(e: React.PointerEvent, clip: Clip) {
+    if (e.button !== 0) return;
+    e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId);
+    // V1 conserva su comportamiento secuencial: la selección múltiple en esta
+    // pista agrupa clips principales entre sí, sin mezclar eventos superpuestos.
+    const selectedMainIds = selectedEventIds.filter((id) => clipsRef.current.some((c) => c.id === id));
+    const next = e.shiftKey
+      ? (selectedMainIds.includes(clip.id) ? selectedMainIds.filter((id) => id !== clip.id) : [...selectedMainIds, clip.id])
+      : [clip.id];
+    setSelectedEventIds(next);
+    setSelectedId(clip.id); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
+    moveDragRef.current = { id: clip.id, startX: e.clientX, active: false };
+  }
   function moveMoveDrag(e: React.PointerEvent) {
     const d = moveDragRef.current; if (!d) return; if (!d.active) { if (Math.abs(e.clientX - d.startX) < DRAG_THRESHOLD) return; d.active = true; setDraggingId(d.id); } reorderToPointer(e, d.id);
   }
-  function endMoveDrag() { const d = moveDragRef.current; moveDragRef.current = null; if (d && !d.active) selectAndSeek(d.id); setDraggingId(null); }
+  function endMoveDrag() { moveDragRef.current = null; setDraggingId(null); }
   function startPanDrag(e: React.PointerEvent, clip: Clip) {
     if (!isCover) return;
     if (e.button !== 0) return;
@@ -2377,16 +2545,64 @@ setSelectedId(null);
   }
   function endPanDrag() { panDragRef.current = null; }
   function startOverlayTimeDrag(e: React.PointerEvent, id: string, type: 'text' | 'image' | 'audio' | 'video', mode: OverlayTimeDrag['mode']) {
-    e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); selectOnly(id, type);
-    let origStart = 0; let origEnd = 0; let origDuration = 0; let origOffset = 0;
-    if (type === 'text') { const t = textOverlaysRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.end; } }
-    else if (type === 'image') { const t = imageOverlaysRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.end; } }
-    else if (type === 'audio') { const t = audioTracksRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.start + t.duration; origDuration = t.duration; origOffset = t.offset; } }
-else { const t = videoOverlaysRef.current.find((x) => x.id === id); if (t) { origStart = t.start; origEnd = t.end; origDuration = t.end - t.start; origOffset = t.offset; } }
-    overlayTimeDragRef.current = { id, type, mode, startX: e.clientX, origStart, origEnd, origDuration, origOffset };
+    e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId);
+    // En las pistas superpuestas se permite seleccionar eventos de distintas
+    // familias (texto, imagen, video y audio) y moverlos juntos. V1 queda aparte.
+    const overlaySelection = selectedEventIds.filter((selectedId) => !clipsRef.current.some((c) => c.id === selectedId));
+    const nextSelection = e.shiftKey
+      ? (overlaySelection.includes(id) ? overlaySelection.filter((x) => x !== id) : [...overlaySelection, id])
+      : [id];
+    setSelectedEventIds(nextSelection);
+    setSelectedId(null); setSelectedImageId(type === 'image' ? id : null);
+    setSelectedTextId(type === 'text' ? id : null); setSelectedAudioId(type === 'audio' ? id : null);
+    setSelectedVoId(type === 'video' ? id : null);
+    const idsForDrag = nextSelection.includes(id) ? nextSelection : [id];
+    const snapshot = (itemId: string): OverlayDragItem | null => {
+      const t = textOverlaysRef.current.find((x) => x.id === itemId); if (t) return { id: itemId, type: 'text', origStart: t.start, origEnd: t.end };
+      const i = imageOverlaysRef.current.find((x) => x.id === itemId); if (i) return { id: itemId, type: 'image', origStart: i.start, origEnd: i.end };
+      const a = audioTracksRef.current.find((x) => x.id === itemId); if (a) return { id: itemId, type: 'audio', origStart: a.start, origEnd: a.start + a.duration, origDuration: a.duration, origOffset: a.offset };
+      const v = videoOverlaysRef.current.find((x) => x.id === itemId); if (v) return { id: itemId, type: 'video', origStart: v.start, origEnd: v.end, origDuration: v.end - v.start, origOffset: v.offset };
+      return null;
+    };
+    const group = mode === 'move' ? idsForDrag.map(snapshot).filter((x): x is OverlayDragItem => !!x) : [];
+    const primary = group.find((x) => x.id === id) || snapshot(id);
+    overlayTimeDragRef.current = primary ? { ...primary, id, type, mode, startX: e.clientX, group } : null;
   }
-  function moveOverlayTimeDrag(e: React.PointerEvent) {
-    const d = overlayTimeDragRef.current; if (!d) return; const delta = (e.clientX - d.startX) / pps;
+  function laneRowUnderPointer(e: React.PointerEvent): string | null {
+const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+const row = el?.closest('[data-lanerow]') as HTMLElement | null;
+return row ? (row.dataset.lanerow || null) : null;
+}
+function moveOverlayTimeDrag(e: React.PointerEvent) {
+const d = overlayTimeDragRef.current; if (!d) return; const delta = (e.clientX - d.startX) / pps;
+// ===== CARRILES: drag vertical entre filas de la misma familia =====
+if (d.mode === 'move' || d.mode === 'lane') {
+const rowKey = laneRowUnderPointer(e);
+if (rowKey) {
+const sep = rowKey.indexOf(':');
+const fam = rowKey.slice(0, sep); const laneId = rowKey.slice(sep + 1);
+if (d.type === 'audio' && fam === 'audio' && laneList('audio').some((l) => l.id === laneId)) {
+setAudioTracks((prev) => prev.map((t) => t.id === d.id ? { ...t, laneId } : t));
+} else if (d.type === 'text' && (fam === 'text' || fam === 'subtitle') && laneList(fam === 'subtitle' ? 'subtitle' : 'text').some((l) => l.id === laneId)) {
+updateTextOverlay(d.id, { laneId, kind: fam === 'subtitle' ? 'subtitulo' : 'texto' });
+} else if (d.type === 'video' && fam === 'video' && laneList('video').some((l) => l.id === laneId)) {
+const laneIndex = laneList('video').findIndex((l) => l.id === laneId); updateVideoOverlay(d.id, { laneId, lane: laneIndex });
+} else if (d.type === 'image' && fam === 'image' && laneList('image').some((l) => l.id === laneId)) {
+const laneIndex = laneList('image').findIndex((l) => l.id === laneId); updateImageOverlay(d.id, { laneId, lane: laneIndex });
+}
+}
+if (d.mode === 'lane') return; // vinculado: solo muda de carril, nunca de tiempo
+}
+    if (d.mode === 'move' && d.group && d.group.length > 1) {
+      for (const item of d.group) {
+        const duration = item.origEnd - item.origStart; const nextStart = Math.max(0, item.origStart + delta);
+        if (item.type === 'text') updateTextOverlay(item.id, { start: nextStart, end: nextStart + duration });
+        else if (item.type === 'image') updateImageOverlay(item.id, { start: nextStart, end: nextStart + duration });
+        else if (item.type === 'audio') updateAudioTrack(item.id, { start: nextStart });
+        else updateVideoOverlay(item.id, { start: nextStart, end: nextStart + duration });
+      }
+      return;
+    }
     if (d.type === 'text') {
       const track = textOverlaysRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<TextOverlay> = {};
       if (d.mode === 'move') { const dur = d.origEnd - d.origStart; patch.start = Math.max(d.origStart + delta, 0); patch.end = patch.start + dur; }
@@ -2454,7 +2670,7 @@ const assetId = uid();
 try { await putAsset(assetId, f); } catch (err) { console.error('[Autosave] No se pudo guardar el asset:', err); }
 const dur = Math.min(5, meta.duration);
 const voAudio = await decodeAudioBlob(f);
-const vo: VideoOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + dur, offset: 0, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 35, rotate: 0, fadeIn: 0, fadeOut: 0, muted: true, shape: 'none', hasAudio: !!voAudio, srcW: meta.width || 16, srcH: meta.height || 9 };
+const vo: VideoOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + dur, offset: 0, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 35, rotate: 0, fadeIn: 0, fadeOut: 0, muted: true, shape: 'none', hasAudio: !!voAudio, srcW: meta.width || 16, srcH: meta.height || 9, laneId: activeLaneIds.video };
 setVideoOverlays((prev) => [...prev, vo]);
 setSelectedVoId(vo.id);
 if (/\.mov$/i.test(f.name)) showToast('🎞️ Capa agregada: los .mov con canal alpha NO se ven transparentes en este navegador. Para transparencia real, usá WebM VP9 con alpha.', 'warn', 7000);
@@ -2464,7 +2680,7 @@ e.target.value = '';
 }
 
   function addTextOverlay() {
-    const newOverlay: TextOverlay = { id: uid(), text: 'Tu texto aquí', start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 72, bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0 };
+    const newOverlay: TextOverlay = { id: uid(), text: 'Tu texto aquí', start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 72, bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, kind: 'texto', laneId: activeLaneIds.text };
     setTextOverlays((prev) => [...prev, newOverlay]); setSelectedTextId(newOverlay.id);
     showToast('✏️ Texto agregado — editálo en el panel de propiedades', 'info');
   }
@@ -2494,6 +2710,7 @@ start: base + cp.start / speed, end: base + cp.end / speed,
 x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.9, size: Math.round(REF_HEIGHT * 0.05),
 bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, outline: true, kind: 'subtitulo',
 }));
+subs.forEach((sub) => { sub.laneId = activeLaneIds.subtitle; });
 setTextOverlays((prev) => [...prev, ...subs]);
 showToast(`✅ ${subs.length} subtítulos con ${model.label} · editá cualquier bloque en la pista T`, 'info', 5000);
 } catch (e: any) {
@@ -2757,6 +2974,7 @@ currentVideoLabel = prevLabel;
 let nextInput = inChunk.length;
 for (let i = 0; i < imageOverlays.length; i++) {
 const img = imageOverlays[i];
+if (isLaneMuted(img.laneId)) continue;
 const oS = Math.max(img.start, cs); const oE = Math.min(img.end, ce);
 if (oE <= oS) continue;
 const idx = nextInput++;
@@ -2776,6 +2994,7 @@ currentVideoLabel = `imgo${i}`;
 let finalVideoLabel = currentVideoLabel;
 for (let i = 0; i < textOverlays.length; i++) {
 const txt = textOverlays[i];
+if (isLaneMuted(txt.laneId)) continue;
 const oS = Math.max(txt.start, cs); const oE = Math.min(txt.end, ce);
 if (oE <= oS) continue;
 const S = txt.start - cs; const E = txt.end - cs;
@@ -2835,7 +3054,7 @@ const trackRoll: number[] = new Array(audioTracks.length).fill(0);
 const trackWasExtracted: boolean[] = new Array(audioTracks.length).fill(false);
 for (let j = 0; j < audioTracks.length; j++) {
 const aud = audioTracks[j];
-if (aud.muted) continue;
+if (aud.muted || isLaneMuted(aud.laneId)) continue;
 const srcIdx = aud.sourceVideoId ? clips.findIndex((c) => c.id === aud.sourceVideoId) : -1;
 if (srcIdx >= 0 && wholeFileFor.has(srcIdx)) {
 trackInputIdx[j] = audioFiles.length; audioFiles.push(wholeFileFor.get(srcIdx)!);
@@ -3100,6 +3319,7 @@ filterComplex += `[${i}:v]trim=${t0}:${t1},${pts},${rot}fps=30,${fitChain}${fFF 
 
       let currentVideoLabel = 'basev';
       imageOverlays.forEach((img, i) => {
+        if (isLaneMuted(img.laneId)) return;
         const imgInputIdx = clips.length + i;
         const imgWidth = Math.round((img.size / 100) * REF_WIDTH);
         const dur = img.end - img.start;
@@ -3117,6 +3337,7 @@ filterComplex += `[${i}:v]trim=${t0}:${t1},${pts},${rot}fps=30,${fitChain}${fFF 
 
 for (let i = 0; i < videoOverlays.length; i++) {
 const vo = videoOverlays[i];
+if (isLaneMuted(vo.laneId)) continue;
 const voInputIdx = clips.length + imageOverlays.length + i;
 const sW = vo.srcW || 16; const sH = vo.srcH || 9;
 const voWidth = Math.max(2, Math.round((vo.size / 100) * REF_WIDTH));
@@ -3145,6 +3366,7 @@ currentVideoLabel = `vo${i}_out`;
 
       let finalVideoLabel = currentVideoLabel;
 textOverlays.forEach((txt, i) => {
+if (isLaneMuted(txt.laneId)) return;
 const variant = FONT_VARIANTS[txt.font];
 let fontFile = (txt.bold ? variant.bold : variant.regular).split('/').pop() as string;
 if (!loadedFontFiles.has(fontFile)) {
@@ -3197,7 +3419,7 @@ filterComplex += `[${finalVideoLabel}]scale=${targetW}:${targetH}:force_original
       const audioLabels: string[] = [];
       if (clips.length > 0) audioLabels.push(prevAudioLabel);
       audioTracks.forEach((aud, i) => {
-if (!aud.muted) {
+if (!aud.muted && !isLaneMuted(aud.laneId)) {
 const maskCount = voMaskIdx.filter((x) => x !== null).length;
 const audInputIdx = clips.length + imageOverlays.length + videoOverlays.length + maskCount + i;
 const g = trackGeom(aud);
@@ -3216,7 +3438,7 @@ audioLabels.push(`sa${i}`);
 });
 
 videoOverlays.forEach((vo, i) => {
-if (!vo.muted && vo.hasAudio !== false) {
+if (!vo.muted && vo.hasAudio !== false && !isLaneMuted(vo.laneId)) {
 const voIdx = clips.length + imageOverlays.length + i;
 const delay = vo.start * 1000;
 filterComplex += `[${voIdx}:a]atrim=${vo.offset}:${vo.offset + (vo.end - vo.start)},asetpts=PTS-STARTPTS,adelay=${delay}|${delay},volume=1.0[va${i}];`;
@@ -3300,7 +3522,7 @@ return css === 'none' ? undefined : css;
 
 // Bloque dibujador compartido por la pista SUB y la pista T
 const renderTextBlock = (txt: TextOverlay) => {
-const isSelected = txt.id === selectedTextId; const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
+const isSelected = isEventSelected(txt.id); const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
 return (<div key={txt.id} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover · bordes para recortar">
 <p className="relative z-10 truncate text-[10px] font-semibold text-fuchsia-200 drop-shadow">{txt.kind === 'subtitulo' ? '💬' : 'T:'} {txt.text}</p>
 <div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
@@ -3502,7 +3724,11 @@ const asrProgressUI = asrProgress ? createPortal(
 </div>,
 document.body
 ) : null;
-return (
+const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
+  const timelineContentWidth = Math.max(projectDuration * pps + 160, 700);
+  const timelineFullWidth = timelineGutterWidth + timelineContentWidth;
+
+  return (
         <div className="flex flex-col gap-2 p-2 lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:overflow-hidden lg:p-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <style>{FONT_FACE_CSS}</style>
       {/* ===== BARRA DE ACCIONES MÓVIL (Nuevo + Exportar) ===== */}
@@ -3607,24 +3833,38 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
                   </div>
                 </div>
                 <div className="pointer-events-none absolute" style={{ left: 0, top: 0, width: REF_WIDTH, height: REF_HEIGHT, transform: `scale(${stageScale})`, transformOrigin: '0 0' }}>
-                  {activeImage && (
-                    <div onPointerDown={(e) => startOverlayPosDrag(e, 'image', activeImage.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
-                      className="pointer-events-auto absolute cursor-move touch-none select-none"
-                      style={{ left: activeImage.x, top: activeImage.y, width: (activeImage.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${activeImage.rotate}deg)`, opacity: imageAlpha }}
-                      title="Arrastrá para mover la imagen">
-                      <img src={activeImage.url} alt="Overlay" className="pointer-events-none h-auto w-full" draggable={false} />
-                    </div>
-                  )}
-                  {activeText && (
-                    <div onPointerDown={(e) => startOverlayPosDrag(e, 'text', activeText.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
-                      className="pointer-events-auto absolute cursor-move touch-none select-none"
-                      style={{ left: activeText.x, top: activeText.y, transform: 'translate(-50%, -50%)', opacity: textAlpha }}
-                      title="Arrastrá para mover el texto">
-                      <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: activeText.outline ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)' : '0 2px 10px rgba(0,0,0,0.85)' }}>
-                        {activeText.text}
-                      </p>
-                    </div>
-                  )}
+                  {activeImages.map((activeImage) => {
+                    const windowLen = activeImage.end - activeImage.start;
+                    const localInWindow = playhead - activeImage.start;
+                    let alpha = 1;
+                    if (activeImage.fadeIn > 0 && localInWindow < activeImage.fadeIn) alpha = Math.max(localInWindow / activeImage.fadeIn, 0);
+                    if (activeImage.fadeOut > 0 && localInWindow > windowLen - activeImage.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeImage.fadeOut, 0);
+                    return (
+                      <div key={activeImage.id} onPointerDown={(e) => startOverlayPosDrag(e, 'image', activeImage.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
+                        className="pointer-events-auto absolute cursor-move touch-none select-none"
+                        style={{ left: activeImage.x, top: activeImage.y, width: (activeImage.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${activeImage.rotate}deg)`, opacity: alpha }}
+                        title="Arrastrá para mover la imagen">
+                        <img src={activeImage.url} alt="Overlay" className="pointer-events-none h-auto w-full" draggable={false} />
+                      </div>
+                    );
+                  })}
+                  {activeTexts.map((activeText) => {
+                    const windowLen = activeText.end - activeText.start;
+                    const localInWindow = playhead - activeText.start;
+                    let alpha = 1;
+                    if (activeText.fadeIn > 0 && localInWindow < activeText.fadeIn) alpha = Math.max(localInWindow / activeText.fadeIn, 0);
+                    if (activeText.fadeOut > 0 && localInWindow > windowLen - activeText.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeText.fadeOut, 0);
+                    return (
+                      <div key={activeText.id} onPointerDown={(e) => startOverlayPosDrag(e, 'text', activeText.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
+                        className="pointer-events-auto absolute cursor-move touch-none select-none"
+                        style={{ left: activeText.x, top: activeText.y, transform: 'translate(-50%, -50%)', opacity: alpha }}
+                        title="Arrastrá para mover el texto">
+                        <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: activeText.outline ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)' : '0 2px 10px rgba(0,0,0,0.85)' }}>
+                          {activeText.text}
+                        </p>
+                      </div>
+                    );
+                  })}
 {videoOverlays.map((vo) => {
 const inWin = playhead >= vo.start && playhead <= vo.end;
 const wl = vo.end - vo.start; const liw = playhead - vo.start;
@@ -3635,7 +3875,7 @@ const voClip = vo.shape === 'circle' ? 'circle(closest-side at 50% 50%)' : vo.sh
 return (
 <div key={vo.id} onPointerDown={(e) => startOverlayPosDrag(e, 'video', vo.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag} onPointerCancel={endOverlayPosDrag}
 className="pointer-events-auto absolute cursor-move touch-none select-none"
-style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${vo.rotate}deg)`, opacity: voAlpha, visibility: inWin ? 'visible' : 'hidden', clipPath: voClip }}
+style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) rotate(${vo.rotate}deg)`, opacity: voAlpha, visibility: inWin && !isLaneMuted(vo.laneId) ? 'visible' : 'hidden', clipPath: voClip }}
 title="Arrastrá para mover la superposición">
 <video ref={(el) => { if (el) voElementsRef.current.set(vo.id, el); else voElementsRef.current.delete(vo.id); }}
 src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-events-none h-auto w-full" />
@@ -3920,62 +4160,78 @@ className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${sel
         </div>
       </div>
       {/* ===== TIMELINE CON ZOOM ===== */}
-      <div className="relative flex min-h-[15rem] max-h-[36dvh] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 lg:max-h-none lg:flex-none lg:shrink-0" style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
+      <div className="relative flex min-h-[15rem] max-h-[36dvh] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0" style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
                 <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/90 p-1 shadow-lg backdrop-blur lg:right-3 lg:top-3">
           <button onClick={() => zoomBy(1 / 1.25)} className="rounded px-2 py-0.5 text-xs font-bold text-slate-300 hover:bg-slate-800" title="Alejar">−</button>
           <span className="w-12 text-center font-mono text-[10px] text-cyan-300">{Math.round((pps / DEFAULT_PPS) * 100)}%</span>
           <button onClick={() => zoomBy(1.25)} className="rounded px-2 py-0.5 text-xs font-bold text-slate-300 hover:bg-slate-800" title="Acercar">+</button>
           <button onClick={() => { pendingAnchorRef.current = null; setPps(DEFAULT_PPS); }} className="rounded px-2 py-0.5 text-[10px] font-bold text-slate-400 hover:bg-slate-800" title="Restablecer zoom">1:1</button>
         </div>
-         <div ref={timelineScrollRef} className="min-h-0 flex-1 overflow-x-auto overflow-y-auto overscroll-contain p-2 [touch-action:pan-x_pan-y] lg:flex-none lg:max-h-none lg:overflow-y-hidden lg:p-4">
-          <div className="relative" style={{ width: Math.max(projectDuration * pps + 160, 700) }}>
-            <div ref={rulerRef} className="sticky top-0 z-10 h-6 cursor-pointer select-none border-b border-slate-700 bg-slate-900/95 backdrop-blur-sm lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
-              {ticks.map((s) => (<div key={s} className="absolute top-0 h-full" style={{ left: s * pps }}><div className="h-2 w-px bg-slate-600" /><span className="ml-1 text-[10px] text-slate-500">{s}s</span></div>))}
+         <div ref={timelineScrollRef} onPointerDown={startTimelinePan} onPointerMove={moveTimelinePan} onPointerUp={endTimelinePan} onPointerCancel={endTimelinePan} className={`min-h-0 flex-1 overflow-auto overscroll-contain p-2 [touch-action:pan-x_pan-y] lg:p-3 ${timelinePanning ? 'cursor-grabbing select-none' : ''}`} >
+          <div className="relative" style={{ width: timelineFullWidth }}>
+            <div className="sticky top-0 z-40 flex w-full bg-slate-900/95 shadow-[0_3px_10px_rgba(0,0,0,0.28)] backdrop-blur-sm">
+              <div className="sticky left-0 z-50 flex h-6 w-[78px] shrink-0 items-center justify-center rounded-tl-md border-b border-r border-slate-700/80 bg-[#091729] text-[8px] font-bold tracking-[0.12em] text-slate-500 lg:h-7">PISTAS</div>
+              <div ref={rulerRef} style={{ width: timelineContentWidth }} className="relative h-6 flex-none cursor-pointer select-none border-b border-slate-700 bg-slate-900/95 lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
+                {ticks.map((s) => (<div key={s} className="absolute top-0 h-full" style={{ left: s * pps }}><div className="h-2 w-px bg-slate-600" /><span className="ml-1 text-[10px] text-slate-500">{s}s</span></div>))}
+                <div ref={playheadHeadRef} className="pointer-events-none absolute bottom-0 top-0 z-30" style={{ left: playhead * pps }}>
+                  <div className="absolute -left-[5px] top-0 h-2.5 w-2.5 rotate-45 rounded-[2px] bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+                  <div className="absolute bottom-0 left-0 top-2 w-px bg-cyan-400/90" />
+                </div>
+              </div>
             </div>
 
-{subtitleOverlays.length > 0 && (
-<div className="relative mt-1.5 h-[calc(3rem*var(--tz,1))] rounded-lg bg-fuchsia-500/5 lg:mt-2 lg:h-9">
-{subtitleOverlays.map(renderTextBlock)}
-<div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-fuchsia-300">SUB</div>
-</div>
-)}
-            <div className="relative mt-1.5 h-[calc(2.25rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:mt-2 lg:h-9">
-              {imageOverlays.map((img) => {
-                const isSelected = img.id === selectedImageId; const width = (img.end - img.start) * pps; const left = img.start * pps;
-                return (<div key={img.id} onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'border-pink-400/60 bg-pink-500/10'}`} title="Arrastrá para mover · bordes para recortar">
-                  <p className="relative z-10 truncate text-[10px] font-semibold text-pink-200 drop-shadow">🖼️ {img.name}</p>
-                  <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
-                  <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
-                </div>);
-              })}
-              {imageOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">🖼️ Pista de imagen — arrastrá una imagen o hacé clic en "+ Imagen"</div>)}
-              <div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">I</div>
-            </div>
-            <div className="relative mt-2 h-[calc(3rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:h-9">
-{plainTextOverlays.map(renderTextBlock)}
-{plainTextOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">T Pista de texto — hacé clic en "+ Texto"</div>)}
-<div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">T</div>
-</div>
-
-<div className="relative mt-2 h-[calc(3rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:h-9">
-{videoOverlays.map((vo) => {
-const isSelected = vo.id === selectedVoId; const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
-return (<div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'border-amber-400/60 bg-amber-500/10'}`} title="Arrastrá para mover · bordes para recortar">
-<p className="relative z-10 truncate text-[10px] font-semibold text-amber-200 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
-<div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
-<div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
-</div>);
+{laneList('subtitle').map((lane) => {
+  const items = subtitleOverlays.filter((txt) => (txt.laneId || 'subtitle-1') === lane.id);
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`subtitle:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-fuchsia-500/5'} lg:h-9`}>
+    {items.map(renderTextBlock)}{items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Subtítulos · soltá acá o generá subtítulos</div>}
+  </div></div></React.Fragment>;
 })}
-{videoOverlays.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Capa de superposición — agregá un video con "+ Superponer"</div>)}
-<div className="pointer-events-none absolute inset-y-0 left-1 flex items-center text-[10px] font-semibold text-slate-600">S</div>
-</div>
+{laneList('image').map((lane) => {
+  const items = imageOverlays.filter((img) => (img.laneId || 'image-1') === lane.id);
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`image:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(2.25rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'} lg:h-9`}>
+    {items.map((img) => {
+      const isSelected = isEventSelected(img.id); const width = (img.end - img.start) * pps; const left = img.start * pps;
+      return <div key={img.id} onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'border-pink-400/60 bg-pink-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover">
+        <p className="relative z-10 truncate text-[10px] font-semibold text-pink-200 drop-shadow">🖼️ {img.name}</p>
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
+      </div>;
+    })}
+    {items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de imagen vacía</div>}
+  </div></div></React.Fragment>;
+})}
+{laneList('text').map((lane) => {
+  const items = plainTextOverlays.filter((txt) => (txt.laneId || 'text-1') === lane.id);
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`text:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'} lg:h-9`}>
+    {items.map(renderTextBlock)}{items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de texto vacía · hacé clic en + Texto</div>}
+  </div></div></React.Fragment>;
+})}
+{laneList('video').map((lane) => {
+  const items = videoOverlays.filter((vo) => (vo.laneId || 'video-1') === lane.id);
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`video:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'} lg:h-9`}>
+    {items.map((vo) => {
+      const isSelected = isEventSelected(vo.id); const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
+      return <div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'border-amber-400/60 bg-amber-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover">
+        <p className="relative z-10 truncate text-[10px] font-semibold text-amber-200 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
+      </div>;
+    })}
+    {items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de video superpuesto vacía</div>}
+  </div></div></React.Fragment>;
+})}
 
-            <div className="relative mt-1.5 h-[calc(4rem*var(--tz,1))] rounded-lg bg-slate-800/40 lg:mt-2 lg:h-20">
+            <div className="mt-1.5 flex min-h-[84px] w-full items-stretch">
+              <div className="sticky left-0 z-30 flex w-[78px] shrink-0 flex-col justify-center gap-1 rounded-l-lg border border-r border-cyan-500/25 bg-[#0b2034] px-1 py-1 shadow-[4px_0_12px_rgba(2,6,23,0.28)]">
+                <div className="flex items-center justify-center gap-1"><span className="text-[12px] font-black tracking-wide text-cyan-200">V1</span><span className="rounded bg-cyan-500/10 px-1 py-0.5 text-[8px] font-bold tracking-wider text-cyan-300">FIJA</span></div>
+                <button type="button" onClick={() => addTimelineLane('video')} className="flex h-5 items-center justify-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/[0.08] text-[9px] font-semibold text-cyan-200 transition hover:border-cyan-400/60 hover:bg-cyan-500/20" title="Agregar pista de video superpuesto"><span className="text-[12px]">+</span> V2</button>
+              </div>
+              <div data-lanerow="video:main" className="relative my-auto h-[calc(4rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-cyan-500/25 bg-slate-800/40 lg:h-20" style={{ width: timelineContentWidth }}>
               {clips.map((c, i) => {
                 const hasTransition = c.transition && c.transition.type !== 'none' && i < clips.length - 1;
                 return (
                   <React.Fragment key={c.id}>
-                    <div onPointerDown={(e) => startMoveDrag(e, c)} onPointerMove={moveMoveDrag} onPointerUp={endMoveDrag} onPointerCancel={endMoveDrag} style={{ left: videoStarts[i] * pps, width: Math.max(effLen(c) * pps - 2, 8) }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 py-1 ${draggingId === c.id ? 'cursor-grabbing border-cyan-300 bg-cyan-500/30 opacity-60 ring-2 ring-cyan-300' : c.id === selectedId ? 'cursor-grab border-violet-400 bg-violet-500/20 ring-1 ring-violet-400' : i === activeIndex ? 'cursor-grab border-cyan-400 bg-cyan-500/20' : 'cursor-grab border-slate-600 bg-gradient-to-br from-cyan-500/10 to-violet-500/10'}`}>
+                    <div onPointerDown={(e) => startMoveDrag(e, c)} onPointerMove={moveMoveDrag} onPointerUp={endMoveDrag} onPointerCancel={endMoveDrag} style={{ left: videoStarts[i] * pps, width: Math.max(effLen(c) * pps - 2, 8) }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 py-1 ${draggingId === c.id ? 'cursor-grabbing border-cyan-300 bg-cyan-500/30 opacity-60 ring-2 ring-cyan-300' : isEventSelected(c.id) ? 'cursor-grab border-violet-400 bg-violet-500/20 ring-1 ring-violet-400' : i === activeIndex ? 'cursor-grab border-cyan-400 bg-cyan-500/20' : 'cursor-grab border-slate-600 bg-gradient-to-br from-cyan-500/10 to-violet-500/10'}`}>
                                             <ClipFilmstrip clip={c} />
 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-950/25 to-slate-950/70" />
 {blendLen(i) > 0 && (
@@ -3994,11 +4250,12 @@ return (<div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'v
                     {i < clips.length - 1 && (
 <div className="absolute z-20" style={{ left: videoStarts[i + 1] * pps - 12, top: '50%' }}>
 <button
+onPointerDown={(e) => e.stopPropagation()}
 onClick={(e) => {
 e.stopPropagation();
 setTransitionPicker(i);
 }}
-className={`flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border-2 text-xs font-bold transition-all hover:scale-125 ${
+data-timeline-ui="true" className={`flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border-2 text-xs font-bold transition-all hover:scale-125 ${
 hasTransition
 ? 'border-violet-300 bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/60 ring-2 ring-violet-400/40'
 : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-violet-400 hover:text-violet-400'
@@ -4016,32 +4273,31 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
                   </React.Fragment>
                 );
               })}
-              <div onClick={() => fileInputRef.current?.click()} style={{ left: projectDuration * pps + 4, width: 150 }} className="absolute bottom-1 top-1 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-slate-600 text-xs text-slate-500 transition-colors hover:border-cyan-400 hover:text-cyan-400">+ Agregar clip</div>
+              <div data-timeline-ui="true" onClick={() => fileInputRef.current?.click()} style={{ left: projectDuration * pps + 4, width: 150 }} className="absolute bottom-1 top-1 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-slate-600 text-xs text-slate-500 transition-colors hover:border-cyan-400 hover:text-cyan-400">+ Agregar clip</div>
               {clips.length === 0 && (<div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de video</div>)}
+              </div>
             </div>
-            {audioTracks.map((track) => {
-const isSelected = track.id === selectedAudioId;
-const g = trackGeom(track);
-const linked = !!linkedInfo(track);
-const width = g.duration * pps; const left = g.start * pps;
-return (
-<div key={track.id} className="relative mt-1.5 h-[calc(2.5rem*var(--tz,1))] rounded-lg bg-slate-800/20 lg:mt-2 lg:h-12" style={{ width: Math.max(projectDuration * pps + 160, 700) }}>
-<div onClick={(e) => { e.stopPropagation(); selectOnly(track.id, 'audio'); }} onPointerDown={linked ? undefined : (e) => startOverlayTimeDrag(e, track.id, 'audio', 'move')} onPointerMove={linked ? undefined : moveOverlayTimeDrag} onPointerUp={linked ? undefined : endOverlayTimeDrag} onPointerCancel={linked ? undefined : endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 ${linked ? 'cursor-default border-green-400/40 bg-green-500/5' : isSelected ? 'cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado al video: sigue sus edits · tocá el candado para liberar' : 'Arrastrá para mover · bordes para recortar'}>
-<WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
-{track.sourceVideoId && (
-<button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>
-)}
-<p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
-                    {!linked && (<div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />)}
-{!linked && (<div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />)}
-                  </div>
-                </div>
-              );
+            {laneList('audio').map((lane) => {
+              const items = audioTracks.filter((track) => (track.laneId || 'audio-1') === lane.id);
+              return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[52px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`audio:${lane.id}`} className={`relative my-auto min-h-[calc(2.5rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 lg:min-h-12 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'}`} style={{ width: timelineContentWidth }}>
+                {items.map((track) => {
+                  const isSelected = isEventSelected(track.id); const g = trackGeom(track); const linked = !!linkedInfo(track);
+                  const width = g.duration * pps; const left = g.start * pps;
+                  return <div key={track.id} className="absolute inset-0" style={{ minHeight: 48 }}>
+                    <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width, top: 3, bottom: 3 }} className={`absolute select-none touch-pan-y overflow-hidden rounded-md border px-2 ${linked ? 'cursor-default border-green-400/40 bg-green-500/5' : isSelected ? 'cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
+                      <WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
+                      {track.sourceVideoId && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>}
+                      <p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
+                      {!linked && <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />}
+                      {!linked && <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />}
+                    </div>
+                  </div>;
+                })}
+                {items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de audio vacía · importá o arrastrá audio aquí</div>}
+              </div></div></React.Fragment>;
             })}
-            {audioTracks.length === 0 && (<div className="mt-1.5 flex h-[calc(2.5rem*var(--tz,1))] items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-800/20 text-xs text-slate-600 lg:mt-2 lg:h-12">🎵 Pista de audio — arrastrá un MP3/WAV o hacé clic en "+ Audio"</div>)}
-            <div ref={playheadLineRef} className="pointer-events-none absolute bottom-0 top-0 z-20" style={{ left: 0 }}>
+            <div ref={playheadLineRef} className="pointer-events-none absolute bottom-0 top-0 z-20" style={{ left: timelineGutterWidth }}>
               <div className="h-full w-px bg-cyan-400" />
-              <div className="absolute -left-[5px] top-0 h-2.5 w-2.5 rotate-45 rounded-[2px] bg-cyan-400" />
             </div>
           </div>
         </div>
@@ -4049,7 +4305,7 @@ return (
       {/* ===== GRILLA DE IMPORTS MÓVIL ===== */}
          
       <p className="hidden shrink-0 text-center text-[11px] text-slate-600 lg:block">
-        Arrastrá videos, imágenes o audios · Ruedita del mouse = zoom en la timeline · Ctrl+Z deshacer · Tu proyecto se autoguarda en este navegador · Supr = eliminar seleccionado · ✨ entre clips = transición · 🟢 Previsualizar = verlas en el preview
+        Shift + clic = selección múltiple · Arrastrá clips seleccionados para moverlos juntos · Arrastrá el fondo vacío con el mouse = desplazarte por la timeline · Ruedita = zoom · Ctrl+Z deshacer · Tu proyecto se autoguarda en este navegador · Supr = eliminar seleccionado · ✨ entre clips = transición · 🟢 Previsualizar = verlas en el preview
       </p>
     </div>
   );
