@@ -844,12 +844,31 @@ const [silencePct, setSilencePct] = useState(0);
 const [silenceMsg, setSilenceMsg] = useState<string | null>(null);
 const [asrProgress, setAsrProgress] = useState<{ phase: 'model' | 'transcribe'; pct: number } | null>(null);
 const [proxiesOn, setProxiesOn] = useState(false);
+const [fsMode, setFsMode] = useState<'none' | 'native' | 'css'>('none');
 const [propsTab, setPropsTab] = useState('inspector');
 const [asrModelPick, setAsrModelPick] = useState<AsrModelId>(() => { const pref = readAsrPref(); const wanted = pref?.model ?? (IS_MOBILE ? 'tiny' : 'base'); return (ASR_MODELS.some((m) => m.id === wanted) ? wanted : 'base') as AsrModelId; });
 const [asrLangPick, setAsrLangPick] = useState<AsrLanguage>(() => (readAsrPref()?.lang ?? 'es') as AsrLanguage);
 const [asrRemember, setAsrRemember] = useState(true);
 const fmtAsrEst = (s: number) => (s >= 900 ? '—' : s >= 90 ? '≈ ' + Math.round(s / 60) + ' min' : '≈ ' + Math.max(1, Math.round(s)) + ' s');
   useEffect(() => { setProxiesOn(proxiesEnabled); }, []);
+// ===== PREVIEW FULLSCREEN: sincronizar estado con la API del navegador =====
+useEffect(() => {
+const onFsChange = () => { if (document.fullscreenElement !== previewBoxRef.current) setFsMode((m) => (m === 'native' ? 'none' : m)); };
+const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFsMode((m) => (m === 'css' ? 'none' : m)); };
+document.addEventListener('fullscreenchange', onFsChange);
+window.addEventListener('keydown', onKey);
+return () => { document.removeEventListener('fullscreenchange', onFsChange); window.removeEventListener('keydown', onKey); };
+}, []);
+// ===== SHELL MÓVIL: descontar el header real (logo + banner) del alto visible =====
+useEffect(() => {
+const el = shellRef.current;
+if (!el) return;
+const compute = () => setShellOffset(Math.max(0, el.offsetTop));
+compute();
+window.addEventListener('resize', compute);
+window.addEventListener('orientationchange', compute);
+return () => { window.removeEventListener('resize', compute); window.removeEventListener('orientationchange', compute); };
+}, []);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -880,6 +899,12 @@ const fmtAsrEst = (s: number) => (s >= 900 ? '—' : s >= 90 ? '≈ ' + Math.rou
   const moveDragRef = useRef<MoveDrag | null>(null);
   const overlayTimeDragRef = useRef<OverlayTimeDrag | null>(null);
   const overlayPosDragRef = useRef<{ type: 'text' | 'image' | 'video'; id: string } | null>(null);
+const liftTimerRef = useRef<number | null>(null);
+const liftedRef = useRef(false);
+const lastPointerRef = useRef({ x: 0, y: 0 });
+const ghostWRef = useRef(120);
+const ghostRef = useRef<HTMLDivElement | null>(null);
+const [ghost, setGhost] = useState<{ x: number; y: number; w: number; label: string; cls: string } | null>(null);
   const panDragRef = useRef<PanDrag | null>(null);
   const historyPast = useRef<string[]>([]);
   const historyFuture = useRef<string[]>([]);
@@ -916,6 +941,8 @@ const fmtAsrEst = (s: number) => (s >= 900 ? '—' : s >= 90 ? '≈ ' + Math.rou
   const [previewCacheVersion, setPreviewCacheVersion] = useState(0);
   const [snippetProgress, setSnippetProgress] = useState(0);
   const [proxyVersion, setProxyVersion] = useState(0);
+const [shellOffset, setShellOffset] = useState(0);
+const shellRef = useRef<HTMLDivElement>(null);
   const proxyQueueRef = useRef<{ assetId: string; url: string }[]>([]);
   const proxyRunningRef = useRef(false);
 
@@ -1102,7 +1129,13 @@ container.removeEventListener('touchcancel', onEnd);
 // eslint-disable-next-line react-hooks/exhaustive-deps
 }, []);
 
-  // ===== RESTAURAR AUTOSAVE =====
+  // ===== DRAG TÁCTIL CON "CLIP EN LA MANO": mientras esté levantado, el scroll se congela =====
+useEffect(() => {
+const onTouchMove = (e: TouchEvent) => { if (liftedRef.current) e.preventDefault(); };
+window.addEventListener('touchmove', onTouchMove, { passive: false });
+return () => window.removeEventListener('touchmove', onTouchMove);
+}, []);
+// ===== RESTAURAR AUTOSAVE =====
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2260,7 +2293,19 @@ updateClip(clip.id, { muted: true });
 showToast('🎵 Audio vinculado en la pista de audio', 'info');
 }
 
-  function toggleProxies() {
+  async function enterFullscreenPreview() {
+const el = previewBoxRef.current;
+if (!el) return;
+try {
+if (el.requestFullscreen) { await el.requestFullscreen(); setFsMode('native'); return; }
+} catch (e) { console.warn('[Fullscreen] nativo falló, usando modo teatro:', e); }
+setFsMode('css');
+}
+function exitFullscreenPreview() {
+if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
+setFsMode('none');
+}
+function toggleProxies() {
     const next = !proxiesOn;
     setProxiesOn(next);
     proxiesEnabled = next;
@@ -2368,7 +2413,7 @@ return FAMILY_RANK[family] * 100000 - lanePosOf(family, laneId) * 1000 + arrayId
     const count = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === lane.id).length : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === lane.id).length : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === lane.id).length : textOverlays.filter((x) => x.laneId === lane.id).length;
     const active = activeLaneIds[lane.kind] === lane.id;
     return (
-      <div data-lane-controls="true" className={`sticky left-0 z-30 flex min-h-[48px] w-[78px] shrink-0 flex-col justify-center gap-px rounded-l-lg border border-r border-slate-700/80 px-1 py-0.5 shadow-[4px_0_12px_rgba(2,6,23,0.28)] ${lane.muted ? 'bg-red-950/90' : active ? 'bg-[#0b2034]' : 'bg-[#091729]'}`}>
+      <div data-lane-controls="true" className={`sticky left-0 z-20 flex min-h-[48px] w-[78px] shrink-0 flex-col justify-center gap-px rounded-l-lg border border-r border-slate-700/80 px-1 py-0.5 shadow-[4px_0_12px_rgba(2,6,23,0.28)] ${lane.muted ? 'bg-red-950/90' : active ? 'bg-[#0b2034]' : 'bg-[#091729]'}`}>
         <button type="button" onClick={() => setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }))} className="flex h-3 min-w-0 items-center justify-center gap-1 rounded px-0.5 leading-none hover:bg-white/5" title={`Seleccionar ${lane.name} como pista destino`}>
           <span className={`text-[11px] font-black tracking-wide ${lane.muted ? 'text-red-200' : active ? 'text-cyan-200' : 'text-slate-100'}`}>{lane.name}</span>
           <span className="text-[8px] tabular-nums text-slate-500">{count}</span>
@@ -2652,6 +2697,23 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
     const group = mode === 'move' ? idsForDrag.map(snapshot).filter((x): x is OverlayDragItem => !!x) : [];
     const primary = group.find((x) => x.id === id) || snapshot(id);
     overlayTimeDragRef.current = primary ? { ...primary, id, type, mode, startX: e.clientX, group } : null;
+lastPointerRef.current = { x: e.clientX, y: e.clientY };
+if (liftTimerRef.current) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
+liftedRef.current = false;
+if (e.pointerType === 'touch' && mode === 'move' && primary) {
+const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+const nombre = type === 'text' ? (textOverlaysRef.current.find((x) => x.id === id)?.text || 'Texto') : type === 'image' ? (imageOverlaysRef.current.find((x) => x.id === id)?.name || 'Imagen') : type === 'audio' ? (audioTracksRef.current.find((x) => x.id === id)?.name || 'Audio') : (videoOverlaysRef.current.find((x) => x.id === id)?.name || 'Capa');
+const icono = type === 'text' ? '✏️ ' : type === 'image' ? '🖼️ ' : type === 'audio' ? '🎵 ' : '🎞 ';
+const cls = type === 'text' ? 'rounded-md border-2 border-dashed border-fuchsia-300 bg-fuchsia-500/25 shadow-xl shadow-fuchsia-500/30 backdrop-blur-sm' : type === 'image' ? 'rounded-md border-2 border-dashed border-pink-300 bg-pink-500/25 shadow-xl shadow-pink-500/30 backdrop-blur-sm' : type === 'audio' ? 'rounded-md border-2 border-dashed border-green-300 bg-green-500/25 shadow-xl shadow-green-500/30 backdrop-blur-sm' : 'rounded-md border-2 border-dashed border-amber-300 bg-amber-500/25 shadow-xl shadow-amber-500/30 backdrop-blur-sm';
+const w = Math.max(96, rect.width);
+ghostWRef.current = w;
+liftTimerRef.current = window.setTimeout(() => {
+liftedRef.current = true;
+try { (navigator as any).vibrate?.(12); } catch (e2) {}
+const p = lastPointerRef.current;
+setGhost({ x: p.x - w / 2, y: p.y - 74, w, label: icono + nombre, cls });
+}, 260);
+}
   }
   function laneRowUnderPointer(e: React.PointerEvent): string | null {
 const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
@@ -2660,9 +2722,12 @@ return row ? (row.dataset.lanerow || null) : null;
 }
 function moveOverlayTimeDrag(e: React.PointerEvent) {
 const d = overlayTimeDragRef.current; if (!d) return; const delta = (e.clientX - d.startX) / pps;
+lastPointerRef.current = { x: e.clientX, y: e.clientY };
+if (liftTimerRef.current && !liftedRef.current && Math.abs(e.clientX - d.startX) > DRAG_THRESHOLD) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
+if (liftedRef.current && ghostRef.current) ghostRef.current.style.transform = `translate3d(${e.clientX - ghostWRef.current / 2}px, ${e.clientY - 74}px, 0)`;
 // ===== CARRILES: drag vertical entre filas de la misma familia =====
 if (d.mode === 'move' || d.mode === 'lane') {
-const rowKey = laneRowUnderPointer(e);
+const rowKey = (e.pointerType !== 'touch' || liftedRef.current) ? laneRowUnderPointer(e) : null;
 if (rowKey) {
 const sep = rowKey.indexOf(':');
 const fam = rowKey.slice(0, sep); const laneId = rowKey.slice(sep + 1);
@@ -2716,7 +2781,12 @@ else { patch.end = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN); }
 updateVideoOverlay(d.id, patch);
 }
   }
-  function endOverlayTimeDrag() { overlayTimeDragRef.current = null; }
+  function endOverlayTimeDrag() {
+overlayTimeDragRef.current = null;
+if (liftTimerRef.current) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
+liftedRef.current = false;
+setGhost(null);
+}
   function startOverlayPosDrag(e: React.PointerEvent, type: 'text' | 'image' | 'video', id: string) {
     e.stopPropagation(); e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
     selectOnly(id, type);
@@ -3917,7 +3987,7 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
   const timelineFullWidth = timelineGutterWidth + timelineContentWidth;
 
   return (
-        <div className="flex flex-col gap-2 p-2 lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:overflow-hidden lg:p-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+        <div ref={shellRef} style={{ '--shelloff': shellOffset + 'px' } as React.CSSProperties} className="flex h-[calc(100vh-var(--shelloff,0px))] flex-col gap-2 overflow-hidden p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] supports-[height:100dvh]:h-[calc(100dvh-var(--shelloff,0px))] lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:p-4 lg:pb-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <style>{FONT_FACE_CSS}</style>
       {/* ===== BARRA DE ACCIONES MÓVIL (Nuevo + Exportar) ===== */}
             {/* ===== BARRA DE ACCIONES MÓVIL (Importar + Nuevo + Exportar) ===== */}
@@ -3958,7 +4028,15 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
           ))}
         </div>
       </div>
-      {dragOver && (
+      {ghost && (
+<div ref={ghostRef} className="pointer-events-none fixed left-0 top-0 z-[60]" style={{ transform: `translate3d(${ghost.x}px, ${ghost.y}px, 0)` }}>
+<div className={ghost.cls} style={{ width: ghost.w }}>
+<p className="truncate px-2 py-2 text-[10px] font-semibold text-white drop-shadow">{ghost.label}</p>
+</div>
+<p className="mt-1 text-center text-[9px] font-bold text-cyan-200 drop-shadow">soltá para ubicar acá</p>
+</div>
+)}
+{dragOver && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-cyan-400/10">
           <div className="rounded-2xl border-2 border-dashed border-cyan-400 bg-slate-950/95 px-10 py-6 text-center shadow-2xl shadow-cyan-500/20">
             <p className="text-lg font-bold text-cyan-300">Soltá para agregar</p>
@@ -4000,7 +4078,7 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
 <span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Superponer</span>
 </button>
 </aside>
-                       <div ref={previewBoxRef} className="relative h-44 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-black sm:h-64 lg:h-auto lg:min-h-0 lg:order-2">
+                       <div ref={previewBoxRef} className={fsMode !== 'none' ? 'fixed inset-0 z-[400] h-full w-full overflow-hidden bg-black' : 'relative h-[clamp(110px,20dvh,220px)] shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-black sm:h-[clamp(160px,26dvh,300px)] [@media(orientation:landscape)_and_(max-width:1023px)]:h-[42dvh] lg:h-auto lg:min-h-0 lg:order-2'}>
           <div ref={wrapperRef} className="relative h-full w-full">
             {stage && stage.width > 0 && (
               <div ref={stageRef} className="absolute overflow-hidden bg-black" style={{ left: stage.left, top: stage.top, width: stage.width, height: stage.height }}>
@@ -4098,9 +4176,29 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
             <button onClick={() => fileInputRef.current?.click()} className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-500 transition-colors hover:text-cyan-300">
               <p className="text-lg font-semibold">Arrastrá tus videos, imágenes o audios acá</p>
               <p className="text-sm">Videos → pista de video · Imágenes → pista de imagen · Audios → pista de audio</p>
-            </button>
-          )}
-        </div>
+</button>
+)}
+{fsMode === 'none' ? (
+<button onClick={enterFullscreenPreview} className="absolute bottom-2 right-2 z-20 rounded-lg border border-slate-700 bg-slate-950/80 p-1.5 text-slate-300 backdrop-blur transition-colors hover:border-cyan-400 hover:text-cyan-300" title="Ver preview en pantalla completa">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M16 3h3a2 2 0 0 1 2 2v3" /><path d="M8 21H5a2 2 0 0 1-2-2v-3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
+</button>
+) : (
+<>
+<button onClick={exitFullscreenPreview} className="absolute right-3 top-3 z-30 rounded-lg border border-slate-700 bg-slate-950/80 p-2 text-slate-300 backdrop-blur transition-colors hover:border-red-400 hover:text-red-300" title="Salir de pantalla completa (Esc)">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+</button>
+<div className="absolute inset-x-0 bottom-0 z-30 flex items-center gap-2 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-3 pb-3 pt-8">
+<button onClick={togglePlay} className="rounded-lg border border-slate-700 bg-slate-950/80 p-2 text-cyan-200 backdrop-blur transition-colors hover:border-cyan-400" title={playing ? 'Pausar' : 'Reproducir'}>
+{playing ? <IconPause className="h-5 w-5" /> : <IconPlay className="h-5 w-5" />}
+</button>
+<button onClick={() => seek(Math.max(0, playhead - 5))} className="rounded-lg border border-slate-700 bg-slate-950/80 px-2 py-2 text-[11px] font-bold text-slate-300 backdrop-blur transition-colors hover:border-cyan-400 hover:text-cyan-300" title="Retroceder 5 segundos">-5s</button>
+<button onClick={() => seek(Math.min(projectDuration, playhead + 5))} className="rounded-lg border border-slate-700 bg-slate-950/80 px-2 py-2 text-[11px] font-bold text-slate-300 backdrop-blur transition-colors hover:border-cyan-400 hover:text-cyan-300" title="Adelantar 5 segundos">+5s</button>
+<span className="shrink-0 font-mono text-[11px] tabular-nums text-cyan-300">{formatTime(playhead)} / {formatTime(projectDuration)}</span>
+<input type="range" min={0} max={Math.max(projectDuration, 0.1)} step={0.1} value={playhead} onChange={(e) => seek(Number(e.target.value))} className="w-full accent-cyan-400" />
+</div>
+</>
+)}
+</div>
 
 {/* ===== BARRA DE TRANSPORTE ===== */}
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 px-2 py-1.5 lg:order-4 lg:col-span-3 lg:gap-2 lg:px-3 lg:py-2">
@@ -4176,7 +4274,7 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
             </button>
           </div>
                     
-<aside className="rounded-xl border border-slate-800 bg-slate-900/50 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden">
+<aside className="rounded-xl border border-slate-800 bg-slate-900/50 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden [@media(orientation:landscape)_and_(max-width:1023px)]:hidden">
 <div className="flex shrink-0 items-center gap-1 border-b border-slate-800 p-1.5 lg:hidden">
 {propsTabs.map((t) => (
 <button key={t.id} onClick={() => { if (propsTab === t.id && propsOpen) { setPropsOpen(false); } else { setPropsTab(t.id); setPropsOpen(true); } }}
@@ -4393,7 +4491,7 @@ Recordar mi elección
       </div>
       
             {/* ===== TARJETA DE HERRAMIENTAS MÓVIL (3 grupos funcionales) ===== */}
-      <div className="flex shrink-0 gap-1.5 lg:hidden">
+      <div className="flex shrink-0 gap-1.5 lg:hidden [@media(orientation:landscape)_and_(max-width:1023px)]:hidden">
         <div className="flex flex-[3] rounded-xl border border-slate-800 bg-slate-900/60 p-1">
           <button onClick={cycleRatio} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800">
             <span className="flex h-5 w-full items-center justify-center"><span className="rounded border border-slate-600 px-1.5 font-mono text-[9px] leading-none">{exportSettings.ratio}</span></span>
@@ -4434,18 +4532,18 @@ Recordar mi elección
         </div>
       </div>
       {/* ===== TIMELINE CON ZOOM ===== */}
-      <div className="relative flex min-h-[15rem] max-h-[36dvh] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0" style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
-                <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/90 p-1 shadow-lg backdrop-blur lg:right-3 lg:top-3">
-          <button onClick={() => zoomBy(1 / 1.25)} className="rounded px-2 py-0.5 text-xs font-bold text-slate-300 hover:bg-slate-800" title="Alejar">−</button>
-          <span className="w-12 text-center font-mono text-[10px] text-cyan-300">{Math.round((pps / DEFAULT_PPS) * 100)}%</span>
-          <button onClick={() => zoomBy(1.25)} className="rounded px-2 py-0.5 text-xs font-bold text-slate-300 hover:bg-slate-800" title="Acercar">+</button>
-          <button onClick={() => { pendingAnchorRef.current = null; setPps(DEFAULT_PPS); }} className="rounded px-2 py-0.5 text-[10px] font-bold text-slate-400 hover:bg-slate-800" title="Restablecer zoom">1:1</button>
+      <div className="relative flex min-h-[110px] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 [@media(orientation:landscape)_and_(max-width:1023px)]:min-h-[70px] lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0" style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
+                <div className="absolute right-1 top-1 z-50 flex items-center gap-0.5 rounded-md border border-slate-700 bg-slate-950/95 p-0.5 shadow-lg shadow-black/40 backdrop-blur lg:right-3 lg:top-3 lg:gap-1 lg:rounded-lg lg:p-1">
+          <button onClick={() => zoomBy(1 / 1.25)} className="rounded px-1.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-800 lg:px-2 lg:py-0.5" title="Alejar">−</button>
+          <span className="w-8 text-center font-mono text-[9px] text-cyan-300 lg:w-12 lg:text-[10px]">{Math.round((pps / DEFAULT_PPS) * 100)}%</span>
+          <button onClick={() => zoomBy(1.25)} className="rounded px-1.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-800 lg:px-2 lg:py-0.5" title="Acercar">+</button>
+          <button onClick={() => { pendingAnchorRef.current = null; setPps(DEFAULT_PPS); }} className="rounded px-1 py-1 text-[9px] font-bold text-slate-400 hover:bg-slate-800 lg:px-2 lg:py-0.5 lg:text-[10px]" title="Restablecer zoom">1:1</button>
         </div>
-         <div ref={timelineScrollRef} onPointerDown={startTimelinePan} onPointerMove={moveTimelinePan} onPointerUp={endTimelinePan} onPointerCancel={endTimelinePan} className={`min-h-0 flex-1 overflow-auto overscroll-contain p-2 [touch-action:pan-x_pan-y] lg:p-3 ${timelinePanning ? 'cursor-grabbing select-none' : ''}`} >
+         <div ref={timelineScrollRef} onPointerDown={startTimelinePan} onPointerMove={moveTimelinePan} onPointerUp={endTimelinePan} onPointerCancel={endTimelinePan} className={`min-h-0 flex-1 overflow-auto overscroll-contain p-0 pb-2 pr-2 [touch-action:pan-x_pan-y] lg:pb-3 lg:pr-3 ${timelinePanning ? 'cursor-grabbing select-none' : ''}`} >
           <div className="relative" style={{ width: timelineFullWidth }}>
-            <div className="sticky top-0 z-40 flex w-full bg-slate-900/95 shadow-[0_3px_10px_rgba(0,0,0,0.28)] backdrop-blur-sm">
+            <div className="sticky top-0 z-40 flex w-full rounded-tl-xl bg-slate-900 shadow-[0_3px_10px_rgba(0,0,0,0.28)]">
               <div className="sticky left-0 z-50 flex h-6 w-[78px] shrink-0 items-center justify-center rounded-tl-md border-b border-r border-slate-700/80 bg-[#091729] text-[8px] font-bold tracking-[0.12em] text-slate-500 lg:h-7">PISTAS</div>
-              <div ref={rulerRef} style={{ width: timelineContentWidth }} className="relative h-6 flex-none cursor-pointer select-none border-b border-slate-700 bg-slate-900/95 lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
+              <div ref={rulerRef} style={{ width: timelineContentWidth }} className="relative h-6 flex-none cursor-pointer select-none border-b border-slate-700 bg-slate-900 lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
                 {ticks.map((s) => (<div key={s} className="absolute top-0 h-full" style={{ left: s * pps }}><div className="h-2 w-px bg-slate-600" /><span className="ml-1 text-[10px] text-slate-500">{s}s</span></div>))}
                 <div ref={playheadHeadRef} className="pointer-events-none absolute bottom-0 top-0 z-30" style={{ left: playhead * pps }}>
                   <div className="absolute -left-[5px] top-0 h-2.5 w-2.5 rotate-45 rounded-[2px] bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
@@ -4496,7 +4594,7 @@ Recordar mi elección
 })}
 
             <div className="mt-1.5 flex min-h-[84px] w-full items-stretch">
-              <div className="sticky left-0 z-30 flex w-[78px] shrink-0 flex-col justify-center gap-1 rounded-l-lg border border-r border-cyan-500/25 bg-[#0b2034] px-1 py-1 shadow-[4px_0_12px_rgba(2,6,23,0.28)]">
+              <div className="sticky left-0 z-20 flex w-[78px] shrink-0 flex-col justify-center gap-1 rounded-l-lg border border-r border-cyan-500/25 bg-[#0b2034] px-1 py-1 shadow-[4px_0_12px_rgba(2,6,23,0.28)]">
                 <div className="flex items-center justify-center gap-1"><span className="text-[12px] font-black tracking-wide text-cyan-200">V1</span><span className="rounded bg-cyan-500/10 px-1 py-0.5 text-[8px] font-bold tracking-wider text-cyan-300">FIJA</span></div>
                 <button type="button" onClick={() => addTimelineLane('video')} className="flex h-5 items-center justify-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/[0.08] text-[9px] font-semibold text-cyan-200 transition hover:border-cyan-400/60 hover:bg-cyan-500/20" title="Agregar pista de video superpuesto"><span className="text-[12px]">+</span> V2</button>
               </div>
