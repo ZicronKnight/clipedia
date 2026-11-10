@@ -30,6 +30,7 @@ cropX: number; cropY: number;
 hasAudio?: boolean;
 bytes?: number;
 filter?: FilterType;
+adjust?: FilterSpec;
   transition?: { type: TransitionType; duration: number };
 };
 type ImageOverlay = {
@@ -234,6 +235,8 @@ const FILTERS: { id: FilterType; label: string; desc: string; spec: FilterSpec }
 ];
 const FILTER_MAP: Record<string, FilterSpec> = {};
 FILTERS.forEach((f) => { FILTER_MAP[f.id] = f.spec; });
+// Spec efectivo = preset + ajustes manuales. UNA sola fuente para preview y export.
+function effSpec(c: Clip): FilterSpec { return { ...(FILTER_MAP[c.filter || 'none'] || {}), ...(c.adjust || {}) }; }
 // Emisor CSS (preview): mismo orden de operaciones que el emisor FFmpeg → paridad
 function specToCss(sp: FilterSpec, scale: number): string {
 const p: string[] = [];
@@ -540,6 +543,12 @@ function loadFFmpegLib(): Promise<any> {
   });
 }
 
+function cx(...parts: (string | false | null | undefined)[]) { return parts.filter(Boolean).join(' '); }
+function IconPropsInspector({ className }: { className?: string }) { return (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true"><path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h7M15 18h5" /><circle cx="14" cy="6" r="2" /><circle cx="8" cy="12" r="2" /><circle cx="13" cy="18" r="2" /></svg>); }
+function IconPropsPalette({ className }: { className?: string }) { return (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true"><path d="M12 21a9 9 0 1 1 9-9c0 2-1.5 3-3 3h-2a2 2 0 0 0-2 2c0 1 .5 1.5.5 2.5S13.5 21 12 21Z" /><circle cx="7.5" cy="11.5" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="14.5" cy="7.5" r="1" /><circle cx="17" cy="11" r="1" /></svg>); }
+function IconPropsWand({ className }: { className?: string }) { return (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true"><path d="m14 6 4 4L7 21l-4-4L14 6Z" /><path d="m14 6 2-2 4 4-2 2" /><path d="M5 3v4M3 5h4M19 3v4M17 5h4" /></svg>); }
+function IconPropsCaptions({ className }: { className?: string }) { return (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 13h3M7 16h6M13 13h4M15 16h2" /></svg>); }
+function IconPropsWrench({ className }: { className?: string }) { return (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7Z" /></svg>); }
 function WaveformCanvas({ id, offset, duration, sourceDuration, assetKey, peaks: fallbackPeaks, width, selected, speed, trackStart, scrollRef }: { id: string; offset: number; duration: number; sourceDuration: number; assetKey: string; peaks: number[]; width: number; selected: boolean; speed: number; trackStart: number; scrollRef: { current: HTMLDivElement | null } }) {
 const ref = useRef<HTMLCanvasElement>(null);
 const [view, setView] = useState<{ left: number; px: number } | null>(null);
@@ -835,6 +844,11 @@ const [silencePct, setSilencePct] = useState(0);
 const [silenceMsg, setSilenceMsg] = useState<string | null>(null);
 const [asrProgress, setAsrProgress] = useState<{ phase: 'model' | 'transcribe'; pct: number } | null>(null);
 const [proxiesOn, setProxiesOn] = useState(false);
+const [propsTab, setPropsTab] = useState('inspector');
+const [asrModelPick, setAsrModelPick] = useState<AsrModelId>(() => { const pref = readAsrPref(); const wanted = pref?.model ?? (IS_MOBILE ? 'tiny' : 'base'); return (ASR_MODELS.some((m) => m.id === wanted) ? wanted : 'base') as AsrModelId; });
+const [asrLangPick, setAsrLangPick] = useState<AsrLanguage>(() => (readAsrPref()?.lang ?? 'es') as AsrLanguage);
+const [asrRemember, setAsrRemember] = useState(true);
+const fmtAsrEst = (s: number) => (s >= 900 ? '—' : s >= 90 ? '≈ ' + Math.round(s / 60) + ' min' : '≈ ' + Math.max(1, Math.round(s)) + ' s');
   useEffect(() => { setProxiesOn(proxiesEnabled); }, []);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1272,8 +1286,8 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
     const d = clamp(tr.duration, 0, Math.min(effLen(a), effLen(b)));
     if (d <= 0) return null;
     const pw = Math.max(2, Math.round((REF_WIDTH * (PREVIEW_PROXY_HEIGHT / REF_HEIGHT)) / 2) * 2);
-    return [a.id, a.trimStart.toFixed(2), a.trimEnd.toFixed(2), a.speed, a.rotate, a.cropX.toFixed(2), a.cropY.toFixed(2), a.fadeOut.toFixed(1), a.filter || 'none',
-b.id, b.trimStart.toFixed(2), b.trimEnd.toFixed(2), b.speed, b.rotate, b.cropX.toFixed(2), b.cropY.toFixed(2), b.fadeIn.toFixed(1), b.filter || 'none',
+    return [a.id, a.trimStart.toFixed(2), a.trimEnd.toFixed(2), a.speed, a.rotate, a.cropX.toFixed(2), a.cropY.toFixed(2), a.fadeOut.toFixed(1), a.filter || 'none', a.adjust ? JSON.stringify(a.adjust) : '-',
+b.id, b.trimStart.toFixed(2), b.trimEnd.toFixed(2), b.speed, b.rotate, b.cropX.toFixed(2), b.cropY.toFixed(2), b.fadeIn.toFixed(1), b.filter || 'none', b.adjust ? JSON.stringify(b.adjust) : '-',
 type, d.toFixed(2), pw, PREVIEW_PROXY_HEIGHT, exportSettings.fit, a.muted ? 1 : 0, a.hasAudio === false ? 1 : 0, b.muted ? 1 : 0, b.hasAudio === false ? 1 : 0].join('|');
   
 }
@@ -1457,8 +1471,8 @@ const a = list[i]; const b = list[i + 1];
     const bEnd = Math.min(b.trimStart + d * b.speed, b.trimEnd);
     const aFadeOut = a.fadeOut > 0 ? `,fade=t=out:st=${Math.max(d - a.fadeOut, 0)}:d=${Math.min(a.fadeOut, d)}` : '';
     const bFadeIn = b.fadeIn > 0 ? `,fade=t=in:st=0:d=${Math.min(b.fadeIn, d)}` : '';
-    const fA = specToFF(FILTER_MAP[a.filter || 'none'] || {});
-const fB = specToFF(FILTER_MAP[b.filter || 'none'] || {});
+    const fA = specToFF(effSpec(a));
+const fB = specToFF(effSpec(b));
 // El audio de la ventana lo llevan las PISTAS VINCULADAS con su crossfade
 // triangular (paridad con el export). El snippet vuelve a ser video puro:
 // wasm más liviano en móvil (decisión de la fundadora, 29/10).
@@ -1785,6 +1799,7 @@ const subtitleOverlays = textOverlays.filter((t) => t.kind === 'subtitulo');
 const plainTextOverlays = textOverlays.filter((t) => t.kind !== 'subtitulo');
   const selectedAudio = audioTracks.find((t) => t.id === selectedAudioId) ?? null;
   const selectedVo = videoOverlays.find((v) => v.id === selectedVoId) ?? null;
+useEffect(() => { setPropsTab('inspector'); }, [selectedId, selectedImageId, selectedTextId, selectedAudioId, selectedVoId]);
 
   let previewAlpha = 1;
   if (activeClip) {
@@ -1927,8 +1942,8 @@ const v = videoRef.current;
 if (!v) return;
 const st = stageRef.current;
 const scale = st ? st.offsetWidth / REF_WIDTH : 0;
-const sp = clip.filter ? FILTER_MAP[clip.filter] : undefined;
-const cssFilter = sp ? specToCss(sp, scale) : 'none';
+const sp = effSpec(clip);
+const cssFilter = specToCss(sp, scale);
 // Aplicamos directo al DOM para evitar el delay de 1-2 frames de React
 v.style.filter = cssFilter === 'none' ? '' : cssFilter;
 v.style.objectPosition = objectPositionFor(clip);
@@ -2861,8 +2876,8 @@ setSilenceBusy(false);
 setSilencePct(0);
 }
 }
-function applySilencePlan() {
-const clip = clips.find((c) => c.id === silenceFor);
+function applySilencePlan(targetId?: string) {
+const clip = clips.find((c) => c.id === (targetId || silenceFor));
 if (!clip || !silencePlan) return;
 const idx = clips.findIndex((c) => c.id === clip.id);
 const segs = silencePlan.segments;
@@ -3032,7 +3047,7 @@ if (clip.fadeOut > 0 && segTLe > effL - clip.fadeOut) {
 const st = Math.max(0, (effL - clip.fadeOut) - segTLs);
 vfades += `,fade=t=out:st=${st.toFixed(3)}:d=${Math.min(clip.fadeOut, it.len - st).toFixed(3)}`;
 }
-const fFF = specToFF(FILTER_MAP[clip.filter || 'none'] || {});
+const fFF = specToFF(effSpec(clip));
 fc += `[${k}:v]trim=${trimA.toFixed(6)}:${trimB.toFixed(6)},${pts},${rotOf(clip.rotate)}fps=${FPS},${fitChainFor(clip)}${fFF ? ',' + fFF : ''}${vfades}[cv${k}];`;
 }
 let currentVideoLabel: string;
@@ -3433,7 +3448,7 @@ const maskCount = voMaskIdx.filter((x) => x !== null).length;
         const fitChain = exportSettings.fit === 'recortar'
           ? `scale=${REF_WIDTH}:${REF_HEIGHT}:force_original_aspect_ratio=increase,crop=${REF_WIDTH}:${REF_HEIGHT}:(iw-${REF_WIDTH})*${c.cropX}:(ih-${REF_HEIGHT})*${c.cropY}`
           : `scale=${REF_WIDTH}:${REF_HEIGHT}:force_original_aspect_ratio=decrease,pad=${REF_WIDTH}:${REF_HEIGHT}:(ow-iw)/2:(oh-ih)/2`;
-        const fFF = specToFF(FILTER_MAP[c.filter || 'none'] || {});
+        const fFF = specToFF(effSpec(c));
 filterComplex += `[${i}:v]trim=${t0}:${t1},${pts},${rot}fps=30,${fitChain}${fFF ? ',' + fFF : ''}${vfades}[v${i}_trim];`;
         videoLabels.push(`v${i}_trim`);
       });
@@ -3667,8 +3682,8 @@ console.error('[Export] filterComplex completo:\n' + filterComplex);
   const stageScale = stage ? stage.width / REF_WIDTH : 0;
 
 const clipCssFilter = (c: Clip | null): string | undefined => {
-const sp = c?.filter ? FILTER_MAP[c.filter] : undefined;
-if (!sp) return undefined;
+if (!c) return undefined;
+const sp = effSpec(c);
 const css = specToCss(sp, stageScale);
 return css === 'none' ? undefined : css;
 };
@@ -3880,6 +3895,23 @@ const asrProgressUI = asrProgress ? createPortal(
 </div>,
 document.body
 ) : null;
+const propsTabMeta: Record<string, { t: string; d: string }> = {
+inspector: { t: 'Inspector', d: 'Tamaño, rotación y propiedades básicas del elemento seleccionado.' },
+estilo: { t: 'Estilo', d: 'Color, filtro de color y forma de las capas.' },
+animacion: { t: 'Animación', d: 'Fundidos de entrada y salida del elemento.' },
+subtitulos: { t: 'Subtítulos y voz', d: 'Whisper y recorte de silencios sin salir del panel.' },
+herramientas: { t: 'Herramientas', d: 'Acciones: ruteo de audio, dividir, eliminar.' },
+};
+const propsTabs = (() => {
+const tabs: { id: string; label: string; icon: React.ReactNode }[] = [{ id: 'inspector', label: 'Inspector', icon: <IconPropsInspector className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> }];
+if (selectedClip || selectedText || selectedVo) tabs.push({ id: 'estilo', label: 'Estilo', icon: <IconPropsPalette className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
+tabs.push({ id: 'animacion', label: 'Animación', icon: <IconPropsWand className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
+if (selectedClip || (selectedText && selectedText.kind === 'subtitulo')) tabs.push({ id: 'subtitulos', label: 'Subtítulos', icon: <IconPropsCaptions className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
+tabs.push({ id: 'herramientas', label: 'Herramientas', icon: <IconPropsWrench className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
+return tabs;
+})();
+const propsTabTitle = (propsTabMeta[propsTab] || propsTabMeta.inspector).t;
+const propsTabDesc = (propsTabMeta[propsTab] || propsTabMeta.inspector).d;
 const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
   const timelineContentWidth = Math.max(projectDuration * pps + 160, 700);
   const timelineFullWidth = timelineGutterWidth + timelineContentWidth;
@@ -3939,7 +3971,7 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
       <input ref={audioInputRef} type="file" accept="audio/*" multiple className="hidden" onChange={handleAudioUpload} />
 <input ref={voInputRef} type="file" accept="video/*" multiple className="hidden" onChange={handleVoUpload} />
       {audioTracks.map((track) => (<AudioElement key={track.id} track={track} onReady={registerAudio} onCleanup={unregisterAudio} />))}
-            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_320px] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4">
+            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_clamp(300px,26vw,380px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4">
         {/* ===== RAIL LATERAL (solo desktop) ===== */}
 <aside className="hidden shrink-0 flex-row gap-2 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:min-h-0 lg:flex-col lg:gap-1 lg:order-1">
 <button onClick={() => fileInputRef.current?.click()} title="Agregar video"
@@ -4124,11 +4156,7 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
       </div>
 
                <div className="flex shrink-0 flex-col gap-2 lg:min-h-0 lg:flex-1 lg:gap-4 lg:order-3">
-          {/* Toggle de propiedades (solo móvil) */}
-          <button onClick={() => setPropsOpen((v) => !v)} className="flex shrink-0 items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm font-bold text-slate-200 lg:hidden">
-            <span>🎛 Propiedades{selectedClip || selectedImage || selectedText || selectedAudio ? ' · elemento seleccionado' : ''}</span>
-            <span className="text-cyan-300">{propsOpen ? '▲' : '▼'}</span>
-          </button>
+          
           <div className="hidden shrink-0 items-stretch gap-2 lg:flex">
             <button onClick={openExportModal} disabled={projectDuration === 0 || exporting}
               className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-3 text-sm font-black text-black transition-transform hover:scale-[1.02] disabled:opacity-40 disabled:hover:scale-100"
@@ -4147,166 +4175,220 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
               Nuevo
             </button>
           </div>
-                    <aside className={`${propsOpen ? 'block' : 'hidden'} space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4 lg:block lg:min-h-0 lg:flex-1 lg:overflow-y-auto`}>
-            <div><h2 className="text-lg font-bold text-white">Propiedades</h2><p className="mt-1 text-xs text-slate-400">Seleccioná un elemento en la timeline para editarlo.</p></div>
-            {selectedClip && !selectedImage && !selectedText && !selectedAudio && !selectedVo && (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clip: <span className="normal-case text-cyan-300">{selectedClip.name}</span></p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => updateClip(selectedClip.id, { rotate: ((selectedClip.rotate + 90) % 360) as Clip['rotate'] })} className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">⟲ Rotar ({selectedClip.rotate}°)</button>
-                  <select value={selectedClip.speed} onChange={(e) => updateClip(selectedClip.id, { speed: Number(e.target.value) })} className="rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
+                    
+<aside className="rounded-xl border border-slate-800 bg-slate-900/50 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden">
+<div className="flex shrink-0 items-center gap-1 border-b border-slate-800 p-1.5 lg:hidden">
+{propsTabs.map((t) => (
+<button key={t.id} onClick={() => { if (propsTab === t.id && propsOpen) { setPropsOpen(false); } else { setPropsTab(t.id); setPropsOpen(true); } }}
+className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg py-1.5 transition-colors', propsTab === t.id ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200')} title={t.label}>
+{t.icon}<span className="w-full truncate text-center text-[8px] font-semibold leading-none">{t.label}</span>
+</button>
+))}
+</div>
+<div className={cx('min-h-0 flex-1 lg:flex', propsOpen ? 'flex' : 'hidden')}>
+<div className="hidden w-[86px] shrink-0 flex-col gap-1 overflow-y-auto border-r border-slate-800 bg-slate-950/40 p-1.5 lg:flex lg:w-[clamp(72px,7vw,104px)] lg:gap-[clamp(2px,0.6vh,6px)] lg:p-[clamp(4px,1vh,8px)]">
+{propsTabs.map((t) => (
+<button key={t.id} onClick={() => setPropsTab(t.id)}
+className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[clamp(2px,0.6vh,6px)] rounded-lg border py-1 transition-colors', propsTab === t.id ? 'border-cyan-400/60 bg-cyan-500/10 text-cyan-300' : 'border-transparent text-slate-400 hover:bg-slate-800/60 hover:text-slate-200')} title={t.label}>
+{t.icon}<span className="w-full truncate px-1 text-center text-[clamp(7px,1.1vh,10px)] font-semibold leading-none">{t.label}</span>
+</button>
+))}
+</div>
+<div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+<div>
+<h2 className="text-sm font-black text-white">{propsTabTitle}</h2>
+<p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">{propsTabDesc}</p>
+</div>
+{propsTab === 'inspector' && selectedClip && (<>
+<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clip: <span className="normal-case text-cyan-300">{selectedClip.name}</span></p>
+<div className="grid grid-cols-2 gap-2">
+<button onClick={() => updateClip(selectedClip.id, { rotate: ((selectedClip.rotate + 90) % 360) as Clip['rotate'] })} className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">⟲ Rotar ({selectedClip.rotate}°)</button>
+<select value={selectedClip.speed} onChange={(e) => updateClip(selectedClip.id, { speed: Number(e.target.value) })} className="rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
 {[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => (<option key={s} value={s}>Velocidad {s}x</option>))}
 </select>
 </div>
+{isCover && (
+<div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-2">
+<p className="text-[11px] font-semibold text-cyan-200">✂️ Encuadre (modo Recortar)</p>
+<label className="block select-none text-xs text-slate-400">Horizontal: {Math.round(selectedClip.cropX * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedClip.cropX} onChange={(e) => updateClip(selectedClip.id, { cropX: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">Vertical: {Math.round(selectedClip.cropY * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedClip.cropY} onChange={(e) => updateClip(selectedClip.id, { cropY: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
+<button onClick={() => updateClip(selectedClip.id, { cropX: 0.5, cropY: 0.5 })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400">⌖ Centrar encuadre</button>
+</div>
+)}
+<p className="text-[11px] leading-relaxed text-slate-500">En timeline: {effLen(selectedClip).toFixed(1)}s{selectedClip.speed !== 1 ? ' · ' + selectedClip.speed + 'x' : ''}</p>
+</>)}
+{propsTab === 'inspector' && selectedText && (<>
+<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{selectedText.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'}</p>
+<input type="text" value={selectedText.text} onChange={(e) => updateTextOverlay(selectedText.id, { text: e.target.value })} className="w-full rounded-lg bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-fuchsia-400" />
+<select value={selectedText.font} onChange={(e) => updateTextOverlay(selectedText.id, { font: e.target.value as TextOverlay['font'] })} className="w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+<option value="sans">Sans (Roboto)</option><option value="serif">Serif (Merriweather)</option><option value="mono">Mono (Source Code Pro)</option><option value="roboto">Roboto</option><option value="playfair">Playfair Display</option><option value="montserrat">Montserrat</option><option value="opensans">Open Sans</option><option value="lato">Lato</option><option value="oswald">Oswald</option><option value="raleway">Raleway</option><option value="poppins">Poppins</option><option value="merriweather">Merriweather</option><option value="nunito">Nunito</option>
+</select>
+<div className="grid grid-cols-2 gap-2">
+<button onClick={() => updateTextOverlay(selectedText.id, { bold: !selectedText.bold })} className={cx('rounded-lg py-2 text-sm font-bold transition-colors', selectedText.bold ? 'bg-fuchsia-500 text-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-700')}>B</button>
+<label className="flex items-center rounded-lg border border-slate-700 bg-slate-900 px-2 text-[10px] font-semibold text-slate-300">Tamaño<input type="range" min={16} max={400} step={2} value={selectedText.size} onChange={(e) => updateTextOverlay(selectedText.id, { size: Number(e.target.value) })} className="ml-2 w-full accent-fuchsia-400" /></label>
+</div>
+<p className="text-[11px] leading-relaxed text-slate-500">De {selectedText.start.toFixed(1)}s a {selectedText.end.toFixed(1)}s</p>
+</>)}
+{propsTab === 'inspector' && selectedImage && (<>
+<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Imagen: <span className="normal-case text-pink-300">{selectedImage.name}</span></p>
+<label className="block select-none text-xs text-slate-400">Tamaño: {selectedImage.size}%<input type="range" min={5} max={150} step={1} value={selectedImage.size} onChange={(e) => updateImageOverlay(selectedImage.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+<button onClick={() => updateImageOverlay(selectedImage.id, { rotate: ((selectedImage.rotate + 90) % 360) as ImageOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-pink-400 hover:text-pink-400">⟲ Rotar imagen ({selectedImage.rotate}°)</button>
+<p className="text-[11px] leading-relaxed text-slate-500">De {selectedImage.start.toFixed(1)}s a {selectedImage.end.toFixed(1)}s</p>
+</>)}
+{propsTab === 'inspector' && selectedVo && (<>
+<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Superposición: <span className="normal-case text-amber-300">{selectedVo.name}</span></p>
+<label className="block select-none text-xs text-slate-400">Tamaño: {selectedVo.size}%<input type="range" min={5} max={150} step={1} value={selectedVo.size} onChange={(e) => updateVideoOverlay(selectedVo.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+<button onClick={() => updateVideoOverlay(selectedVo.id, { rotate: ((selectedVo.rotate + 90) % 360) as VideoOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-amber-400 hover:text-amber-400">⟲ Rotar capa ({selectedVo.rotate}°)</button>
+<p className="text-[11px] leading-relaxed text-slate-500">De {selectedVo.start.toFixed(1)}s a {selectedVo.end.toFixed(1)}s · empieza en {selectedVo.offset.toFixed(1)}s del archivo</p>
+</>)}
+{propsTab === 'inspector' && selectedAudio && (<>
+<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audio: <span className="normal-case text-green-300">{selectedAudio.name}</span></p>
+{selectedAudio.sourceVideoId && (
+<div className="space-y-1">
+<p className="text-[11px] text-slate-500">{selectedAudio.released ? '🔓 Liberado: edición independiente' : '🔗 Vinculado: sigue trim/move/velocidad/dividir del clip'}</p>
+<button onClick={() => toggleRelease(selectedAudio.id)} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-green-400 hover:text-green-300">{selectedAudio.released ? '🔗 Re-vincular al video' : '🔓 Liberar audio'}</button>
+</div>
+)}
+<label className="block select-none text-xs text-slate-400">Volumen: {Math.round(selectedAudio.volume * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedAudio.volume} onChange={(e) => updateAudioTrack(selectedAudio.id, { volume: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
+<button onClick={() => updateAudioTrack(selectedAudio.id, { muted: !selectedAudio.muted })} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors', selectedAudio.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700')}>{selectedAudio.muted ? '🔇 Desmutear' : '🔊 Mutear'}</button>
+<p className="text-[11px] leading-relaxed text-slate-500">De {selectedAudio.start.toFixed(1)}s a {(selectedAudio.start + selectedAudio.duration).toFixed(1)}s</p>
+</>)}
+{propsTab === 'estilo' && selectedClip && (<>
 <label className="block select-none text-xs text-slate-400">🎞 Filtro de color
 <select value={selectedClip.filter || 'none'} onChange={(e) => updateClip(selectedClip.id, { filter: e.target.value as FilterType })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
 {FILTERS.map((f) => (<option key={f.id} value={f.id}>{f.label}</option>))}
 </select>
 </label>
 <p className="text-[11px] leading-relaxed text-slate-500">{FILTERS.find((f) => f.id === (selectedClip.filter || 'none'))?.desc}</p>
-<button onClick={() => setSubtitleFor(selectedClip.id)} disabled={!selectedClip.hasAudio}
-className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20 disabled:opacity-40"
-title={!selectedClip.hasAudio ? 'Este clip no tiene audio para transcribir' : 'Generar subtítulos con Whisper, 100% en tu dispositivo'}>
-🎙 Subtítulos automáticos
-</button>
-<button onClick={() => { setSilenceFor(selectedClip.id); setSilencePlan(null); setSilenceMsg(null); }} disabled={!selectedClip.hasAudio}
-className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 py-2 text-sm font-semibold text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-40"
-title={!selectedClip.hasAudio ? 'Este clip no tiene audio para analizar' : 'Detecta los tramos hablados y elimina los silencios de la timeline'}>
-✂️ Recortar silencios
-</button>
-                {isCover && (
-                  <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-2">
-                    <p className="text-[11px] font-semibold text-cyan-200">✂️ Encuadre (modo Recortar)</p>
-                    <label className="block select-none text-xs text-slate-400">Horizontal: {Math.round(selectedClip.cropX * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedClip.cropX} onChange={(e) => updateClip(selectedClip.id, { cropX: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
-                    <label className="block select-none text-xs text-slate-400">Vertical: {Math.round(selectedClip.cropY * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedClip.cropY} onChange={(e) => updateClip(selectedClip.id, { cropY: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
-                    <button onClick={() => updateClip(selectedClip.id, { cropX: 0.5, cropY: 0.5 })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400">⌖ Centrar encuadre</button>
-                  </div>
-                )}
-                <label className="block select-none text-xs text-slate-400">Fade in: {selectedClip.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedClip.fadeIn} onChange={(e) => updateClip(selectedClip.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
-                <label className="block select-none text-xs text-slate-400">Fade out: {selectedClip.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedClip.fadeOut} onChange={(e) => updateClip(selectedClip.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
-                <button onClick={() => cycleClipAudio(selectedClip)} disabled={!selectedClip.hasAudio && clipAudioMode(selectedClip) === 'integrated'}
-className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${clipAudioMode(selectedClip) === 'linked' ? 'bg-green-500/15 text-green-300 border border-green-400/40 hover:bg-green-500/25' : clipAudioMode(selectedClip) === 'released' ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'} disabled:opacity-40`}
-title="Cambiar dónde vive el audio de este clip">
-{clipAudioMode(selectedClip) === 'linked' ? '🔗 Audio vinculado a la pista · liberar' : clipAudioMode(selectedClip) === 'released' ? '🔓 Audio liberado · re-vincular' : clipAudioMode(selectedClip) === 'muted' ? '🔇 Clip muteado · devolver audio al video' : '🎵 Audio en el video · enviar a la pista'}
-</button>
-              
-                
-              </div>
-            )}
-            {selectedImage && (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Imagen: <span className="normal-case text-pink-300">{selectedImage.name}</span></p>
-                <label className="block select-none text-xs text-slate-400">Tamaño: {selectedImage.size}%<input type="range" min={5} max={150} step={1} value={selectedImage.size} onChange={(e) => updateImageOverlay(selectedImage.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
-                <button onClick={() => updateImageOverlay(selectedImage.id, { rotate: ((selectedImage.rotate + 90) % 360) as ImageOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-pink-400 hover:text-pink-400">⟲ Rotar imagen ({selectedImage.rotate}°)</button>
-                <label className="block select-none text-xs text-slate-400">Fade in: {selectedImage.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeIn} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
-                <label className="block select-none text-xs text-slate-400">Fade out: {selectedImage.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeOut} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
-<label className="block select-none text-xs text-slate-400">✨ Animación de entrada
-<select value={selectedImage.animIn || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
-{(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((k) => (<option key={k} value={k}>{ANIM_IN_LABELS[k]}</option>))}
-</select></label>
-{(selectedImage.animIn && selectedImage.animIn !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedImage.animInDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedImage.animInDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>)}
-<label className="block select-none text-xs text-slate-400">✨ Animación de salida
-<select value={selectedImage.animOut || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
-{(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((k) => (<option key={k} value={k}>{ANIM_OUT_LABELS[k]}</option>))}
-</select></label>
-{(selectedImage.animOut && selectedImage.animOut !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración salida: {(selectedImage.animOutDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedImage.animOutDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>)}
-
-                <p className="text-[11px] leading-relaxed text-slate-500"> De {selectedImage.start.toFixed(1)}s a {selectedImage.end.toFixed(1)}s</p>
-                <button onClick={() => { setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImage.id)); setSelectedImageId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar imagen</button>
-              </div>
-            )}
-            {selectedText && (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Texto</p>
-                <input type="text" value={selectedText.text} onChange={(e) => updateTextOverlay(selectedText.id, { text: e.target.value })} className="w-full rounded-lg bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-fuchsia-400" />
-                <select value={selectedText.font} onChange={(e) => updateTextOverlay(selectedText.id, { font: e.target.value as TextOverlay['font'] })} className="rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-                  <option value="sans">Sans (Roboto)</option><option value="serif">Serif (Merriweather)</option><option value="mono">Mono (Source Code Pro)</option><option value="roboto">Roboto</option><option value="playfair">Playfair Display</option><option value="montserrat">Montserrat</option><option value="opensans">Open Sans</option><option value="lato">Lato</option><option value="oswald">Oswald</option><option value="raleway">Raleway</option><option value="poppins">Poppins</option><option value="merriweather">Merriweather</option><option value="nunito">Nunito</option>
-                </select>
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => updateTextOverlay(selectedText.id, { bold: !selectedText.bold })} className={`rounded-lg py-2 text-sm font-bold transition-colors ${selectedText.bold ? 'bg-fuchsia-500 text-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}>B</button>
-                  <input type="color" value={selectedText.color} onChange={(e) => updateTextOverlay(selectedText.id, { color: e.target.value })} className="h-9 w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-1" />
-                </div>
-                <label className="block select-none text-xs text-slate-400">Tamaño: {selectedText.size}px<input type="range" min={16} max={400} step={2} value={selectedText.size} onChange={(e) => updateTextOverlay(selectedText.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
-                <label className="block select-none text-xs text-slate-400">Fade in: {selectedText.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeIn} onChange={(e) => updateTextOverlay(selectedText.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
-                <label className="block select-none text-xs text-slate-400">Fade out: {selectedText.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeOut} onChange={(e) => updateTextOverlay(selectedText.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
-<label className="block select-none text-xs text-slate-400">✨ Animación de entrada
-<select value={selectedText.animIn || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-{(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).filter((k) => k !== 'zoom-in' && k !== 'zoom-out').map((k) => (<option key={k} value={k}>{ANIM_IN_LABELS[k]}</option>))}
-</select></label>
-{(selectedText.animIn && selectedText.animIn !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedText.animInDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedText.animInDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>)}
-<label className="block select-none text-xs text-slate-400">✨ Animación de salida
-<select value={selectedText.animOut || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-{(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).filter((k) => k !== 'zoom-in' && k !== 'zoom-out').map((k) => (<option key={k} value={k}>{ANIM_OUT_LABELS[k]}</option>))}
-</select></label>
-{(selectedText.animOut && selectedText.animOut !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración salida: {(selectedText.animOutDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedText.animOutDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>)}
-
-
+<p className="pt-1 text-[10px] font-black uppercase tracking-wider text-cyan-300">Ajustes manuales</p>
+<label className="block select-none text-xs text-slate-400">☀️ Brillo: {Math.round((effSpec(selectedClip).b ?? 1) * 100)}%<input type="range" min={0.5} max={1.5} step={0.05} value={effSpec(selectedClip).b ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), b: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">🎚 Contraste: {Math.round((effSpec(selectedClip).c ?? 1) * 100)}%<input type="range" min={0.5} max={1.5} step={0.05} value={effSpec(selectedClip).c ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), c: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">🎨 Saturación: {Math.round((effSpec(selectedClip).s ?? 1) * 100)}%<input type="range" min={0} max={2} step={0.05} value={effSpec(selectedClip).s ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), s: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">🌈 Tono: {Math.round(effSpec(selectedClip).h ?? 0)}°<input type="range" min={-180} max={180} step={5} value={effSpec(selectedClip).h ?? 0} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), h: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">💧 Desenfoque: {(effSpec(selectedClip).blur ?? 0).toFixed(1)}px<input type="range" min={0} max={10} step={0.5} value={effSpec(selectedClip).blur ?? 0} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), blur: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<button onClick={() => updateClip(selectedClip.id, { adjust: {} })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400" title="Vuelve al preset elegido sin ajustes manuales">↺ Resetear ajustes manuales</button>
+</>)}
+{propsTab === 'estilo' && selectedText && (<>
+<label className="block select-none text-xs text-slate-400">Color del texto</label>
+<input type="color" value={selectedText.color} onChange={(e) => updateTextOverlay(selectedText.id, { color: e.target.value })} className="h-9 w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-1" />
 {selectedText.kind === 'subtitulo' && (
-<button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, fades y posición de este subtítulo a todos los de la pista SUB">
-📑 Aplicar cambio a todos los subtítulos
-</button>
+<button onClick={() => updateTextOverlay(selectedText.id, { outline: !selectedText.outline })} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors', selectedText.outline ? 'border border-fuchsia-400/40 bg-fuchsia-500/20 text-fuchsia-200' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedText.outline ? '🔲 Contorno negro: ON' : '🔲 Contorno negro: OFF'}</button>
 )}
-                <p className="text-[11px] leading-relaxed text-slate-500"> De {selectedText.start.toFixed(1)}s a {selectedText.end.toFixed(1)}s</p>
-                <button onClick={() => { setTextOverlays((prev) => prev.filter((a) => a.id !== selectedText.id)); setSelectedTextId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar texto</button>
-              </div>
-            )}
-            {selectedAudio && (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audio: <span className="normal-case text-green-300">{selectedAudio.name}</span></p>
-                {selectedAudio.sourceVideoId && (
-<div className="space-y-1">
-<p className="text-[11px] text-slate-500">{selectedAudio.released ? '🔓 Liberado: edición independiente' : '🔗 Vinculado: sigue trim/move/velocidad/dividir del clip'}</p>
-<button onClick={() => toggleRelease(selectedAudio.id)} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-green-400 hover:text-green-300">{selectedAudio.released ? '🔗 Re-vincular al video' : '🔓 Liberar audio'}</button>
-</div>
-)}
-                <label className="block select-none text-xs text-slate-400">Volumen: {Math.round(selectedAudio.volume * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedAudio.volume} onChange={(e) => updateAudioTrack(selectedAudio.id, { volume: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
-                <label className="block select-none text-xs text-slate-400">Fade in: {selectedAudio.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeIn} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
-                <label className="block select-none text-xs text-slate-400">Fade out: {selectedAudio.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeOut} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
-                <button onClick={() => updateAudioTrack(selectedAudio.id, { muted: !selectedAudio.muted })} className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${selectedAudio.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'}`}>{selectedAudio.muted ? '🔇 Desmutear' : '🔊 Mutear'}</button>
-                <p className="text-[11px] leading-relaxed text-slate-500"> De {selectedAudio.start.toFixed(1)}s a {(selectedAudio.start + selectedAudio.duration).toFixed(1)}s</p>
-                <button onClick={() => { setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudio.id)); setSelectedAudioId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar audio</button>
-              </div>
-            )}
-
-{selectedVo && (
-<div className="space-y-3">
-<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Superposición: <span className="normal-case text-amber-300">{selectedVo.name}</span></p>
-<label className="block select-none text-xs text-slate-400">Tamaño: {selectedVo.size}%<input type="range" min={5} max={150} step={1} value={selectedVo.size} onChange={(e) => updateVideoOverlay(selectedVo.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
-<button onClick={() => updateVideoOverlay(selectedVo.id, { rotate: ((selectedVo.rotate + 90) % 360) as VideoOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-amber-400 hover:text-amber-400">⟲ Rotar capa ({selectedVo.rotate}°)</button>
-<div>
-<p className="mb-1 text-[11px] font-semibold text-amber-200">Marco (efecto de forma)</p>
+</>)}
+{propsTab === 'estilo' && selectedVo && (<>
+<p className="text-[11px] font-semibold text-amber-200">Marco (efecto de forma)</p>
 <div className="grid grid-cols-3 gap-1.5">
 {(['none', 'round', 'circle'] as OverlayShape[]).map((sh) => (
 <button key={sh} onClick={() => updateVideoOverlay(selectedVo.id, { shape: sh })}
-className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${selectedVo.shape === sh ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600'}`}>
+className={cx('rounded-lg border px-2 py-1.5 text-[11px] font-bold transition', selectedVo.shape === sh ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
 {sh === 'none' ? 'Rect' : sh === 'round' ? 'Redondeado' : 'Círculo'}
 </button>
 ))}
 </div>
-</div>
+</>)}
+{propsTab === 'animacion' && selectedClip && (<>
+<label className="block select-none text-xs text-slate-400">Fade in: {selectedClip.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedClip.fadeIn} onChange={(e) => updateClip(selectedClip.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">Fade out: {selectedClip.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedClip.fadeOut} onChange={(e) => updateClip(selectedClip.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
+</>)}
+{propsTab === 'animacion' && selectedText && (<>
+<label className="block select-none text-xs text-slate-400">Fade in: {selectedText.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeIn} onChange={(e) => updateTextOverlay(selectedText.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+<label className="block select-none text-xs text-slate-400">Fade out: {selectedText.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeOut} onChange={(e) => updateTextOverlay(selectedText.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+</>)}
+{propsTab === 'animacion' && selectedImage && (<>
+<label className="block select-none text-xs text-slate-400">Fade in: {selectedImage.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeIn} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+<label className="block select-none text-xs text-slate-400">Fade out: {selectedImage.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeOut} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+</>)}
+{propsTab === 'animacion' && selectedVo && (<>
 <label className="block select-none text-xs text-slate-400">Fade in (opacidad): {selectedVo.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeIn} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out (opacidad): {selectedVo.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeOut} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
-<label className="block select-none text-xs text-slate-400">✨ Animación de entrada
-<select value={selectedVo.animIn || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-{(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((k) => (<option key={k} value={k}>{ANIM_IN_LABELS[k]}</option>))}
-</select></label>
-{(selectedVo.animIn && selectedVo.animIn !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedVo.animInDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedVo.animInDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>)}
-<label className="block select-none text-xs text-slate-400">✨ Animación de salida
-<select value={selectedVo.animOut || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-{(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((k) => (<option key={k} value={k}>{ANIM_OUT_LABELS[k]}</option>))}
-</select></label>
-{(selectedVo.animOut && selectedVo.animOut !== 'none') && (<label className="block select-none text-xs text-slate-400">Duración salida: {(selectedVo.animOutDur ?? 0.5).toFixed(2)}s<input type="range" min={0.1} max={3} step={0.05} value={selectedVo.animOutDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>)}
-
-<button onClick={() => updateVideoOverlay(selectedVo.id, { muted: !selectedVo.muted })} disabled={selectedVo.hasAudio === false} className={`w-full rounded-lg py-2 text-sm font-semibold transition-colors ${selectedVo.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'}`}>{selectedVo.muted ? '🔇 Sin audio (click para activar)' : '🔊 Con audio'}</button>
-<p className="text-[11px] leading-relaxed text-slate-500"> De {selectedVo.start.toFixed(1)}s a {selectedVo.end.toFixed(1)}s · empieza en {selectedVo.offset.toFixed(1)}s del archivo</p>
-<button onClick={() => { setVideoOverlays((prev) => prev.filter((a) => a.id !== selectedVo.id)); setSelectedVoId(null); }} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-xs font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">Eliminar capa</button>
+</>)}
+{propsTab === 'animacion' && selectedAudio && (<>
+<label className="block select-none text-xs text-slate-400">Fade in: {selectedAudio.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeIn} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
+<label className="block select-none text-xs text-slate-400">Fade out: {selectedAudio.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeOut} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
+</>)}
+{propsTab === 'subtitulos' && selectedClip && (<>
+<p className="text-[11px] font-semibold text-slate-300">🎙 Modelo de Whisper</p>
+<div className="grid grid-cols-2 gap-1.5">
+{ASR_MODELS.map((m) => { const dis = (m.plus && !isPlus) || (IS_MOBILE && m.factorMobile >= 999); const sel = asrModelPick === m.id; const f = IS_MOBILE ? m.factorMobile : m.factorDesktop; const e = effLen(selectedClip) * asrSpeedFactor(m.id, IS_MOBILE, f); return (
+<button key={m.id} disabled={dis} onClick={() => setAsrModelPick(m.id)} className={cx('relative rounded-lg border p-2 text-left transition', sel ? 'border-fuchsia-400 bg-fuchsia-500/15 ring-1 ring-fuchsia-400' : dis ? 'border-slate-800 bg-slate-900/40 opacity-60' : 'border-slate-700 bg-slate-900/60 hover:border-slate-500')}>
+{m.plus && !isPlus && <span className="absolute -right-1 -top-1 text-xs">🔒</span>}
+<div className="text-[11px] font-black text-white">{m.icon} {m.label}</div>
+<p className="mt-0.5 text-[9px] font-semibold text-slate-300">{asrDownloadedModels().includes(m.id) ? '✓ en tu equipo' : '↓ ~' + m.mb + 'MB'} · {f >= 999 ? '—' : fmtAsrEst(e)}</p>
+</button>); })}
+</div>
+<label className="block text-xs font-semibold text-slate-300">Idioma del audio
+<select value={asrLangPick} onChange={(e) => setAsrLangPick(e.target.value as AsrLanguage)} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+{ASR_LANGS.map((l) => (<option key={l.id} value={l.id}>{l.label}</option>))}
+</select>
+</label>
+<label className="flex items-center gap-2 text-[11px] text-slate-400">
+<input type="checkbox" checked={asrRemember} onChange={(e) => setAsrRemember(e.target.checked)} className="accent-fuchsia-400" />
+Recordar mi elección
+</label>
+<button onClick={() => { const m = ASR_MODELS.find((x) => x.id === asrModelPick); if (m && selectedClip.hasAudio) generateSubtitles(selectedClip, m, asrLangPick, asrRemember); }} disabled={!selectedClip.hasAudio || !!asrProgress} className="w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-4 py-2.5 text-sm font-black text-white transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50">🎙 Generar subtítulos</button>
+{asrProgress && (
+<div className="rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 p-2">
+<p className="text-[11px] font-semibold text-fuchsia-200">{asrProgress.phase === 'model' ? '⬇️ Modelo… ' + asrProgress.pct + '%' : '🎙 Transcribiendo…'}</p>
+<div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800"><div className={cx('h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-cyan-400', asrProgress.phase === 'transcribe' && 'w-1/3 animate-pulse')} style={asrProgress.phase === 'model' ? { width: asrProgress.pct + '%' } : undefined} /></div>
 </div>
 )}
+<div className="border-t border-slate-800 pt-3">
+<p className="text-[11px] font-semibold text-amber-200">✂️ Recortar silencios</p>
+<label className="mt-2 block text-xs font-semibold text-slate-300">Método
+<select value={silenceCfg.method} disabled={silenceBusy} onChange={(e) => setSilenceCfg((s) => ({ ...s, method: e.target.value as 'whisper' | 'energy' }))} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+<option value="whisper">🎙 Modo Voz (reconoce palabras)</option>
+<option value="energy">⚡ Modo Audio (reconoce sonidos)</option>
+</select>
+</label>
+<label className="mt-2 block text-xs text-slate-400">Silencio mínimo: <span className="font-mono text-amber-300">{silenceCfg.minSilence.toFixed(2)}s</span><input type="range" min={0.02} max={2} step={0.05} disabled={silenceBusy} value={silenceCfg.minSilence} onChange={(e) => setSilenceCfg((s) => ({ ...s, minSilence: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
+<label className="mt-2 block text-xs text-slate-400">Colchón: <span className="font-mono text-amber-300">{silenceCfg.pad.toFixed(2)}s</span><input type="range" min={0} max={0.5} step={0.05} disabled={silenceBusy} value={silenceCfg.pad} onChange={(e) => setSilenceCfg((s) => ({ ...s, pad: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
+{silenceMsg && (<p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">{silenceMsg}</p>)}
+{silenceBusy && (<div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-fuchsia-400" style={{ width: (silenceCfg.method === 'whisper' ? silencePct : 70) + '%' }} /></div>)}
+{!silencePlan ? (
+<button onClick={() => detectSilences(selectedClip)} disabled={silenceBusy || !selectedClip.hasAudio} className="mt-2 w-full rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60">{silenceBusy ? 'Analizando…' : '🔍 Detectar silencios'}</button>
+) : (<>
+<p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100"><strong>{silencePlan.segments.length} tramos de habla</strong> ({silencePlan.kept.toFixed(1)}s) · se irán <strong>{silencePlan.removed.toFixed(1)}s</strong> de silencio.</p>
+<div className="mt-2 flex gap-2">
+<button onClick={() => setSilencePlan(null)} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300">← Volver</button>
+<button onClick={() => applySilencePlan(selectedClip.id)} className="flex-1 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-3 py-2 text-xs font-black text-black">✂️ Aplicar</button>
+</div>
+</>)}
+</div>
+</>)}
+{propsTab === 'subtitulos' && selectedText && selectedText.kind === 'subtitulo' && (<>
+<button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, contorno, fades y posición de este subtítulo a todos los de la pista SUB">📑 Aplicar cambio a todos los subtítulos</button>
+<p className="text-[11px] leading-relaxed text-slate-500">Unifica el look de toda la pista SUB con un clic.</p>
+</>)}
+{propsTab === 'herramientas' && selectedClip && (<>
+<button onClick={() => cycleClipAudio(selectedClip)} disabled={!selectedClip.hasAudio && clipAudioMode(selectedClip) === 'integrated'} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40', clipAudioMode(selectedClip) === 'linked' ? 'border border-green-400/40 bg-green-500/15 text-green-300 hover:bg-green-500/25' : clipAudioMode(selectedClip) === 'released' ? 'border border-amber-400/40 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')} title="Cambiar dónde vive el audio de este clip">
+{clipAudioMode(selectedClip) === 'linked' ? '🔗 Audio vinculado a la pista · liberar' : clipAudioMode(selectedClip) === 'released' ? '🔓 Audio liberado · re-vincular' : clipAudioMode(selectedClip) === 'muted' ? '🔇 Clip muteado · devolver audio al video' : '🎵 Audio en el video · enviar a la pista'}
+</button>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar clip</button>
+</>)}
+{propsTab === 'herramientas' && selectedText && (<>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar texto</button>
+</>)}
+{propsTab === 'herramientas' && selectedImage && (<>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar imagen</button>
+</>)}
+{propsTab === 'herramientas' && selectedAudio && (<>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar audio</button>
+</>)}
+{propsTab === 'herramientas' && selectedVo && (<>
+<button onClick={() => updateVideoOverlay(selectedVo.id, { muted: !selectedVo.muted })} disabled={selectedVo.hasAudio === false} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40', selectedVo.muted ? 'border border-red-400/40 bg-red-500/20 text-red-300' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedVo.muted ? '🔇 Sin audio (click para activar)' : '🔊 Con audio'}</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar capa</button>
+</>)}
+{!selectedClip && !selectedImage && !selectedText && !selectedAudio && !selectedVo && (
+<p className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-4 text-center text-xs text-slate-500">Hacé clic en un bloque de la timeline para ver sus propiedades acá.</p>
+)}
+</div>
+</div>
+</aside>
 
-            {!selectedClip && !selectedImage && !selectedText && !selectedAudio && !selectedVo && (
-              <p className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-4 text-center text-xs text-slate-500">Hacé clic en un bloque de la timeline para ver sus propiedades acá.</p>
-            )}
-          </aside>
         </div>
       </div>
       
