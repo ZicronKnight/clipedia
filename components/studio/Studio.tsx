@@ -7,6 +7,7 @@ import { IconVideo, IconImage, IconText, IconAudio, IconUndo, IconRedo, IconScis
 import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, asrSpeedFactor, readAsrPref, writeAsrPref, decodeSegment16k, transcribeSegment, groupWordsIntoCaptions } from './asr';
 import { extractSegment, extractAudioSegment } from './segmentExtractor';
 import { computeChunkBoundaries } from './chunkedExport';
+import { CommentStudioModal } from './commentStudio';
 
 
 type TransitionType =
@@ -45,12 +46,15 @@ type OverlayAnimOut = 'none' | 'to-left' | 'to-right' | 'to-top' | 'to-bottom' |
 const ANIM_IN_LABELS: Record<OverlayAnim, string> = { 'none': 'Sin animación', 'from-left': '↩️ Desde la izquierda', 'from-right': '↪️ Desde la derecha', 'from-top': '⬇️ Desde arriba', 'from-bottom': '⬆️ Desde abajo', 'zoom-in': '🔍 Zoom creciendo', 'zoom-out': '🔭 Zoom encogiendo' };
 const ANIM_OUT_LABELS: Record<OverlayAnimOut, string> = { 'none': 'Sin animación', 'to-left': '⬅️ Hacia la izquierda', 'to-right': '➡️ Hacia la derecha', 'to-top': '⬆️ Hacia arriba', 'to-bottom': '⬇️ Hacia abajo', 'zoom-in': '🔍 Zoom creciendo', 'zoom-out': '🔭 Zoom encogiendo' };
 type OverlayShape = 'none' | 'round' | 'circle';
+type SubtitleStyle = 'static' | 'karaoke-color' | 'karaoke-box' | 'single-word';
+type WordTiming = { word: string; start: number; end: number };
 type VideoOverlay = {
 id: string; assetId: string; name: string; url: string;
 start: number; end: number; offset: number;
 x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270;
 fadeIn: number; fadeOut: number; muted: boolean; shape: OverlayShape; hasAudio?: boolean; srcW?: number; srcH?: number;
 animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
+chroma?: boolean; chromaColor?: string; chromaSimilarity?: number; chromaBlend?: number;
 lane?: number; laneId?: string;
 };
 
@@ -58,7 +62,8 @@ type TextOverlay = {
   id: string; text: string; start: number; end: number; x: number; y: number; size: number; bold: boolean;
   font: 'sans' | 'serif' | 'mono' | 'roboto' | 'playfair' | 'montserrat' | 'opensans' | 'lato' | 'oswald' | 'raleway' | 'poppins' | 'merriweather' | 'nunito';
   color: string; fadeIn: number; fadeOut: number; outline?: boolean;
-kind?: 'texto' | 'subtitulo'; laneId?: string; animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
+  kind?: 'texto' | 'subtitulo'; laneId?: string; animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
+  subStyle?: SubtitleStyle; highlightColor?: string; words?: WordTiming[];
 };
 type AudioTrack = {
   id: string; assetId: string; name: string; url: string; duration: number; offset: number; start: number;
@@ -317,6 +322,217 @@ if (a.animOut === 'to-bottom') dy += refH * eo;
 if (a.animOut === 'zoom-out') f *= 1 - 0.4 * eo;
 if (a.animOut === 'zoom-in') f *= 1 + 0.3 * eo;
 return { dx, dy, f };
+}
+// ===== CHROMA KEY (PARIDAD 1:1 RGB COLORKEY PREVIEW <-> FFMPEG) Y SUBTÍTULOS KARAOKE =====
+function hexToRgb255(hex: string): [number, number, number] {
+  const clean = (hex || '#00ff00').replace('#', '');
+  const n = parseInt(clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean, 16);
+  if (Number.isNaN(n)) return [0, 255, 0];
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function chromaFilterFF(vo: VideoOverlay): string {
+  if (!vo.chroma) return '';
+  const col = (vo.chromaColor || '#00ff00').replace('#', '0x');
+  // colorkey trabaja en espacio RGB directo (igual que nuestro Canvas 2D del preview),
+  // evitando que chromakey (YUV) vuelva transparente al personaje.
+  const sim = clamp(vo.chromaSimilarity ?? 0.16, 0.01, 0.6).toFixed(3);
+  const blend = clamp(vo.chromaBlend ?? 0.05, 0.005, 0.4).toFixed(3);
+  return `colorkey=${col}:${sim}:${blend},`;
+}
+function sampleCornerHex(videoEl: HTMLVideoElement | undefined): string | null {
+  if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return null;
+  try {
+    const c = document.createElement('canvas');
+    c.width = 16;
+    c.height = 16;
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, 16, 16);
+    // Promediamos un bloque de 4x4 en la esquina superior izquierda (lejos del personaje central)
+    const data = ctx.getImageData(1, 1, 4, 4).data;
+    let r = 0, g = 0, b = 0, count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+    }
+    r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
+    return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
+}
+function ChromaVideoCanvas({
+  vo,
+  videoEl,
+  active,
+}: {
+  vo: VideoOverlay;
+  videoEl: HTMLVideoElement | null;
+  active: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!vo.chroma || !active || !videoEl) return;
+    let raf = 0;
+    const [kr, kg, kb] = hexToRgb255(vo.chromaColor || '#00ff00');
+    const sim = clamp(vo.chromaSimilarity ?? 0.16, 0.01, 0.6);
+    const blend = clamp(vo.chromaBlend ?? 0.05, 0.0, 0.4);
+    // En FFmpeg vf_colorkey.c: diff = sqrt((dr^2 + dg^2 + db^2) / (3 * 255^2))
+    // trabajamos con distancia al cuadrado para no hacer Math.sqrt por cada píxel si no hace falta:
+    const maxDist = 441.67295593; // sqrt(3 * 255^2)
+    const simDist = sim * maxDist;
+    const blendDist = blend * maxDist;
+    const simSq = simDist * simDist;
+    const outerDist = simDist + blendDist;
+    const outerSq = outerDist * outerDist;
+
+    const renderFrame = () => {
+      const canvas = canvasRef.current;
+      if (canvas && videoEl && videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
+        const vw = Math.min(480, videoEl.videoWidth);
+        const vh = Math.max(2, Math.round((vw * videoEl.videoHeight) / videoEl.videoWidth));
+        if (canvas.width !== vw || canvas.height !== vh) {
+          canvas.width = vw;
+          canvas.height = vh;
+        }
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.clearRect(0, 0, vw, vh);
+          ctx.drawImage(videoEl, 0, 0, vw, vh);
+          const frame = ctx.getImageData(0, 0, vw, vh);
+          const d = frame.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const dr = d[i] - kr;
+            const dg = d[i + 1] - kg;
+            const db = d[i + 2] - kb;
+            const distSq = dr * dr + dg * dg + db * db;
+            if (distSq <= simSq) {
+              d[i + 3] = 0;
+            } else if (blendDist > 0.5 && distSq < outerSq) {
+              const dist = Math.sqrt(distSq);
+              const alphaFactor = (dist - simDist) / blendDist;
+              d[i + 3] = Math.round(d[i + 3] * alphaFactor);
+            }
+          }
+          ctx.putImageData(frame, 0, 0);
+        }
+      }
+      raf = requestAnimationFrame(renderFrame);
+    };
+    raf = requestAnimationFrame(renderFrame);
+    return () => cancelAnimationFrame(raf);
+  }, [vo.chroma, vo.chromaColor, vo.chromaSimilarity, vo.chromaBlend, active, videoEl]);
+
+  if (!vo.chroma) return null;
+  return <canvas ref={canvasRef} className="pointer-events-none block h-auto w-full" />;
+}
+function getEffectiveWords(txt: TextOverlay): WordTiming[] {
+  const rawTokens = (txt.text || '').trim().split(/\s+/).filter(Boolean);
+  if (rawTokens.length === 0) return [];
+  if (txt.words && txt.words.length === rawTokens.length) {
+    return txt.words.map((w, idx) => ({ word: rawTokens[idx], start: w.start, end: w.end }));
+  }
+  const dur = Math.max(0.05, txt.end - txt.start);
+  const totalChars = Math.max(1, rawTokens.reduce((acc, w) => acc + w.length, 0));
+  let cursor = txt.start;
+  return rawTokens.map((word, idx) => {
+    const share = (word.length / totalChars) * dur;
+    const s = cursor;
+    const e = idx === rawTokens.length - 1 ? txt.end : cursor + share;
+    cursor = e;
+    return { word, start: s, end: e };
+  });
+}
+function escDrawtext(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/%/g, '\\%');
+}
+function buildTextChainFF(
+  txt: TextOverlay,
+  inLabel: string,
+  outPrefix: string,
+  S: number,
+  E: number,
+  fontFile: string,
+  refW: number,
+  refH: number,
+  timeOffset = 0
+): { chain: string; outLabel: string } {
+  const style: SubtitleStyle = txt.subStyle || 'static';
+  const anT = animExprFF(txt, S, E, refW, refH);
+  let alphaExpr = '';
+  if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S.toFixed(6)})/${txt.fadeIn},(${E.toFixed(6)}-t)/${txt.fadeOut})))'`;
+  else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S.toFixed(6)})/${txt.fadeIn}))'`;
+  else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E.toFixed(6)}-t)/${txt.fadeOut}))'`;
+  const outline = txt.outline ? ':borderw=4:bordercolor=black' : '';
+  const baseColor = (txt.color || '#ffffff').replace('#', '0x');
+  const hiColor = (txt.highlightColor || '#facc15').replace('#', '0x');
+
+  if (style === 'static') {
+    const out = `${outPrefix}_out`;
+    const chain = `[${inLabel}]drawtext=text='${escDrawtext(txt.text)}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[${out}];`;
+    return { chain, outLabel: out };
+  }
+
+  const words = getEffectiveWords(txt);
+  if (words.length === 0) {
+    const out = `${outPrefix}_out`;
+    return { chain: `[${inLabel}]null[${out}];`, outLabel: out };
+  }
+
+  if (style === 'single-word') {
+    let cur = inLabel;
+    let chain = '';
+    const bigSize = Math.round(txt.size * 1.28);
+    words.forEach((w, wi) => {
+      const ws = Math.max(S, w.start - timeOffset);
+      const we = Math.min(E, w.end - timeOffset);
+      if (we <= ws) return;
+      const nxt = wi === words.length - 1 ? `${outPrefix}_out` : `${outPrefix}_w${wi}`;
+      chain += `[${cur}]drawtext=text='${escDrawtext(w.word)}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${bigSize}:fontcolor=${hiColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${ws.toFixed(6)},${we.toFixed(6)})'[${nxt}];`;
+      cur = nxt;
+    });
+    if (cur === inLabel) {
+      const out = `${outPrefix}_out`;
+      return { chain: `[${inLabel}]null[${out}];`, outLabel: out };
+    }
+    return { chain, outLabel: cur };
+  }
+
+  // Modos 'karaoke-color' y 'karaoke-box': posicionamos cada palabra en la fila centrada
+  const charW = txt.size * 0.54;
+  const spaceW = txt.size * 0.28;
+  const wordWidths = words.map((w) => Math.max(txt.size * 0.35, w.word.length * charW));
+  const totalW = wordWidths.reduce((a, b) => a + b, 0) + Math.max(0, words.length - 1) * spaceW;
+  let cursorX = txt.x - totalW / 2;
+  const centersX = wordWidths.map((w) => {
+    const cx = cursorX + w / 2;
+    cursorX += w + spaceW;
+    return Math.round(cx);
+  });
+
+  let cur = inLabel;
+  let chain = '';
+  let step = 0;
+  words.forEach((w, wi) => {
+    const wx = centersX[wi];
+    const ws = Math.max(S, w.start - timeOffset);
+    const we = Math.min(E, w.end - timeOffset);
+    const wEsc = escDrawtext(w.word);
+    // Capa base de la palabra durante toda la frase
+    const baseLbl = `${outPrefix}_b${step++}`;
+    chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[${baseLbl}];`;
+    cur = baseLbl;
+    // Capa activa resaltada cuando se pronuncia la palabra
+    if (we > ws) {
+      const actLbl = `${outPrefix}_a${step++}`;
+      const boxSpec = style === 'karaoke-box' ? `:box=1:boxcolor=${hiColor}@0.92:boxborderw=8` : '';
+      const actColor = style === 'karaoke-box' ? '0x0f1419' : hiColor;
+      chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${actColor}:fontfile=${fontFile}${style === 'karaoke-box' ? '' : outline}${boxSpec}${alphaExpr}:enable='between(t,${ws.toFixed(6)},${we.toFixed(6)})'[${actLbl}];`;
+      cur = actLbl;
+    }
+  });
+  const finalOut = `${outPrefix}_out`;
+  chain += `[${cur}]null[${finalOut}];`;
+  return { chain, outLabel: finalOut };
 }
 // ===== PARIDAD DE EXPORT: mismas animaciones como expresiones FFmpeg =====
 // ein/eout replican el smoothstep del preview; dx/dy mueven el overlay y f
@@ -846,6 +1062,7 @@ const [asrProgress, setAsrProgress] = useState<{ phase: 'model' | 'transcribe'; 
 const [proxiesOn, setProxiesOn] = useState(false);
 const [fsMode, setFsMode] = useState<'none' | 'native' | 'css'>('none');
 const [propsTab, setPropsTab] = useState('inspector');
+const [commentStudioOpen, setCommentStudioOpen] = useState(false);
 const [asrModelPick, setAsrModelPick] = useState<AsrModelId>(() => { const pref = readAsrPref(); const wanted = pref?.model ?? (IS_MOBILE ? 'tiny' : 'base'); return (ASR_MODELS.some((m) => m.id === wanted) ? wanted : 'base') as AsrModelId; });
 const [asrLangPick, setAsrLangPick] = useState<AsrLanguage>(() => (readAsrPref()?.lang ?? 'es') as AsrLanguage);
 const [asrRemember, setAsrRemember] = useState(true);
@@ -863,11 +1080,12 @@ return () => { document.removeEventListener('fullscreenchange', onFsChange); win
 useEffect(() => {
 const el = shellRef.current;
 if (!el) return;
-const compute = () => setShellOffset(Math.max(0, el.offsetTop));
+const compute = () => { const top = el.getBoundingClientRect().top + window.scrollY; setShellOffset(Math.max(0, Math.round(top))); };
 compute();
 window.addEventListener('resize', compute);
 window.addEventListener('orientationchange', compute);
-return () => { window.removeEventListener('resize', compute); window.removeEventListener('orientationchange', compute); };
+window.visualViewport?.addEventListener('resize', compute);
+return () => { window.removeEventListener('resize', compute); window.removeEventListener('orientationchange', compute); window.visualViewport?.removeEventListener('resize', compute); };
 }, []);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -905,6 +1123,7 @@ const lastPointerRef = useRef({ x: 0, y: 0 });
 const ghostWRef = useRef(120);
 const ghostRef = useRef<HTMLDivElement | null>(null);
 const [ghost, setGhost] = useState<{ x: number; y: number; w: number; label: string; cls: string } | null>(null);
+const [dropPreview, setDropPreview] = useState<{ laneKey: string; start: number; end: number; snapped: boolean } | null>(null);
   const panDragRef = useRef<PanDrag | null>(null);
   const historyPast = useRef<string[]>([]);
   const historyFuture = useRef<string[]>([]);
@@ -2356,7 +2575,7 @@ function toggleProxies() {
   function updateTextOverlay(id: string, patch: Partial<TextOverlay>) { setTextOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
 function applyStyleToAllSubtitles(src: TextOverlay) {
 const total = textOverlaysRef.current.filter((t) => t.kind === 'subtitulo').length;
-setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur } : t)));
+setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, subStyle: src.subStyle, highlightColor: src.highlightColor, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur } : t)));
 showToast(`📑 Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info');
 }
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
@@ -2699,93 +2918,262 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
     overlayTimeDragRef.current = primary ? { ...primary, id, type, mode, startX: e.clientX, group } : null;
 lastPointerRef.current = { x: e.clientX, y: e.clientY };
 if (liftTimerRef.current) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
-liftedRef.current = false;
-if (e.pointerType === 'touch' && mode === 'move' && primary) {
-const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-const nombre = type === 'text' ? (textOverlaysRef.current.find((x) => x.id === id)?.text || 'Texto') : type === 'image' ? (imageOverlaysRef.current.find((x) => x.id === id)?.name || 'Imagen') : type === 'audio' ? (audioTracksRef.current.find((x) => x.id === id)?.name || 'Audio') : (videoOverlaysRef.current.find((x) => x.id === id)?.name || 'Capa');
-const icono = type === 'text' ? '✏️ ' : type === 'image' ? '🖼️ ' : type === 'audio' ? '🎵 ' : '🎞 ';
-const cls = type === 'text' ? 'rounded-md border-2 border-dashed border-fuchsia-300 bg-fuchsia-500/25 shadow-xl shadow-fuchsia-500/30 backdrop-blur-sm' : type === 'image' ? 'rounded-md border-2 border-dashed border-pink-300 bg-pink-500/25 shadow-xl shadow-pink-500/30 backdrop-blur-sm' : type === 'audio' ? 'rounded-md border-2 border-dashed border-green-300 bg-green-500/25 shadow-xl shadow-green-500/30 backdrop-blur-sm' : 'rounded-md border-2 border-dashed border-amber-300 bg-amber-500/25 shadow-xl shadow-amber-500/30 backdrop-blur-sm';
-const w = Math.max(96, rect.width);
-ghostWRef.current = w;
-liftTimerRef.current = window.setTimeout(() => {
-liftedRef.current = true;
-try { (navigator as any).vibrate?.(12); } catch (e2) {}
-const p = lastPointerRef.current;
-setGhost({ x: p.x - w / 2, y: p.y - 74, w, label: icono + nombre, cls });
-}, 260);
-}
+liftedRef.current = true; // En estilo Premiere/DaVinci el clip queda tomado de inmediato sin fantasma flotante
+setGhost(null);
   }
   function laneRowUnderPointer(e: React.PointerEvent): string | null {
 const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
 const row = el?.closest('[data-lanerow]') as HTMLElement | null;
 return row ? (row.dataset.lanerow || null) : null;
 }
+
+// Devuelve los intervalos ocupados por OTROS bloques en la misma pista (laneId)
+function getSiblingsIntervals(type: 'text' | 'image' | 'audio' | 'video', laneId: string, excludeIds: Set<string>): { s: number; e: number }[] {
+  const out: { s: number; e: number }[] = [];
+  if (type === 'text') {
+    for (const t of textOverlaysRef.current) {
+      if (excludeIds.has(t.id)) continue;
+      const effLane = t.laneId || (t.kind === 'subtitulo' ? 'subtitle-1' : 'text-1');
+      if (effLane === laneId) out.push({ s: t.start, e: t.end });
+    }
+  } else if (type === 'image') {
+    for (const img of imageOverlaysRef.current) {
+      if (excludeIds.has(img.id)) continue;
+      if ((img.laneId || 'image-1') === laneId) out.push({ s: img.start, e: img.end });
+    }
+  } else if (type === 'video') {
+    for (const vo of videoOverlaysRef.current) {
+      if (excludeIds.has(vo.id)) continue;
+      if ((vo.laneId || 'video-1') === laneId) out.push({ s: vo.start, e: vo.end });
+    }
+  } else if (type === 'audio') {
+    for (const a of audioTracksRef.current) {
+      if (excludeIds.has(a.id)) continue;
+      if ((a.laneId || 'audio-1') === laneId) {
+        const g = trackGeom(a);
+        out.push({ s: g.start, e: g.start + g.duration });
+      }
+    }
+  }
+  return out.sort((a, b) => a.s - b.s);
+}
+
+// Calcula el inicio imantado y sin solaparse con ningún otro bloque de la misma pista
+function resolveMagneticSlot(
+  desiredStart: number,
+  duration: number,
+  siblings: { s: number; e: number }[],
+  snapPoints: number[],
+  snapTolSec: number
+): { start: number; snapped: boolean } {
+  let candidate = Math.max(0, desiredStart);
+  let snapped = false;
+
+  // 1. Imán (Snapping) del borde izquierdo o derecho contra bordes vecinos y cabezal
+  let bestDiff = snapTolSec;
+  for (const pt of snapPoints) {
+    const dStart = Math.abs(candidate - pt);
+    if (dStart <= bestDiff) {
+      bestDiff = dStart;
+      candidate = Math.max(0, pt);
+      snapped = true;
+    }
+    const dEnd = Math.abs(candidate + duration - pt);
+    if (dEnd <= bestDiff) {
+      bestDiff = dEnd;
+      candidate = Math.max(0, pt - duration);
+      snapped = true;
+    }
+  }
+
+  // 2. Anti-colisión: verificar si [candidate, candidate + duration] pisa algún hermano en esta pista
+  const overlaps = (s: number) => siblings.some((iv) => s < iv.e - 0.002 && s + duration > iv.s + 0.002);
+  if (!overlaps(candidate)) {
+    return { start: candidate, snapped };
+  }
+
+  // Si hay colisión, buscamos todos los huecos válidos (pegado antes o después de cada hermano, o en 0)
+  const validStarts: number[] = [];
+  if (!overlaps(0)) validStarts.push(0);
+  for (const iv of siblings) {
+    const before = iv.s - duration;
+    if (before >= -0.001 && !overlaps(Math.max(0, before))) validStarts.push(Math.max(0, before));
+    const after = iv.e;
+    if (!overlaps(after)) validStarts.push(after);
+  }
+
+  if (validStarts.length === 0) return { start: candidate, snapped: true };
+  // Elegimos el hueco válido más cercano a donde el usuario tiene el puntero
+  let bestPos = validStarts[0];
+  let minDistance = Math.abs(desiredStart - bestPos);
+  for (const pos of validStarts) {
+    const dist = Math.abs(desiredStart - pos);
+    if (dist < minDistance) {
+      minDistance = dist;
+      bestPos = pos;
+    }
+  }
+  return { start: bestPos, snapped: true };
+}
+
 function moveOverlayTimeDrag(e: React.PointerEvent) {
-const d = overlayTimeDragRef.current; if (!d) return; const delta = (e.clientX - d.startX) / pps;
+const d = overlayTimeDragRef.current; if (!d) return;
+const dxPx = e.clientX - d.startX;
+const dyPx = e.clientY - lastPointerRef.current.y;
+const delta = dxPx / pps;
+
 lastPointerRef.current = { x: e.clientX, y: e.clientY };
-if (liftTimerRef.current && !liftedRef.current && Math.abs(e.clientX - d.startX) > DRAG_THRESHOLD) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
-if (liftedRef.current && ghostRef.current) ghostRef.current.style.transform = `translate3d(${e.clientX - ghostWRef.current / 2}px, ${e.clientY - 74}px, 0)`;
-// ===== CARRILES: drag vertical entre filas de la misma familia =====
+void dyPx;
+
+// ===== CARRILES: detectar fila bajo el dedo / mouse =====
+let targetLaneId: string | undefined;
+let targetFam: string | undefined;
 if (d.mode === 'move' || d.mode === 'lane') {
-const rowKey = (e.pointerType !== 'touch' || liftedRef.current) ? laneRowUnderPointer(e) : null;
+const rowKey = laneRowUnderPointer(e);
 if (rowKey) {
 const sep = rowKey.indexOf(':');
 const fam = rowKey.slice(0, sep); const laneId = rowKey.slice(sep + 1);
 if (d.type === 'audio' && fam === 'audio' && laneList('audio').some((l) => l.id === laneId)) {
-setAudioTracks((prev) => prev.map((t) => t.id === d.id ? { ...t, laneId } : t));
+  targetLaneId = laneId; targetFam = 'audio';
+  setAudioTracks((prev) => prev.map((t) => t.id === d.id ? { ...t, laneId } : t));
 } else if (d.type === 'text' && (fam === 'text' || fam === 'subtitle') && laneList(fam === 'subtitle' ? 'subtitle' : 'text').some((l) => l.id === laneId)) {
-updateTextOverlay(d.id, { laneId, kind: fam === 'subtitle' ? 'subtitulo' : 'texto' });
+  targetLaneId = laneId; targetFam = fam;
+  updateTextOverlay(d.id, { laneId, kind: fam === 'subtitle' ? 'subtitulo' : 'texto' });
 } else if (d.type === 'video' && fam === 'video' && laneList('video').some((l) => l.id === laneId)) {
-const laneIndex = laneList('video').findIndex((l) => l.id === laneId); updateVideoOverlay(d.id, { laneId, lane: laneIndex });
+  targetLaneId = laneId; targetFam = 'video';
+  const laneIndex = laneList('video').findIndex((l) => l.id === laneId); updateVideoOverlay(d.id, { laneId, lane: laneIndex });
 } else if (d.type === 'image' && fam === 'image' && laneList('image').some((l) => l.id === laneId)) {
-const laneIndex = laneList('image').findIndex((l) => l.id === laneId); updateImageOverlay(d.id, { laneId, lane: laneIndex });
+  targetLaneId = laneId; targetFam = 'image';
+  const laneIndex = laneList('image').findIndex((l) => l.id === laneId); updateImageOverlay(d.id, { laneId, lane: laneIndex });
 }
 }
-if (d.mode === 'lane') return; // vinculado: solo muda de carril, nunca de tiempo
+if (d.mode === 'lane') {
+  const track = audioTracksRef.current.find((t) => t.id === d.id);
+  if (track) {
+    const g = trackGeom(track);
+    const lId = targetLaneId || track.laneId || 'audio-1';
+    setDropPreview({ laneKey: `audio:${lId}`, start: g.start, end: g.start + g.duration, snapped: true });
+  }
+  return; // vinculado: solo muda de carril, nunca de tiempo
 }
+}
+
+    // Obtener el carril actual del elemento arrastrado
+    const currentItemLane = (() => {
+      if (targetLaneId) return { laneId: targetLaneId, fam: targetFam! };
+      if (d.type === 'text') {
+        const t = textOverlaysRef.current.find((x) => x.id === d.id);
+        const fam = t?.kind === 'subtitulo' ? 'subtitle' : 'text';
+        return { laneId: t?.laneId || (fam === 'subtitle' ? 'subtitle-1' : 'text-1'), fam };
+      }
+      if (d.type === 'image') {
+        const i = imageOverlaysRef.current.find((x) => x.id === d.id);
+        return { laneId: i?.laneId || 'image-1', fam: 'image' };
+      }
+      if (d.type === 'audio') {
+        const a = audioTracksRef.current.find((x) => x.id === d.id);
+        return { laneId: a?.laneId || 'audio-1', fam: 'audio' };
+      }
+      const v = videoOverlaysRef.current.find((x) => x.id === d.id);
+      return { laneId: v?.laneId || 'video-1', fam: 'video' };
+    })();
+
+    const excludeSet = new Set<string>(d.group && d.group.length > 1 ? d.group.map((g) => g.id) : [d.id]);
+    const siblings = getSiblingsIntervals(d.type, currentItemLane.laneId, excludeSet);
+    const snapTolSec = 10 / pps; // 10 píxeles de radio de imán
+    // Puntos de imán: bordes de hermanos en la misma pista + cabezal + cortes de V1
+    const snapPoints: number[] = [0, playheadRef.current, ...videoStartsRef.current, videoTotal];
+    for (const iv of siblings) { snapPoints.push(iv.s, iv.e); }
+
     if (d.mode === 'move' && d.group && d.group.length > 1) {
+      const primaryDur = d.origEnd - d.origStart;
+      const { start: resolvedPrimary, snapped } = resolveMagneticSlot(d.origStart + delta, primaryDur, siblings, snapPoints, snapTolSec);
+      const effectiveDelta = resolvedPrimary - d.origStart;
       for (const item of d.group) {
-        const duration = item.origEnd - item.origStart; const nextStart = Math.max(0, item.origStart + delta);
+        const duration = item.origEnd - item.origStart; const nextStart = Math.max(0, item.origStart + effectiveDelta);
         if (item.type === 'text') updateTextOverlay(item.id, { start: nextStart, end: nextStart + duration });
         else if (item.type === 'image') updateImageOverlay(item.id, { start: nextStart, end: nextStart + duration });
         else if (item.type === 'audio') updateAudioTrack(item.id, { start: nextStart });
         else updateVideoOverlay(item.id, { start: nextStart, end: nextStart + duration });
       }
+      setDropPreview({ laneKey: `${currentItemLane.fam}:${currentItemLane.laneId}`, start: resolvedPrimary, end: resolvedPrimary + primaryDur, snapped });
       return;
     }
+
+    // Límites izquierdo y derecho para recortes (start / end) sin pisar al vecino de la misma pista
+    const prevBound = siblings.filter((iv) => iv.e <= d.origStart + 0.01).reduce((m, iv) => Math.max(m, iv.e), 0);
+    const nextBound = siblings.filter((iv) => iv.s >= d.origEnd - 0.01).reduce((m, iv) => Math.min(m, iv.s), Infinity);
+
     if (d.type === 'text') {
       const track = textOverlaysRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<TextOverlay> = {};
-      if (d.mode === 'move') { const dur = d.origEnd - d.origStart; patch.start = Math.max(d.origStart + delta, 0); patch.end = patch.start + dur; }
-      else if (d.mode === 'start') patch.start = Math.max(d.origStart + delta, 0);
-      else patch.end = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN);
+      if (d.mode === 'move') {
+        const dur = d.origEnd - d.origStart;
+        const { start: ns, snapped } = resolveMagneticSlot(d.origStart + delta, dur, siblings, snapPoints, snapTolSec);
+        patch.start = ns; patch.end = ns + dur;
+        setDropPreview({ laneKey: `${currentItemLane.fam}:${currentItemLane.laneId}`, start: ns, end: ns + dur, snapped });
+      } else if (d.mode === 'start') {
+        patch.start = clamp(d.origStart + delta, prevBound, d.origEnd - MIN_OVERLAY_LEN);
+      } else {
+        patch.end = clamp(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN, nextBound);
+      }
       updateTextOverlay(d.id, patch);
     } else if (d.type === 'image') {
       const track = imageOverlaysRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<ImageOverlay> = {};
-      if (d.mode === 'move') { const dur = d.origEnd - d.origStart; patch.start = Math.max(d.origStart + delta, 0); patch.end = patch.start + dur; }
-      else if (d.mode === 'start') patch.start = Math.max(d.origStart + delta, 0);
-      else patch.end = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN);
+      if (d.mode === 'move') {
+        const dur = d.origEnd - d.origStart;
+        const { start: ns, snapped } = resolveMagneticSlot(d.origStart + delta, dur, siblings, snapPoints, snapTolSec);
+        patch.start = ns; patch.end = ns + dur;
+        setDropPreview({ laneKey: `image:${currentItemLane.laneId}`, start: ns, end: ns + dur, snapped });
+      } else if (d.mode === 'start') {
+        patch.start = clamp(d.origStart + delta, prevBound, d.origEnd - MIN_OVERLAY_LEN);
+      } else {
+        patch.end = clamp(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN, nextBound);
+      }
       updateImageOverlay(d.id, patch);
     } else if (d.type === 'audio') {
       const track = audioTracksRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<AudioTrack> = {};
       const origDur = d.origDuration || track.duration; const origOff = d.origOffset ?? track.offset;
-      if (d.mode === 'move') patch.start = Math.max(d.origStart + delta, 0);
-      else if (d.mode === 'start') { const newTimelineStart = Math.max(d.origStart + delta, 0); const trimmedAmount = newTimelineStart - d.origStart; if (origDur - trimmedAmount > MIN_OVERLAY_LEN) { patch.start = newTimelineStart; patch.duration = origDur - trimmedAmount; patch.offset = origOff + trimmedAmount; } }
-      else { const newEnd = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN); patch.duration = Math.max(newEnd - d.origStart, MIN_OVERLAY_LEN); }
-updateAudioTrack(d.id, patch);
-} else {
-const track = videoOverlaysRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<VideoOverlay> = {};
-const origDur = d.origDuration || (track.end - track.start); const origOff = d.origOffset ?? track.offset;
-if (d.mode === 'move') { const dur = d.origEnd - d.origStart; const ns = Math.max(d.origStart + delta, 0); patch.start = ns; patch.end = ns + dur; }
-else if (d.mode === 'start') { const newTimelineStart = Math.max(d.origStart + delta, 0); const trimmedAmount = newTimelineStart - d.origStart; if (origDur - trimmedAmount > MIN_OVERLAY_LEN) { patch.start = newTimelineStart; patch.end = newTimelineStart + (origDur - trimmedAmount); patch.offset = origOff + trimmedAmount; } }
-else { patch.end = Math.max(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN); }
-updateVideoOverlay(d.id, patch);
-}
+      if (d.mode === 'move') {
+        const { start: ns, snapped } = resolveMagneticSlot(d.origStart + delta, origDur, siblings, snapPoints, snapTolSec);
+        patch.start = ns;
+        setDropPreview({ laneKey: `audio:${currentItemLane.laneId}`, start: ns, end: ns + origDur, snapped });
+      } else if (d.mode === 'start') {
+        const newTimelineStart = clamp(d.origStart + delta, prevBound, d.origEnd - MIN_OVERLAY_LEN);
+        const trimmedAmount = newTimelineStart - d.origStart;
+        if (origDur - trimmedAmount >= MIN_OVERLAY_LEN && origOff + trimmedAmount >= 0) {
+          patch.start = newTimelineStart; patch.duration = origDur - trimmedAmount; patch.offset = origOff + trimmedAmount;
+        }
+      } else {
+        const newEnd = clamp(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN, nextBound);
+        patch.duration = Math.max(newEnd - d.origStart, MIN_OVERLAY_LEN);
+      }
+      updateAudioTrack(d.id, patch);
+    } else {
+      const track = videoOverlaysRef.current.find((t) => t.id === d.id); if (!track) return; const patch: Partial<VideoOverlay> = {};
+      const origDur = d.origDuration || (track.end - track.start); const origOff = d.origOffset ?? track.offset;
+      if (d.mode === 'move') {
+        const dur = d.origEnd - d.origStart;
+        const { start: ns, snapped } = resolveMagneticSlot(d.origStart + delta, dur, siblings, snapPoints, snapTolSec);
+        patch.start = ns; patch.end = ns + dur;
+        setDropPreview({ laneKey: `video:${currentItemLane.laneId}`, start: ns, end: ns + dur, snapped });
+      } else if (d.mode === 'start') {
+        const newTimelineStart = clamp(d.origStart + delta, prevBound, d.origEnd - MIN_OVERLAY_LEN);
+        const trimmedAmount = newTimelineStart - d.origStart;
+        if (origDur - trimmedAmount >= MIN_OVERLAY_LEN && origOff + trimmedAmount >= 0) {
+          patch.start = newTimelineStart; patch.end = newTimelineStart + (origDur - trimmedAmount); patch.offset = origOff + trimmedAmount;
+        }
+      } else {
+        patch.end = clamp(d.origEnd + delta, d.origStart + MIN_OVERLAY_LEN, nextBound);
+      }
+      updateVideoOverlay(d.id, patch);
+    }
   }
   function endOverlayTimeDrag() {
 overlayTimeDragRef.current = null;
 if (liftTimerRef.current) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
 liftedRef.current = false;
 setGhost(null);
+setDropPreview(null);
 }
   function startOverlayPosDrag(e: React.PointerEvent, type: 'text' | 'image' | 'video', id: string) {
     e.stopPropagation(); e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
@@ -2835,11 +3223,25 @@ e.target.value = '';
 }
 
   function addTextOverlay() {
-    const newOverlay: TextOverlay = { id: uid(), text: 'Tu texto aquí', start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 72, bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, kind: 'texto', laneId: activeLaneIds.text };
+    const sibs = getSiblingsIntervals('text', activeLaneIds.text, new Set());
+    const { start: s0 } = resolveMagneticSlot(playheadRef.current, 5, sibs, [playheadRef.current], 0);
+    const newOverlay: TextOverlay = { id: uid(), text: 'Tu texto aquí', start: s0, end: s0 + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 72, bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, kind: 'texto', laneId: activeLaneIds.text };
     setTextOverlays((prev) => [...prev, newOverlay]); setSelectedTextId(newOverlay.id);
     showToast('✏️ Texto agregado — editálo en el panel de propiedades', 'info');
   }
 
+async function addCommentResult(blob: Blob) {
+const assetId = uid();
+try { await putAsset(assetId, blob); } catch (e) { console.error('[CommentStudio] No se pudo guardar el asset:', e); }
+const url = URL.createObjectURL(blob);
+const sibs = getSiblingsIntervals('image', activeLaneIds.image, new Set());
+const { start: s0 } = resolveMagneticSlot(playheadRef.current, 5, sibs, [playheadRef.current], 0);
+const ov: ImageOverlay = { id: uid(), assetId, name: 'Comentario', url, start: s0, end: s0 + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 46, rotate: 0, fadeIn: 0.3, fadeOut: 0.3, laneId: activeLaneIds.image };
+setImageOverlays((prev) => [...prev, ov]);
+setSelectedImageId(ov.id);
+setCommentStudioOpen(false);
+showToast('💬 Comentario agregado a la pista de imágenes (5s, con fades)', 'info');
+}
 async function generateSubtitles(clip: Clip, model: (typeof ASR_MODELS)[number], lang: AsrLanguage, remember: boolean) {
 setSubtitleFor(null);
 if (remember) writeAsrPref(model.id, lang);
@@ -2859,12 +3261,25 @@ const idx = clipsRef.current.findIndex((c) => c.id === clip.id);
 if (idx < 0) return;
 const base = videoStartsRef.current[idx];
 const speed = clip.speed || 1;
-const subs: TextOverlay[] = caps.map((cp) => ({
-id: uid(), text: cp.text,
-start: base + cp.start / speed, end: base + cp.end / speed,
-x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.9, size: Math.round(REF_HEIGHT * 0.05),
-bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, outline: true, kind: 'subtitulo',
-}));
+const subs: TextOverlay[] = caps.map((cp) => {
+const subStart = base + cp.start / speed;
+const subEnd = base + cp.end / speed;
+const subWords: WordTiming[] = (words || [])
+  .map((w: any) => {
+    const ws = Number(w.start ?? w.t0 ?? w.from ?? 0);
+    const we = Number(w.end ?? w.t1 ?? w.to ?? ws + 0.25);
+    const textW = String(w.word ?? w.text ?? '').trim();
+    return { word: textW, start: base + ws / speed, end: base + Math.max(we, ws + 0.08) / speed };
+  })
+  .filter((w: WordTiming) => w.word && w.end > subStart + 0.01 && w.start < subEnd - 0.01);
+return {
+  id: uid(), text: cp.text,
+  start: subStart, end: subEnd,
+  x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.9, size: Math.round(REF_HEIGHT * 0.05),
+  bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, outline: true, kind: 'subtitulo',
+  subStyle: 'karaoke-color', highlightColor: '#facc15', words: subWords.length ? subWords : undefined,
+};
+});
 subs.forEach((sub) => { sub.laneId = activeLaneIds.subtitle; });
 setTextOverlays((prev) => [...prev, ...subs]);
 showToast(`✅ ${subs.length} subtítulos con ${model.label} · editá cualquier bloque en la pista T`, 'info', 5000);
@@ -3196,14 +3611,15 @@ else if (vo.rotate === 270) vrot = 'transpose=2,';
 const maskFile = voMaskFile[ov.idx];
 const anV = animExprFF(vo, vo.start - cs, vo.end - cs, REF_WIDTH, REF_HEIGHT);
 const zoomPartV = anV.f ? `,scale=w='max(2,trunc(iw*(${anV.f})))':h='max(2,trunc(ih*(${anV.f})))':eval=frame` : '';
+const cKeyC = chromaFilterFF(vo);
 if (maskFile) {
 const midx = nextInput++;
 inputArgs.push('-loop', '1', '-i', maskFile);
-fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba[vo${ov.idx}_rgb];`;
+fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba,${cKeyC}null[vo${ov.idx}_rgb];`;
 fc += `[${midx}:v]format=gray[vo${ov.idx}_mkg];`;
 fc += `[vo${ov.idx}_rgb][vo${ov.idx}_mkg]alphamerge,${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartV}[vo${ov.idx}_f];`;
 } else {
-fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartV}[vo${ov.idx}_f];`;
+fc += `[${idx}:v]trim=${fA.toFixed(6)}:${fB.toFixed(6)},setpts=PTS-STARTPTS,fps=${FPS},scale=${voWidth}:${voHeight},format=rgba,${cKeyC}${vrot}${fades}setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartV}[vo${ov.idx}_f];`;
 }
 fc += `[${currentVideoLabel}][vo${ov.idx}_f]overlay=x='${vo.x}-overlay_w/2+(${anV.dx})':y='${vo.y}-overlay_h/2+(${anV.dy})':eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[vo${ov.idx}_out];`;
 currentVideoLabel = `vo${ov.idx}_out`;
@@ -3220,15 +3636,9 @@ const familyRegular = variant.regular.split('/').pop() as string;
 if (loadedFontFiles.has(familyRegular)) fontFile = familyRegular;
 else { const anyFont = Array.from(loadedFontFiles)[0]; if (!anyFont) continue; fontFile = anyFont; }
 }
-const textEscaped = txt.text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
-let alphaExpr = '';
-if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S.toFixed(6)})/${txt.fadeIn},(${E.toFixed(6)}-t)/${txt.fadeOut})))'`;
-else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S.toFixed(6)})/${txt.fadeIn}))'`;
-else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E.toFixed(6)}-t)/${txt.fadeOut}))'`;
-const outline = txt.outline ? ':borderw=4:bordercolor=black' : '';
-const anCT = animExprFF(txt, S, E, REF_WIDTH, REF_HEIGHT);
-fc += `[${currentVideoLabel}]drawtext=text='${textEscaped}':x='${txt.x}-text_w/2+(${anCT.dx})':y='${txt.y}-text_h/2+(${anCT.dy})':fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[txtc${ov.idx}];`;
-currentVideoLabel = `txtc${ov.idx}`;
+const built = buildTextChainFF(txt, currentVideoLabel, `txtc${ov.idx}`, S, E, fontFile, REF_WIDTH, REF_HEIGHT, cs);
+fc += built.chain;
+currentVideoLabel = built.outLabel;
 }
 }
 const finalVideoLabel = currentVideoLabel;
@@ -3584,12 +3994,13 @@ else if (vo.rotate === 270) vrot = 'transpose=2,';
 const mi = voMaskIdx[i];
 const anV = animExprFF(vo, vo.start, vo.end, REF_WIDTH, REF_HEIGHT);
 const zoomPartV = anV.f ? `,scale=w='max(2,trunc(iw*(${anV.f})))':h='max(2,trunc(ih*(${anV.f})))':eval=frame` : '';
+const cKey = chromaFilterFF(vo);
 if (mi !== null && mi !== undefined) {
-filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba[vo${i}_rgb];`;
+filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba,${cKey}null[vo${i}_rgb];`;
 filterComplex += `[${mi}:v]format=gray[mask${i}g];`;
 filterComplex += `[vo${i}_rgb][mask${i}g]alphamerge,${vrot}${fades}setpts=PTS+${vo.start}/TB${zoomPartV}[vo${i}_f];`;
 } else {
-filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba,${vrot}${fades}setpts=PTS+${vo.start}/TB${zoomPartV}[vo${i}_f];`;
+filterComplex += `[${voInputIdx}:v]trim=${vo.offset}:${vo.offset + dur},setpts=PTS-STARTPTS,fps=30,scale=${voWidth}:${voHeight},format=rgba,${cKey}${vrot}${fades}setpts=PTS+${vo.start}/TB${zoomPartV}[vo${i}_f];`;
 }
 filterComplex += `[${cur}][vo${i}_f]overlay=x='${vo.x}-overlay_w/2+(${anV.dx})':y='${vo.y}-overlay_h/2+(${anV.dy})':eof_action=pass:enable='between(t,${vo.start},${vo.end})'[vo${i}_out];`;
 return `vo${i}_out`;
@@ -3607,16 +4018,9 @@ if (!anyFont) { filterComplex += `[${cur}]null[txt${i}_out];`; return `txt${i}_o
 fontFile = anyFont;
 }
 }
-const textEscaped = txt.text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
-const S = txt.start; const E = txt.end;
-let alphaExpr = '';
-if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S})/${txt.fadeIn},(${E}-t)/${txt.fadeOut})))'`;
-else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S})/${txt.fadeIn}))'`;
-else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E}-t)/${txt.fadeOut}))'`;
-const outline = (txt as any).outline ? ':borderw=4:bordercolor=black' : '';
-const anT = animExprFF(txt, S, E, REF_WIDTH, REF_HEIGHT);
-filterComplex += `[${cur}]drawtext=text='${textEscaped}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${txt.color.replace('#', '0x')}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S},${E})'[txt${i}_out];`;
-return `txt${i}_out`;
+const built = buildTextChainFF(txt, cur, `txt${i}`, txt.start, txt.end, fontFile, REF_WIDTH, REF_HEIGHT, 0);
+filterComplex += built.chain;
+return built.outLabel;
 };
 const overlayOrder: { family: 'image' | 'text' | 'subtitle' | 'video'; idx: number; key: number }[] = [
 ...imageOverlays.map((img, i) => ({ family: 'image' as const, idx: i, key: paintKeyOf(img.laneId, 'image', i) })),
@@ -3761,13 +4165,21 @@ return css === 'none' ? undefined : css;
     void histVersion;
   void filmstripVersion;
 
-// Bloque dibujador compartido por la pista SUB y la pista T
+// Bloque dibujador compartido por la pista SUB y la pista T (con elevación directa estilo Premiere/DaVinci)
 const renderTextBlock = (txt: TextOverlay) => {
 const isSelected = isEventSelected(txt.id); const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
-return (<div key={txt.id} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover · bordes para recortar">
-<p className="relative z-10 truncate text-[10px] font-semibold text-fuchsia-200 drop-shadow">{txt.kind === 'subtitulo' ? '💬' : 'T:'} {txt.text}</p>
-<div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
-<div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
+const isDraggingThis = dropPreview !== null && isSelected;
+return (<div key={txt.id} data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-fuchsia-300 bg-fuchsia-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'z-10 cursor-grab border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover o cambiar de pista · bordes para recortar">
+<div className="relative z-10 flex h-full items-center justify-between gap-1">
+  <p className="truncate text-[10px] font-semibold text-fuchsia-100 drop-shadow">{txt.kind === 'subtitulo' ? '💬' : 'T:'} {txt.text}</p>
+  {isDraggingThis && (
+    <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
+      {dropPreview?.snapped ? '🧲 ' : ''}{formatTime(txt.start)}
+    </span>
+  )}
+</div>
+<div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-2 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
+<div onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-2 cursor-ew-resize touch-none bg-fuchsia-400/50 hover:bg-fuchsia-400" />
 </div>);
 };
 
@@ -3892,6 +4304,14 @@ document.body
   ) : null;
 
   // Picker showroom de transiciones (mockup de la fundadora, 28/10)
+const commentStudioUI = commentStudioOpen && typeof document !== 'undefined' ? createPortal(
+<CommentStudioModal
+onCancel={() => setCommentStudioOpen(false)}
+onDownload={(blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(a.href), 4000); showToast('⬇️ Comentario descargado como PNG', 'info'); }}
+onInsert={(blob) => addCommentResult(blob)}
+/>,
+document.body
+) : null;
 const transitionPickerUI = transitionPicker !== null && clips[transitionPicker] ? createPortal(
   <TransitionPickerModal
     clip={clips[transitionPicker]}
@@ -4020,13 +4440,19 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
 {subtitleUI}
 {silenceUI}
 {asrProgressUI}
-      {transitionPickerUI}
+      {commentStudioUI}
+{transitionPickerUI}
       <div className="pointer-events-none fixed inset-0 z-[300] flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
           {toasts.map((t) => (
             <div key={t.id} className={`rounded-lg border px-5 py-2.5 text-sm shadow-2xl backdrop-blur ${t.kind === 'warn' ? 'border-amber-400/40 bg-amber-950/90 text-amber-200' : 'border-cyan-400/40 bg-cyan-950/90 text-cyan-200'}`}>{t.msg}</div>
           ))}
-        </div>
+        
+<button onClick={() => setPropsOpen(false)} aria-label="Cerrar propiedades" title="Volver a la timeline"
+  className={cx('shrink-0 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-cyan-300', !propsOpen && 'hidden')}>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+</button>
+</div>
       </div>
       {ghost && (
 <div ref={ghostRef} className="pointer-events-none fixed left-0 top-0 z-[60]" style={{ transform: `translate3d(${ghost.x}px, ${ghost.y}px, 0)` }}>
@@ -4049,7 +4475,7 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
       <input ref={audioInputRef} type="file" accept="audio/*" multiple className="hidden" onChange={handleAudioUpload} />
 <input ref={voInputRef} type="file" accept="video/*" multiple className="hidden" onChange={handleVoUpload} />
       {audioTracks.map((track) => (<AudioElement key={track.id} track={track} onReady={registerAudio} onCleanup={unregisterAudio} />))}
-            <div className="flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_clamp(300px,26vw,380px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4">
+            <div className={cx('flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_clamp(300px,26vw,380px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4', propsOpen && 'flex-1 [@media(orientation:landscape)_and_(max-width:1023px)]:flex-none')}>
         {/* ===== RAIL LATERAL (solo desktop) ===== */}
 <aside className="hidden shrink-0 flex-row gap-2 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:min-h-0 lg:flex-col lg:gap-1 lg:order-1">
 <button onClick={() => fileInputRef.current?.click()} title="Agregar video"
@@ -4115,21 +4541,68 @@ const an = animOffsets(activeImage, playhead, REF_WIDTH, REF_HEIGHT);
                       </div>
                     );
                   })}
+
                   {activeTexts.map((activeText, ati) => {
                     const windowLen = activeText.end - activeText.start;
                     const localInWindow = playhead - activeText.start;
-const an = animOffsets(activeText, playhead, REF_WIDTH, REF_HEIGHT);
+                    const an = animOffsets(activeText, playhead, REF_WIDTH, REF_HEIGHT);
                     let alpha = 1;
                     if (activeText.fadeIn > 0 && localInWindow < activeText.fadeIn) alpha = Math.max(localInWindow / activeText.fadeIn, 0);
                     if (activeText.fadeOut > 0 && localInWindow > windowLen - activeText.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeText.fadeOut, 0);
+                    const styleMode: SubtitleStyle = activeText.subStyle || 'static';
+                    const hiCol = activeText.highlightColor || '#facc15';
+                    const shadowCss = activeText.outline
+                      ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)'
+                      : '0 2px 10px rgba(0,0,0,0.85)';
+                    const words = styleMode !== 'static' ? getEffectiveWords(activeText) : [];
+                    const activeWordIdx = words.findIndex((w) => playhead >= w.start && playhead <= w.end);
                     return (
                       <div key={activeText.id} onPointerDown={(e) => startOverlayPosDrag(e, 'text', activeText.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
                         className="pointer-events-auto absolute cursor-move touch-none select-none"
                         style={{ left: activeText.x, top: activeText.y, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f})`, opacity: alpha, zIndex: paintKeyOf(activeText.laneId, activeText.kind === 'subtitulo' ? 'subtitle' : 'text', ati) }}
                         title="Arrastrá para mover el texto">
-                        <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: activeText.outline ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)' : '0 2px 10px rgba(0,0,0,0.85)' }}>
-                          {activeText.text}
-                        </p>
+                        {styleMode === 'static' || words.length === 0 ? (
+                          <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: shadowCss }}>
+                            {activeText.text}
+                          </p>
+                        ) : styleMode === 'single-word' ? (
+                          <p className="whitespace-nowrap transition-transform duration-75" style={{ fontSize: Math.round(activeText.size * 1.28), fontWeight: 900, fontFamily: FONT_STACKS[activeText.font], color: hiCol, textShadow: shadowCss }}>
+                            {(words[activeWordIdx >= 0 ? activeWordIdx : 0]?.word || '')}
+                          </p>
+                        ) : (
+                          <p className="flex items-center justify-center gap-[0.28em] whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font] }}>
+                            {words.map((w, wi) => {
+                              const isAct = wi === activeWordIdx;
+                              if (styleMode === 'karaoke-box') {
+                                return (
+                                  <span key={wi} style={{
+                                    color: isAct ? '#0f1419' : activeText.color,
+                                    backgroundColor: isAct ? hiCol : 'transparent',
+                                    padding: isAct ? '0.04em 0.22em' : '0',
+                                    borderRadius: '0.2em',
+                                    textShadow: isAct ? 'none' : shadowCss,
+                                    transform: isAct ? 'scale(1.08)' : 'scale(1)',
+                                    display: 'inline-block',
+                                    transition: 'all 75ms ease-out',
+                                  }}>
+                                    {w.word}
+                                  </span>
+                                );
+                              }
+                              return (
+                                <span key={wi} style={{
+                                  color: isAct ? hiCol : activeText.color,
+                                  textShadow: shadowCss,
+                                  transform: isAct ? 'scale(1.12)' : 'scale(1)',
+                                  display: 'inline-block',
+                                  transition: 'all 75ms ease-out',
+                                }}>
+                                  {w.word}
+                                </span>
+                              );
+                            })}
+                          </p>
+                        )}
                       </div>
                     );
                   })}
@@ -4144,10 +4617,11 @@ const voClip = vo.shape === 'circle' ? 'circle(closest-side at 50% 50%)' : vo.sh
 return (
 <div key={vo.id} onPointerDown={(e) => startOverlayPosDrag(e, 'video', vo.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag} onPointerCancel={endOverlayPosDrag}
 className="pointer-events-auto absolute cursor-move touch-none select-none"
-style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f}) rotate(${vo.rotate}deg)`, opacity: voAlpha, visibility: inWin && !isLaneMuted(vo.laneId) ? 'visible' : 'hidden', clipPath: voClip, zIndex: paintKeyOf(vo.laneId, 'video', vi) }}
+style={{ left: vo.x, top: vo.y, width: (vo.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f}) rotate(${vo.rotate}deg)`, opacity: voAlpha, display: inWin && !isLaneMuted(vo.laneId) ? 'block' : 'none', clipPath: voClip, zIndex: paintKeyOf(vo.laneId, 'video', vi) }}
 title="Arrastrá para mover la superposición">
 <video ref={(el) => { if (el) voElementsRef.current.set(vo.id, el); else voElementsRef.current.delete(vo.id); }}
-src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-events-none h-auto w-full" />
+src={vo.url} playsInline muted={vo.muted} preload="auto" className={cx('pointer-events-none h-auto w-full', vo.chroma && 'hidden')} />
+{vo.chroma && <ChromaVideoCanvas vo={vo} videoEl={voElementsRef.current.get(vo.id) || null} active={inWin && !isLaneMuted(vo.laneId)} />}
 </div>
 );
 })}
@@ -4253,7 +4727,7 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
         </button>
       </div>
 
-               <div className="flex shrink-0 flex-col gap-2 lg:min-h-0 lg:flex-1 lg:gap-4 lg:order-3">
+               <div className={cx('flex flex-col gap-2 lg:min-h-0 lg:flex-1 lg:gap-4 lg:order-3', propsOpen ? 'min-h-0 flex-1 [@media(orientation:landscape)_and_(max-width:1023px)]:flex-none' : 'shrink-0 lg:shrink')}>
           
           <div className="hidden shrink-0 items-stretch gap-2 lg:flex">
             <button onClick={openExportModal} disabled={projectDuration === 0 || exporting}
@@ -4274,11 +4748,11 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className="pointer-even
             </button>
           </div>
                     
-<aside className="rounded-xl border border-slate-800 bg-slate-900/50 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden [@media(orientation:landscape)_and_(max-width:1023px)]:hidden">
+<aside className={cx('flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 lg:min-h-0 lg:flex-1 [@media(orientation:landscape)_and_(max-width:1023px)]:hidden', propsOpen ? 'min-h-0 flex-1' : 'shrink-0 lg:shrink')}>
 <div className="flex shrink-0 items-center gap-1 border-b border-slate-800 p-1.5 lg:hidden">
 {propsTabs.map((t) => (
 <button key={t.id} onClick={() => { if (propsTab === t.id && propsOpen) { setPropsOpen(false); } else { setPropsTab(t.id); setPropsOpen(true); } }}
-className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg py-1.5 transition-colors', propsTab === t.id ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200')} title={t.label}>
+className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg py-1.5 transition-colors', propsTab === t.id && propsOpen ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200')} title={t.label}>
 {t.icon}<span className="w-full truncate text-center text-[8px] font-semibold leading-none">{t.label}</span>
 </button>
 ))}
@@ -4367,21 +4841,128 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
 <button onClick={() => updateClip(selectedClip.id, { adjust: {} })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400" title="Vuelve al preset elegido sin ajustes manuales">↺ Resetear ajustes manuales</button>
 </>)}
 {propsTab === 'estilo' && selectedText && (<>
-<label className="block select-none text-xs text-slate-400">Color del texto</label>
+<label className="block select-none text-xs text-slate-400">Color principal del texto</label>
 <input type="color" value={selectedText.color} onChange={(e) => updateTextOverlay(selectedText.id, { color: e.target.value })} className="h-9 w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-1" />
-{selectedText.kind === 'subtitulo' && (
-<button onClick={() => updateTextOverlay(selectedText.id, { outline: !selectedText.outline })} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors', selectedText.outline ? 'border border-fuchsia-400/40 bg-fuchsia-500/20 text-fuchsia-200' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedText.outline ? '🔲 Contorno negro: ON' : '🔲 Contorno negro: OFF'}</button>
-)}
+<button onClick={() => updateTextOverlay(selectedText.id, { outline: !selectedText.outline })} className={cx('w-full rounded-lg py-2 text-xs font-semibold transition-colors', selectedText.outline ? 'border border-fuchsia-400/40 bg-fuchsia-500/20 text-fuchsia-200' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedText.outline ? '🔲 Contorno negro: ON' : '🔲 Contorno negro: OFF'}</button>
+<div className="space-y-2 border-t border-slate-800 pt-3">
+  <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎤 Modo Karaoke / Hormozi</p>
+  <div className="grid grid-cols-2 gap-1.5">
+    {([
+      { id: 'static', label: '📝 Estático' },
+      { id: 'karaoke-color', label: '🎤 Karaoke Color' },
+      { id: 'karaoke-box', label: '📦 Karaoke Caja' },
+      { id: 'single-word', label: '⚡ 1 Palabra' },
+    ] as { id: SubtitleStyle; label: string }[]).map((st) => {
+      const cur = selectedText.subStyle || 'static';
+      return (
+        <button key={st.id} onClick={() => updateTextOverlay(selectedText.id, { subStyle: st.id, highlightColor: selectedText.highlightColor || '#facc15' })}
+          className={cx('rounded-lg border px-2 py-1.5 text-[11px] font-bold transition', cur === st.id ? 'border-fuchsia-400 bg-fuchsia-500/20 text-fuchsia-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
+          {st.label}
+        </button>
+      );
+    })}
+  </div>
+  {(selectedText.subStyle && selectedText.subStyle !== 'static') && (
+    <div>
+      <label className="mb-1 block select-none text-xs text-slate-400">Color de palabra activa (Karaoke)</label>
+      <div className="flex items-center gap-1.5">
+        <input type="color" value={selectedText.highlightColor || '#facc15'} onChange={(e) => updateTextOverlay(selectedText.id, { highlightColor: e.target.value })} className="h-8 w-14 cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-0.5" />
+        {['#facc15', '#22d3ee', '#f43f5e', '#4ade80', '#a855f7'].map((preset) => (
+          <button key={preset} type="button" onClick={() => updateTextOverlay(selectedText.id, { highlightColor: preset })}
+            className="h-6 w-6 rounded-full border border-slate-600 transition-transform hover:scale-110" style={{ backgroundColor: preset }} title={preset} />
+        ))}
+      </div>
+    </div>
+  )}
+  {selectedText.kind === 'subtitulo' && (
+    <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-1.5 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20">
+      📑 Aplicar estilo a todos los subtítulos
+    </button>
+  )}
+</div>
 </>)}
 {propsTab === 'estilo' && selectedVo && (<>
 <p className="text-[11px] font-semibold text-amber-200">Marco (efecto de forma)</p>
-<div className="grid grid-cols-3 gap-1.5">
+<div className="grid grid-cols-3 gap-1">
 {(['none', 'round', 'circle'] as OverlayShape[]).map((sh) => (
 <button key={sh} onClick={() => updateVideoOverlay(selectedVo.id, { shape: sh })}
-className={cx('rounded-lg border px-2 py-1.5 text-[11px] font-bold transition', selectedVo.shape === sh ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
+className={cx('truncate rounded-lg border px-1.5 py-1.5 text-center text-[10px] font-bold transition', selectedVo.shape === sh ? 'border-amber-400 bg-amber-500/20 text-amber-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}
+title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : 'Circular'}>
 {sh === 'none' ? 'Rect' : sh === 'round' ? 'Redondeado' : 'Círculo'}
 </button>
 ))}
+</div>
+<div className="space-y-2.5 border-t border-slate-800 pt-3">
+  <div className="flex items-center justify-between gap-2">
+    <p className="truncate text-[10px] font-black uppercase tracking-wider text-emerald-300">🟩 Chroma Key</p>
+    <button onClick={() => {
+      const nextOn = !selectedVo.chroma;
+      const autoHex = nextOn ? sampleCornerHex(voElementsRef.current.get(selectedVo.id)) : null;
+      updateVideoOverlay(selectedVo.id, {
+        chroma: nextOn,
+        chromaColor: selectedVo.chromaColor || autoHex || '#00ff00',
+        chromaSimilarity: selectedVo.chromaSimilarity ?? 0.16,
+        chromaBlend: selectedVo.chromaBlend ?? 0.05,
+      });
+    }}
+      className={cx('shrink-0 rounded-lg border px-2.5 py-1 text-[10px] font-bold transition', selectedVo.chroma ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200')}>
+      {selectedVo.chroma ? 'Activo ✓' : 'Desactivado'}
+    </button>
+  </div>
+  {selectedVo.chroma && (
+    <div className="space-y-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5">
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-semibold text-slate-300">Color de fondo:</span>
+          <button
+            type="button"
+            onClick={() => {
+              const detected = sampleCornerHex(voElementsRef.current.get(selectedVo.id));
+              if (detected) {
+                updateVideoOverlay(selectedVo.id, { chromaColor: detected });
+                showToast(`💧 Color de fondo detectado: ${detected}`, 'info');
+              } else {
+                showToast('⚠️ Ubicá el cabezal sobre el clip para detectar el color del borde', 'warn');
+              }
+            }}
+            className="rounded border border-emerald-400/50 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 transition hover:bg-emerald-500/25"
+            title="Detecta automáticamente el color de la esquina del video"
+          >
+            💧 Auto-detectar
+          </button>
+        </div>
+        <div className="grid grid-cols-4 gap-1.5">
+          {[
+            { hex: '#00ff00', label: 'Verde' },
+            { hex: '#0055ff', label: 'Azul' },
+            { hex: '#000000', label: 'Negro' },
+          ].map((p) => (
+            <button key={p.hex} type="button" onClick={() => updateVideoOverlay(selectedVo.id, { chromaColor: p.hex })}
+              className={cx('truncate rounded-md border py-1 text-center text-[10px] font-bold transition', (selectedVo.chromaColor || '#00ff00').toLowerCase() === p.hex ? 'border-emerald-300 bg-emerald-500/25 text-emerald-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500')}>
+              {p.label}
+            </button>
+          ))}
+          <label className="flex cursor-pointer items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-0.5 transition hover:border-emerald-400" title="Elegir color libre">
+            <input type="color" value={selectedVo.chromaColor || '#00ff00'} onChange={(e) => updateVideoOverlay(selectedVo.id, { chromaColor: e.target.value })}
+              className="h-5 w-full cursor-pointer border-0 bg-transparent p-0" />
+          </label>
+        </div>
+      </div>
+      <label className="block select-none text-xs text-slate-400">
+        Tolerancia (Similitud): <span className="font-mono text-emerald-300">{Math.round((selectedVo.chromaSimilarity ?? 0.18) * 100)}%</span>
+        <input type="range" min={0.02} max={0.5} step={0.01} value={selectedVo.chromaSimilarity ?? 0.18}
+          onChange={(e) => updateVideoOverlay(selectedVo.id, { chromaSimilarity: Number(e.target.value) })}
+          className="mt-1 w-full accent-emerald-400" />
+      </label>
+      <label className="block select-none text-xs text-slate-400">
+        Suavizado de bordes: <span className="font-mono text-emerald-300">{Math.round((selectedVo.chromaBlend ?? 0.06) * 100)}%</span>
+        <input type="range" min={0} max={0.3} step={0.01} value={selectedVo.chromaBlend ?? 0.06}
+          onChange={(e) => updateVideoOverlay(selectedVo.id, { chromaBlend: Number(e.target.value) })}
+          className="mt-1 w-full accent-emerald-400" />
+      </label>
+      <p className="text-[10px] leading-relaxed text-slate-500">Elimina el fondo en el preview y aplica el filtro nativo chromakey de FFmpeg al exportar.</p>
+    </div>
+  )}
 </div>
 </>)}
 {propsTab === 'animacion' && selectedClip && (<>
@@ -4391,14 +4972,74 @@ className={cx('rounded-lg border px-2 py-1.5 text-[11px] font-bold transition', 
 {propsTab === 'animacion' && selectedText && (<>
 <label className="block select-none text-xs text-slate-400">Fade in: {selectedText.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeIn} onChange={(e) => updateTextOverlay(selectedText.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out: {selectedText.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeOut} onChange={(e) => updateTextOverlay(selectedText.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+<div data-anim-inout="text" className="space-y-2 border-t border-slate-800 pt-3">
+  <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎬 Movimiento · entrada / salida</p>
+  <label className="block text-xs font-semibold text-slate-300">Animación de entrada
+    <select value={selectedText.animIn || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+      {(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+    </select>
+  </label>
+  {selectedText.animIn && selectedText.animIn !== 'none' && (
+    <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedText.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animInDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+  )}
+  <label className="block text-xs font-semibold text-slate-300">Animación de salida
+    <select value={selectedText.animOut || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+      {(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+    </select>
+  </label>
+  {selectedText.animOut && selectedText.animOut !== 'none' && (
+    <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedText.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animOutDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
+  )}
+  <p className="text-[10px] leading-relaxed text-slate-500">Mismo movimiento en el preview y en el export. Los slides cruzan el canvas; el zoom escala el elemento.</p>
+</div>
 </>)}
 {propsTab === 'animacion' && selectedImage && (<>
 <label className="block select-none text-xs text-slate-400">Fade in: {selectedImage.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeIn} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out: {selectedImage.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeOut} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+<div data-anim-inout="image" className="space-y-2 border-t border-slate-800 pt-3">
+  <p className="text-[10px] font-black uppercase tracking-wider text-pink-300">🎬 Movimiento · entrada / salida</p>
+  <label className="block text-xs font-semibold text-slate-300">Animación de entrada
+    <select value={selectedImage.animIn || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
+      {(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+    </select>
+  </label>
+  {selectedImage.animIn && selectedImage.animIn !== 'none' && (
+    <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedImage.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animInDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+  )}
+  <label className="block text-xs font-semibold text-slate-300">Animación de salida
+    <select value={selectedImage.animOut || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
+      {(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+    </select>
+  </label>
+  {selectedImage.animOut && selectedImage.animOut !== 'none' && (
+    <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedImage.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animOutDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
+  )}
+  <p className="text-[10px] leading-relaxed text-slate-500">Mismo movimiento en el preview y en el export. Los slides cruzan el canvas; el zoom escala el elemento.</p>
+</div>
 </>)}
 {propsTab === 'animacion' && selectedVo && (<>
 <label className="block select-none text-xs text-slate-400">Fade in (opacidad): {selectedVo.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeIn} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out (opacidad): {selectedVo.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeOut} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+<div data-anim-inout="vo" className="space-y-2 border-t border-slate-800 pt-3">
+  <p className="text-[10px] font-black uppercase tracking-wider text-amber-300">🎬 Movimiento · entrada / salida</p>
+  <label className="block text-xs font-semibold text-slate-300">Animación de entrada
+    <select value={selectedVo.animIn || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+      {(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+    </select>
+  </label>
+  {selectedVo.animIn && selectedVo.animIn !== 'none' && (
+    <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedVo.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animInDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+  )}
+  <label className="block text-xs font-semibold text-slate-300">Animación de salida
+    <select value={selectedVo.animOut || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+      {(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+    </select>
+  </label>
+  {selectedVo.animOut && selectedVo.animOut !== 'none' && (
+    <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedVo.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animOutDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
+  )}
+  <p className="text-[10px] leading-relaxed text-slate-500">Mismo movimiento en el preview y en el export. Los slides cruzan el canvas; el zoom escala el elemento.</p>
+</div>
 </>)}
 {propsTab === 'animacion' && selectedAudio && (<>
 <label className="block select-none text-xs text-slate-400">Fade in: {selectedAudio.fadeIn.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeIn} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
@@ -4457,6 +5098,12 @@ Recordar mi elección
 <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, contorno, fades y posición de este subtítulo a todos los de la pista SUB">📑 Aplicar cambio a todos los subtítulos</button>
 <p className="text-[11px] leading-relaxed text-slate-500">Unifica el look de toda la pista SUB con un clic.</p>
 </>)}
+{propsTab === 'herramientas' && (
+<div className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-2">
+<p className="text-[10px] font-black uppercase tracking-wider text-slate-400">🧰 Herramientas globales</p>
+<button onClick={() => setCommentStudioOpen(true)} className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Creá comentarios estilo TikTok/Instagram/YouTube/Twitter y agregalos como imagen">💬 Generador de comentarios</button>
+</div>
+)}
 {propsTab === 'herramientas' && selectedClip && (<>
 <button onClick={() => cycleClipAudio(selectedClip)} disabled={!selectedClip.hasAudio && clipAudioMode(selectedClip) === 'integrated'} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40', clipAudioMode(selectedClip) === 'linked' ? 'border border-green-400/40 bg-green-500/15 text-green-300 hover:bg-green-500/25' : clipAudioMode(selectedClip) === 'released' ? 'border border-amber-400/40 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')} title="Cambiar dónde vive el audio de este clip">
 {clipAudioMode(selectedClip) === 'linked' ? '🔗 Audio vinculado a la pista · liberar' : clipAudioMode(selectedClip) === 'released' ? '🔓 Audio liberado · re-vincular' : clipAudioMode(selectedClip) === 'muted' ? '🔇 Clip muteado · devolver audio al video' : '🎵 Audio en el video · enviar a la pista'}
@@ -4491,7 +5138,7 @@ Recordar mi elección
       </div>
       
             {/* ===== TARJETA DE HERRAMIENTAS MÓVIL (3 grupos funcionales) ===== */}
-      <div className="flex shrink-0 gap-1.5 lg:hidden [@media(orientation:landscape)_and_(max-width:1023px)]:hidden">
+      <div className={cx('shrink-0 gap-1.5 lg:hidden [@media(orientation:landscape)_and_(max-width:1023px)]:hidden', propsOpen ? 'hidden' : 'flex')}>
         <div className="flex flex-[3] rounded-xl border border-slate-800 bg-slate-900/60 p-1">
           <button onClick={cycleRatio} className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg py-1.5 text-[9px] font-semibold text-slate-300 hover:bg-slate-800">
             <span className="flex h-5 w-full items-center justify-center"><span className="rounded border border-slate-600 px-1.5 font-mono text-[9px] leading-none">{exportSettings.ratio}</span></span>
@@ -4532,7 +5179,7 @@ Recordar mi elección
         </div>
       </div>
       {/* ===== TIMELINE CON ZOOM ===== */}
-      <div className="relative flex min-h-[110px] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 [@media(orientation:landscape)_and_(max-width:1023px)]:min-h-[70px] lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0" style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
+      <div className={cx('relative min-h-[110px] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 [@media(orientation:landscape)_and_(max-width:1023px)]:min-h-[70px] lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0', propsOpen ? 'hidden lg:flex [@media(orientation:landscape)_and_(max-width:1023px)]:flex' : 'flex')} style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
                 <div className="absolute right-1 top-1 z-50 flex items-center gap-0.5 rounded-md border border-slate-700 bg-slate-950/95 p-0.5 shadow-lg shadow-black/40 backdrop-blur lg:right-3 lg:top-3 lg:gap-1 lg:rounded-lg lg:p-1">
           <button onClick={() => zoomBy(1 / 1.25)} className="rounded px-1.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-800 lg:px-2 lg:py-0.5" title="Alejar">−</button>
           <span className="w-8 text-center font-mono text-[9px] text-cyan-300 lg:w-12 lg:text-[10px]">{Math.round((pps / DEFAULT_PPS) * 100)}%</span>
@@ -4554,19 +5201,29 @@ Recordar mi elección
 
 {laneList('subtitle').map((lane) => {
   const items = subtitleOverlays.filter((txt) => (txt.laneId || 'subtitle-1') === lane.id);
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`subtitle:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-fuchsia-500/5'} lg:h-9`}>
+  const dp = dropPreview?.laneKey === `subtitle:${lane.id}` ? dropPreview : null;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`subtitle:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-fuchsia-400/80 bg-fuchsia-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-fuchsia-500/5'} lg:h-9`}>
     {items.map(renderTextBlock)}{items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Subtítulos · soltá acá o generá subtítulos</div>}
   </div></div></React.Fragment>;
 })}
 {laneList('image').map((lane) => {
   const items = imageOverlays.filter((img) => (img.laneId || 'image-1') === lane.id);
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`image:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(2.25rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'} lg:h-9`}>
+  const dp = dropPreview?.laneKey === `image:${lane.id}` ? dropPreview : null;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`image:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(2.25rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-pink-400/80 bg-pink-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'} lg:h-9`}>
     {items.map((img) => {
       const isSelected = isEventSelected(img.id); const width = (img.end - img.start) * pps; const left = img.start * pps;
-      return <div key={img.id} onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'border-pink-400/60 bg-pink-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover">
-        <p className="relative z-10 truncate text-[10px] font-semibold text-pink-200 drop-shadow">🖼️ {img.name}</p>
-        <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
-        <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
+      const isDraggingThis = dropPreview !== null && isSelected;
+      return <div key={img.id} data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-pink-300 bg-pink-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'z-10 cursor-grab border-pink-400/60 bg-pink-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
+        <div className="relative z-10 flex h-full items-center justify-between gap-1">
+          <p className="truncate text-[10px] font-semibold text-pink-100 drop-shadow">🖼️ {img.name}</p>
+          {isDraggingThis && (
+            <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
+              {dropPreview?.snapped ? '🧲 ' : ''}{formatTime(img.start)}
+            </span>
+          )}
+        </div>
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-2 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-2 cursor-ew-resize touch-none bg-pink-400/50 hover:bg-pink-400" />
       </div>;
     })}
     {items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de imagen vacía</div>}
@@ -4574,19 +5231,29 @@ Recordar mi elección
 })}
 {laneList('text').map((lane) => {
   const items = plainTextOverlays.filter((txt) => (txt.laneId || 'text-1') === lane.id);
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`text:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'} lg:h-9`}>
+  const dp = dropPreview?.laneKey === `text:${lane.id}` ? dropPreview : null;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`text:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-fuchsia-400/80 bg-fuchsia-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'} lg:h-9`}>
     {items.map(renderTextBlock)}{items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de texto vacía · hacé clic en + Texto</div>}
   </div></div></React.Fragment>;
 })}
 {laneList('video').map((lane) => {
   const items = videoOverlays.filter((vo) => (vo.laneId || 'video-1') === lane.id);
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`video:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'} lg:h-9`}>
+  const dp = dropPreview?.laneKey === `video:${lane.id}` ? dropPreview : null;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`video:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-amber-400/80 bg-amber-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'} lg:h-9`}>
     {items.map((vo) => {
       const isSelected = isEventSelected(vo.id); const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
-      return <div key={vo.id} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 cursor-grab select-none touch-pan-y overflow-hidden rounded-md border px-2 ${isSelected ? 'border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'border-amber-400/60 bg-amber-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover">
-        <p className="relative z-10 truncate text-[10px] font-semibold text-amber-200 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
-        <div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
-        <div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
+      const isDraggingThis = dropPreview !== null && isSelected;
+      return <div key={vo.id} data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-amber-300 bg-amber-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'z-10 cursor-grab border-amber-400/60 bg-amber-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
+        <div className="relative z-10 flex h-full items-center justify-between gap-1">
+          <p className="truncate text-[10px] font-semibold text-amber-100 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
+          {isDraggingThis && (
+            <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
+              {dropPreview?.snapped ? '🧲 ' : ''}{formatTime(vo.start)}
+            </span>
+          )}
+        </div>
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-2 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
+        <div onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-2 cursor-ew-resize touch-none bg-amber-400/50 hover:bg-amber-400" />
       </div>;
     })}
     {items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de video superpuesto vacía</div>}
@@ -4651,12 +5318,14 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
             </div>
             {laneList('audio').map((lane) => {
               const items = audioTracks.filter((track) => (track.laneId || 'audio-1') === lane.id);
-              return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[52px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`audio:${lane.id}`} className={`relative my-auto min-h-[calc(2.5rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-slate-700/60 lg:min-h-12 ${lane.muted ? 'bg-slate-900/30 opacity-50' : 'bg-slate-800/20'}`} style={{ width: timelineContentWidth }}>
+              const dp = dropPreview?.laneKey === `audio:${lane.id}` ? dropPreview : null;
+              return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[52px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`audio:${lane.id}`} className={`relative my-auto min-h-[calc(2.5rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors lg:min-h-12 ${dp ? 'border-green-400/80 bg-green-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'}`} style={{ width: timelineContentWidth }}>
                 {items.map((track) => {
                   const isSelected = isEventSelected(track.id); const g = trackGeom(track); const linked = !!linkedInfo(track);
                   const width = g.duration * pps; const left = g.start * pps;
+                  const isDraggingThis = dropPreview !== null && isSelected;
                   return <div key={track.id} className="absolute inset-0" style={{ minHeight: 48 }}>
-                    <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width, top: 3, bottom: 3 }} className={`absolute select-none touch-pan-y overflow-hidden rounded-md border px-2 ${linked ? 'cursor-default border-green-400/40 bg-green-500/5' : isSelected ? 'cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
+                    <div data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width, top: 3, bottom: 3 }} className={`absolute select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-green-300 bg-green-500/30 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : linked ? 'z-10 cursor-grab border-green-400/40 bg-green-500/5' : isSelected ? 'z-20 cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'z-10 cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
                       <WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
                       {track.sourceVideoId && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>}
                       <p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
