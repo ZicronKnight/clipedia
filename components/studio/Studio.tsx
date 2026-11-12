@@ -72,7 +72,7 @@ type AudioTrack = {
 
 type TimelineLaneKind = 'audio' | 'image' | 'video' | 'text' | 'subtitle';
 type TimelineLane = { id: string; kind: TimelineLaneKind; name: string; muted: boolean };
-const TIMELINE_GUTTER_WIDTH = 78;
+const TIMELINE_GUTTER_WIDTH = 52;
 const DEFAULT_TIMELINE_LANES: TimelineLane[] = [
   { id: 'subtitle-1', kind: 'subtitle', name: 'SUB1', muted: false },
   { id: 'text-1', kind: 'text', name: 'T1', muted: false },
@@ -667,43 +667,141 @@ else out.push({ s, e });
 }
 return out.filter((x) => x.e - x.s >= MIN_LEN);
 }
-// Método rápido: RMS por ventana de 20ms con umbral adaptativo al piso de ruido.
-function energySpeechIntervals(data: Float32Array, sr: number, mergeGap: number, minSpeech: number, padIn: number, padOut: number): { s: number; e: number }[] {
-const hopSec = 0.02;
-const hop = Math.max(1, Math.round(sr * hopSec));
-const n = Math.floor(data.length / hop);
-const rms = new Float32Array(n);
-for (let i = 0; i < n; i++) {
-let sum = 0;
-const base = i * hop;
-const end = Math.min(data.length, base + hop);
-for (let j = base; j < end; j++) { const v = data[j] || 0; sum += v * v; }
-rms[i] = Math.sqrt(sum / Math.max(1, end - base));
+// Cede el hilo principal al navegador durante un frame para que Chrome nunca muestre "La página no responde"
+function yieldToMain(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window !== 'undefined' && ' scheduler' in window && (window as any).scheduler?.yield) {
+      (window as any).scheduler.yield().then(resolve);
+    } else {
+      window.setTimeout(resolve, 16);
+    }
+  });
 }
-const sortedRms = Array.from(rms).sort((a, b) => a - b);
-const floor = sortedRms[Math.floor(sortedRms.length * 0.25)] || 0;
-const thrHigh = Math.max(0.006, floor * 2.5);   // puerta de entrada: "acá hay habla"
-const thrLow = thrHigh * 0.45;                  // puerta de salida: onsets suaves pasan por acá
-const hang = Math.max(2, Math.round(0.3 / hopSec));   // aguanta dips de 300ms DENTRO de una frase
-const maxBack = Math.max(2, Math.round(0.5 / hopSec)); // retroceso máx. para cazar el onset
-const raw: { s: number; e: number }[] = [];
-let inSpeech = false; let start = 0; let lastLow = 0;
-const pushCore = (a: number, b: number) => {
-let s2 = a;
-while (s2 > 0 && a - s2 < maxBack && rms[s2 - 1] >= thrLow * 0.7) s2--; // caza la respiración/consonante previa
-raw.push({ s: s2 * hopSec, e: (b + 1) * hopSec });
-};
-for (let i = 0; i < n; i++) {
-const v = rms[i];
-if (!inSpeech) {
-if (v >= thrHigh) { inSpeech = true; start = i; lastLow = i; }
-} else {
-if (v >= thrLow) lastLow = i;
-else if (i - lastLow >= hang) { pushCore(start, lastLow); inSpeech = false; }
+
+function extractPcmFloat32(audio: any): { pcm: Float32Array | null; sr: number } {
+  const pcm: Float32Array | null =
+    audio instanceof Float32Array ? audio :
+    typeof audio?.getChannelData === 'function' ? (audio.getChannelData(0) as Float32Array) :
+    audio?.channelData instanceof Float32Array ? audio.channelData :
+    audio?.samples instanceof Float32Array ? audio.samples :
+    audio?.pcm instanceof Float32Array ? audio.pcm :
+    audio?.data instanceof Float32Array ? audio.data : null;
+  const sr = typeof audio?.sampleRate === 'number' && audio.sampleRate > 0 ? audio.sampleRate : 16000;
+  return { pcm, sr };
 }
+
+// Transcribe en ventanas de 24s cediendo el hilo entre cada tramo para mantener la UI 100% viva y con progreso real
+async function transcribeSegmentChunked(opts: {
+  modelId: AsrModelId;
+  hf: string;
+  language: AsrLanguage;
+  audio: any;
+  onModelProgress?: (pct: number) => void;
+  onTranscribeProgress?: (pct: number) => void;
+}): Promise<any[]> {
+  const { pcm, sr } = extractPcmFloat32(opts.audio);
+  await yieldToMain();
+  // Si el audio no es un Float32Array directo o dura menos de 28s, lo pasamos directo tras ceder un frame
+  if (!pcm || pcm.length <= sr * 28) {
+    opts.onTranscribeProgress?.(15);
+    await yieldToMain();
+    const res = await transcribeSegment({
+      modelId: opts.modelId,
+      hf: opts.hf,
+      language: opts.language,
+      audio: opts.audio,
+      onModelProgress: opts.onModelProgress,
+    });
+    opts.onTranscribeProgress?.(100);
+    await yieldToMain();
+    return res || [];
+  }
+
+  // En clips medianos/largos: procesamos en ventanas de 24s con 0.4s de solape suave y respiro de UI entre cada ventana
+  const windowSec = 24;
+  const totalSec = pcm.length / sr;
+  const allWords: any[] = [];
+  let cursorSec = 0;
+  let chunkIndex = 0;
+  const totalChunks = Math.max(1, Math.ceil(totalSec / windowSec));
+
+  while (cursorSec < totalSec) {
+    const endSec = Math.min(totalSec, cursorSec + windowSec);
+    const startSample = Math.floor(cursorSec * sr);
+    const endSample = Math.min(pcm.length, Math.ceil(endSec * sr));
+    const slice = pcm.subarray(startSample, endSample);
+
+    await yieldToMain();
+    const chunkWords = await transcribeSegment({
+      modelId: opts.modelId,
+      hf: opts.hf,
+      language: opts.language,
+      audio: slice,
+      onModelProgress: chunkIndex === 0 ? opts.onModelProgress : undefined,
+    });
+    await yieldToMain();
+
+    if (Array.isArray(chunkWords)) {
+      for (const w of chunkWords) {
+        const ws = Number(w.start ?? w.t0 ?? w.from ?? 0) + cursorSec;
+        const we = Number(w.end ?? w.t1 ?? w.to ?? ws + 0.25) + cursorSec;
+        allWords.push({ ...w, start: ws, end: we, t0: ws, t1: we, from: ws, to: we });
+      }
+    }
+
+    chunkIndex++;
+    opts.onTranscribeProgress?.(Math.min(99, Math.round((endSec / totalSec) * 100)));
+    cursorSec = endSec;
+  }
+
+  return allWords;
 }
-if (inSpeech) pushCore(start, lastLow);
-return mergeSpeechIntervals(raw, mergeGap, minSpeech, padIn, padOut, 0, data.length / sr);
+
+// Método rápido asíncrono: RMS por ventana de 20ms cediendo el hilo cada 2500 ventanas para no bloquear nunca la pestaña
+async function energySpeechIntervalsAsync(data: Float32Array, sr: number, mergeGap: number, minSpeech: number, padIn: number, padOut: number, onProg?: (pct: number) => void): Promise<{ s: number; e: number }[]> {
+  const hopSec = 0.02;
+  const hop = Math.max(1, Math.round(sr * hopSec));
+  const n = Math.floor(data.length / hop);
+  const rms = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    const base = i * hop;
+    const end = Math.min(data.length, base + hop);
+    for (let j = base; j < end; j++) { const v = data[j] || 0; sum += v * v; }
+    rms[i] = Math.sqrt(sum / Math.max(1, end - base));
+    if (i > 0 && i % 2500 === 0) {
+      onProg?.(Math.min(75, Math.round((i / n) * 70) + 10));
+      await yieldToMain();
+    }
+  }
+  await yieldToMain();
+  const sortedRms = Array.from(rms).sort((a, b) => a - b);
+  await yieldToMain();
+  const floor = sortedRms[Math.floor(sortedRms.length * 0.25)] || 0;
+  const thrHigh = Math.max(0.006, floor * 2.5);
+  const thrLow = thrHigh * 0.45;
+  const hang = Math.max(2, Math.round(0.3 / hopSec));
+  const maxBack = Math.max(2, Math.round(0.5 / hopSec));
+  const raw: { s: number; e: number }[] = [];
+  let inSpeech = false; let start = 0; let lastLow = 0;
+  const pushCore = (a: number, b: number) => {
+    let s2 = a;
+    while (s2 > 0 && a - s2 < maxBack && rms[s2 - 1] >= thrLow * 0.7) s2--;
+    raw.push({ s: s2 * hopSec, e: (b + 1) * hopSec });
+  };
+  for (let i = 0; i < n; i++) {
+    const v = rms[i];
+    if (!inSpeech) {
+      if (v >= thrHigh) { inSpeech = true; start = i; lastLow = i; }
+    } else {
+      if (v >= thrLow) lastLow = i;
+      else if (i - lastLow >= hang) { pushCore(start, lastLow); inSpeech = false; }
+    }
+  }
+  if (inSpeech) pushCore(start, lastLow);
+  onProg?.(95);
+  await yieldToMain();
+  return mergeSpeechIntervals(raw, mergeGap, minSpeech, padIn, padOut, 0, data.length / sr);
 }
 
 // ===== FILMSTRIP: miniaturas de clips cacheadas por asset =====
@@ -1022,6 +1120,17 @@ export default function Studio() {
   const [videoOverlays, setVideoOverlays] = useState<VideoOverlay[]>([]);
   const [timelineLanes, setTimelineLanes] = useState<TimelineLane[]>(DEFAULT_TIMELINE_LANES);
   const [activeLaneIds, setActiveLaneIds] = useState<Record<TimelineLaneKind, string>>({ audio: 'audio-1', image: 'image-1', video: 'video-1', text: 'text-1', subtitle: 'subtitle-1' });
+  const [focusedLaneId, setFocusedLaneId] = useState<string>('main');
+  const [openLaneMenuId, setOpenLaneMenuId] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    icon: string;
+    title: string;
+    message: string;
+    detail?: string;
+    confirmLabel: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
   const [selectedEventIds, setSelectedEventIds] = useState<string[]>([]);
   const [selectedVoId, setSelectedVoId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -1124,6 +1233,32 @@ const ghostWRef = useRef(120);
 const ghostRef = useRef<HTMLDivElement | null>(null);
 const [ghost, setGhost] = useState<{ x: number; y: number; w: number; label: string; cls: string } | null>(null);
 const [dropPreview, setDropPreview] = useState<{ laneKey: string; start: number; end: number; snapped: boolean } | null>(null);
+const [clipboardItem, setClipboardItem] = useState<
+  | { kind: 'clip'; data: Clip }
+  | { kind: 'image'; data: ImageOverlay }
+  | { kind: 'text'; data: TextOverlay }
+  | { kind: 'video'; data: VideoOverlay }
+  | { kind: 'audio'; data: AudioTrack }
+  | null
+>(null);
+const [ctxMenu, setCtxMenu] = useState<{
+  x: number;
+  y: number;
+  target: 'item' | 'lane';
+  itemType?: 'clip' | 'image' | 'text' | 'video' | 'audio';
+  itemId?: string;
+  laneKind?: TimelineLaneKind | 'main';
+  laneId?: string;
+  timeAtCursor: number;
+} | null>(null);
+const longPressTimerRef = useRef<number | null>(null);
+const longPressStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+function clearLongPress() {
+  if (longPressTimerRef.current) {
+    window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  }
+}
   const panDragRef = useRef<PanDrag | null>(null);
   const historyPast = useRef<string[]>([]);
   const historyFuture = useRef<string[]>([]);
@@ -2083,8 +2218,12 @@ useEffect(() => { setPropsTab('inspector'); }, [selectedId, selectedImageId, sel
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement;
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
+      if (e.key === 'Escape') { setCtxMenu(null); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { e.preventDefault(); copySelected(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { e.preventDefault(); pasteClipboard(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateItem(); return; }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedAudioId) { e.preventDefault(); setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudioId)); setSelectedAudioId(null); }
         else if (selectedImageId) { e.preventDefault(); setImageOverlays((prev) => prev.filter((a) => a.id !== selectedImageId)); setSelectedImageId(null); }
@@ -2586,6 +2725,30 @@ function updateVideoOverlay(id: string, patch: Partial<VideoOverlay>) { setVideo
     setSelectedId(type === 'clip' ? id : null); setSelectedImageId(type === 'image' ? id : null);
     setSelectedTextId(type === 'text' ? id : null); setSelectedAudioId(type === 'audio' ? id : null);
     setSelectedVoId(type === 'video' ? id : null);
+    if (type === 'clip') {
+      setFocusedLaneId('main');
+    } else if (type === 'image') {
+      const item = imageOverlaysRef.current.find((x) => x.id === id);
+      const lid = item?.laneId || 'image-1';
+      setFocusedLaneId(lid);
+      setActiveLaneIds((prev) => ({ ...prev, image: lid }));
+    } else if (type === 'text') {
+      const item = textOverlaysRef.current.find((x) => x.id === id);
+      const fam: TimelineLaneKind = item?.kind === 'subtitulo' ? 'subtitle' : 'text';
+      const lid = item?.laneId || (fam === 'subtitle' ? 'subtitle-1' : 'text-1');
+      setFocusedLaneId(lid);
+      setActiveLaneIds((prev) => ({ ...prev, [fam]: lid }));
+    } else if (type === 'video') {
+      const item = videoOverlaysRef.current.find((x) => x.id === id);
+      const lid = item?.laneId || 'video-1';
+      setFocusedLaneId(lid);
+      setActiveLaneIds((prev) => ({ ...prev, video: lid }));
+    } else if (type === 'audio') {
+      const item = audioTracksRef.current.find((x) => x.id === id);
+      const lid = item?.laneId || 'audio-1';
+      setFocusedLaneId(lid);
+      setActiveLaneIds((prev) => ({ ...prev, audio: lid }));
+    }
   }
   function isEventSelected(id: string) { return selectedEventIds.includes(id); }
   function isLaneMuted(laneId?: string) { return !!timelineLanes.find((lane) => lane.id === laneId)?.muted; }
@@ -2609,6 +2772,7 @@ return FAMILY_RANK[family] * 100000 - lanePosOf(family, laneId) * 1000 + arrayId
     const lane: TimelineLane = { id: uid(), kind, name: `${prefix}${nextNumber}`, muted: false };
     setTimelineLanes((prev) => [...prev, lane]);
     setActiveLaneIds((prev) => ({ ...prev, [kind]: lane.id }));
+    setFocusedLaneId(lane.id);
     showToast(`➕ Pista ${lane.name} creada`, 'info');
   }
   function moveTimelineLane(laneId: string, direction: -1 | 1) {
@@ -2627,59 +2791,337 @@ return FAMILY_RANK[family] * 100000 - lanePosOf(family, laneId) * 1000 + arrayId
   function toggleTimelineLaneMute(laneId: string) {
     setTimelineLanes((prev) => prev.map((lane) => lane.id === laneId ? { ...lane, muted: !lane.muted } : lane));
   }
+  function duplicateTimelineLane(laneId: string) {
+    const lane = timelineLanes.find((x) => x.id === laneId);
+    if (!lane) return;
+    const newLaneId = uid();
+    const prefix = lane.kind === 'subtitle' ? 'SUB' : lane.kind === 'text' ? 'T' : lane.kind === 'audio' ? 'A' : lane.kind === 'image' ? 'I' : 'V';
+
+    // Insertar la pista clonada justo debajo de la original y renumerar las de su misma familia
+    setTimelineLanes((prev) => {
+      const idx = prev.findIndex((x) => x.id === laneId);
+      const cloneLane: TimelineLane = { id: newLaneId, kind: lane.kind, name: lane.name, muted: lane.muted };
+      const next = [...prev];
+      next.splice(idx + 1, 0, cloneLane);
+      let n = 0;
+      return next.map((x) => (x.kind === lane.kind ? { ...x, name: `${prefix}${lane.kind === 'video' ? ++n + 1 : ++n}` } : x));
+    });
+
+    // Duplicar todos los clips que viven en esa pista
+    if (lane.kind === 'image') {
+      const toClone = imageOverlaysRef.current.filter((x) => (x.laneId || 'image-1') === laneId);
+      const clones = toClone.map((img) => ({ ...img, id: uid(), laneId: newLaneId }));
+      if (clones.length) setImageOverlays((prev) => [...prev, ...clones]);
+    } else if (lane.kind === 'video') {
+      const toClone = videoOverlaysRef.current.filter((x) => (x.laneId || 'video-1') === laneId);
+      const clones = toClone.map((vo) => ({ ...vo, id: uid(), laneId: newLaneId }));
+      if (clones.length) setVideoOverlays((prev) => [...prev, ...clones]);
+    } else if (lane.kind === 'text' || lane.kind === 'subtitle') {
+      const fallback = lane.kind === 'subtitle' ? 'subtitle-1' : 'text-1';
+      const toClone = textOverlaysRef.current.filter(
+        (x) => (x.kind === 'subtitulo' ? 'subtitle' : 'text') === lane.kind && (x.laneId || fallback) === laneId
+      );
+      const clones = toClone.map((txt) => ({
+        ...txt,
+        id: uid(),
+        laneId: newLaneId,
+        words: txt.words ? txt.words.map((w) => ({ ...w })) : undefined,
+      }));
+      if (clones.length) setTextOverlays((prev) => [...prev, ...clones]);
+    } else if (lane.kind === 'audio') {
+      const toClone = audioTracksRef.current.filter((x) => (x.laneId || 'audio-1') === laneId);
+      const clones = toClone.map((aud) => {
+        const g = trackGeom(aud);
+        const newAudId = uid();
+        const rawData = audioDataMap.get(aud.id) || (aud.sourceVideoId ? audioDataMap.get(aud.sourceVideoId) : undefined);
+        if (rawData) audioDataMap.set(newAudId, rawData);
+        return {
+          ...aud,
+          id: newAudId,
+          start: g.start,
+          duration: g.duration,
+          offset: g.offset,
+          sourceVideoId: undefined,
+          released: true,
+          laneId: newLaneId,
+        };
+      });
+      if (clones.length) setAudioTracks((prev) => [...prev, ...clones]);
+    }
+
+    setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: newLaneId }));
+    setFocusedLaneId(newLaneId);
+    setOpenLaneMenuId(null);
+    showToast(`📑 Pista ${lane.name} duplicada con todo su contenido`, 'info');
+  }
+
   function renderLaneControls(lane: TimelineLane) {
     const siblings = laneList(lane.kind); const index = siblings.findIndex((x) => x.id === lane.id);
     const count = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === lane.id).length : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === lane.id).length : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === lane.id).length : textOverlays.filter((x) => x.laneId === lane.id).length;
-    const active = activeLaneIds[lane.kind] === lane.id;
+    const active = focusedLaneId === lane.id;
+    const isOpen = openLaneMenuId === lane.id;
     return (
-      <div data-lane-controls="true" className={`sticky left-0 z-20 flex min-h-[48px] w-[78px] shrink-0 flex-col justify-center gap-px rounded-l-lg border border-r border-slate-700/80 px-1 py-0.5 shadow-[4px_0_12px_rgba(2,6,23,0.28)] ${lane.muted ? 'bg-red-950/90' : active ? 'bg-[#0b2034]' : 'bg-[#091729]'}`}>
-        <button type="button" onClick={() => setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }))} className="flex h-3 min-w-0 items-center justify-center gap-1 rounded px-0.5 leading-none hover:bg-white/5" title={`Seleccionar ${lane.name} como pista destino`}>
-          <span className={`text-[11px] font-black tracking-wide ${lane.muted ? 'text-red-200' : active ? 'text-cyan-200' : 'text-slate-100'}`}>{lane.name}</span>
-          <span className="text-[8px] tabular-nums text-slate-500">{count}</span>
-          {active && <span className="h-1 w-1 rounded-full bg-cyan-400 shadow-[0_0_5px_rgba(34,211,238,.8)]" />}
+      <div
+        data-lane-controls="true"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={() => {
+          setFocusedLaneId(lane.id);
+          setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }));
+        }}
+        className={`sticky left-0 ${isOpen ? 'z-40' : 'z-30'} relative flex min-h-[48px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-l-lg border px-1 py-1 transition-all duration-150 ${
+          lane.muted
+            ? 'border-rose-500/60 bg-[#2a0e17] shadow-[6px_0_14px_rgba(2,6,23,0.85)]'
+            : active
+            ? 'border-cyan-400/90 border-l-[3px] border-l-cyan-300 bg-gradient-to-r from-[#144b6b] via-[#0e2f4f] to-[#0a2038] shadow-[0_0_16px_rgba(34,211,238,0.32),6px_0_14px_rgba(2,6,23,0.9)]'
+            : 'border-slate-800 bg-[#07111f] hover:border-slate-700 hover:bg-[#0b192c] shadow-[6px_0_14px_rgba(2,6,23,0.85)]'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setFocusedLaneId(lane.id);
+            setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }));
+          }}
+          className="flex w-full items-center justify-center gap-1 rounded py-0.5 leading-none transition"
+          title={`Seleccionar ${lane.name} como pista activa (${count} clips)`}
+        >
+          <span className={`text-[11px] font-black tracking-wide transition-colors ${
+            lane.muted
+              ? 'text-rose-300 line-through'
+              : active
+              ? 'text-white drop-shadow-[0_0_8px_rgba(34,211,238,0.9)]'
+              : 'text-slate-400'
+          }`}>
+            {lane.name}
+          </span>
+          {lane.muted ? (
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.95)]" />
+          ) : active ? (
+            <span className="h-2 w-2 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_8px_rgba(34,211,238,1)] ring-2 ring-cyan-400/40" />
+          ) : null}
         </button>
-        <div className="grid grid-cols-3 gap-0.5">
-          <button type="button" onClick={() => addTimelineLane(lane.kind)} className="flex h-[15px] items-center justify-center rounded border border-cyan-500/20 bg-cyan-500/[0.08] text-[11px] font-semibold leading-none text-cyan-300 transition hover:border-cyan-400/60 hover:bg-cyan-500/20" title={`Agregar pista ${lane.kind}`}>+</button>
-          <button type="button" onClick={() => moveTimelineLane(lane.id, -1)} disabled={index <= 0} className="flex h-[15px] items-center justify-center rounded border border-slate-700/80 bg-slate-800/65 text-[10px] leading-none text-slate-300 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:cursor-default disabled:opacity-25" title="Subir pista">↑</button>
-          <button type="button" onClick={() => moveTimelineLane(lane.id, 1)} disabled={index >= siblings.length - 1} className="flex h-[15px] items-center justify-center rounded border border-slate-700/80 bg-slate-800/65 text-[10px] leading-none text-slate-300 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:cursor-default disabled:opacity-25" title="Bajar pista">↓</button>
-        </div>
-        <div className="grid grid-cols-2 gap-0.5">
-          <button type="button" onClick={() => toggleTimelineLaneMute(lane.id)} className={`flex h-[15px] items-center justify-center rounded border transition ${lane.muted ? 'border-red-400/40 bg-red-500/20 text-red-200' : 'border-slate-700/80 bg-slate-800/65 text-slate-300 hover:border-cyan-400/40 hover:text-cyan-200'}`} title={lane.kind === 'audio' ? (lane.muted ? 'Activar sonido de la pista' : 'Silenciar pista') : (lane.muted ? 'Mostrar pista' : 'Ocultar pista')}>
-            {lane.kind === 'audio' ? (lane.muted ? '♫̸' : '♫') : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden="true"><path d="M2.5 12s3.3-6 9.5-6 9.5 6 9.5 6-3.3 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" />{lane.muted && <path d="m4 4 16 16" />}</svg>}
-          </button>
-          <button type="button" onClick={() => deleteTimelineLane(lane.id)} className="flex h-[15px] items-center justify-center rounded border border-slate-700/80 bg-slate-800/65 text-[11px] leading-none text-slate-400 transition hover:border-red-400/60 hover:bg-red-500/15 hover:text-red-300" title="Eliminar pista">×</button>
-        </div>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setFocusedLaneId(lane.id);
+            setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }));
+            setOpenLaneMenuId((prev) => (prev === lane.id ? null : lane.id));
+          }}
+          className={`flex h-6 w-8 items-center justify-center rounded-md border transition ${
+            isOpen
+              ? 'border-cyan-400 bg-cyan-500/25 text-cyan-200 shadow-[0_0_10px_rgba(34,211,238,0.3)]'
+              : 'border-slate-700/80 bg-slate-800/70 text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200'
+          }`}
+          title={`Opciones de pista ${lane.name}`}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`h-3.5 w-3.5 transition-transform duration-200 ${isOpen ? 'rotate-90 text-cyan-300' : ''}`}
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+
+        {isOpen && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              transformOrigin: 'left center',
+              animation: 'laneDrawerSlideIn 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards',
+            }}
+            className="absolute left-[54px] top-1/2 z-50 flex w-[206px] flex-col gap-1.5 rounded-xl border border-cyan-400/50 bg-slate-950/95 p-2 shadow-[0_10px_32px_rgba(0,0,0,0.9)] backdrop-blur-md"
+          >
+            {/* Cabecera del cajón */}
+            <div className="flex items-center justify-between border-b border-slate-800/90 pb-1">
+              <div className="flex items-center gap-1.5">
+                <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-black text-cyan-300">{lane.name}</span>
+                <span className="text-[10px] font-semibold text-slate-400">{count} {count === 1 ? 'clip' : 'clips'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpenLaneMenuId(null)}
+                className="flex h-5 w-5 items-center justify-center rounded-md text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-white"
+                title="Cerrar menú"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Fila 1: Visibilidad/Sonido + Duplicar pista con su contenido */}
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => toggleTimelineLaneMute(lane.id)}
+                className={`flex h-7 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-bold transition ${
+                  lane.muted
+                    ? 'border-rose-400/60 bg-rose-500/20 text-rose-200'
+                    : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200'
+                }`}
+                title={lane.kind === 'audio' ? (lane.muted ? 'Activar sonido' : 'Silenciar pista') : (lane.muted ? 'Mostrar pista' : 'Ocultar pista')}
+              >
+                {lane.kind === 'audio' ? (
+                  <>
+                    <span>{lane.muted ? '🔇' : '🔊'}</span>
+                    <span>{lane.muted ? 'Muda' : 'Sonando'}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{lane.muted ? '🙈' : '👁️'}</span>
+                    <span>{lane.muted ? 'Oculta' : 'Visible'}</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => duplicateTimelineLane(lane.id)}
+                className="flex h-7 items-center justify-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 text-[11px] font-bold text-violet-200 transition hover:border-violet-400 hover:bg-violet-500/25"
+                title={`Duplicar la pista ${lane.name} con todos sus clips`}
+              >
+                <span>📑</span>
+                <span>Duplicar</span>
+              </button>
+            </div>
+
+            {/* Fila 2: Subir + Bajar + Nueva vacía + Eliminar */}
+            <div className="grid grid-cols-4 gap-1.5">
+              <button
+                type="button"
+                onClick={() => moveTimelineLane(lane.id, -1)}
+                disabled={index <= 0}
+                className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30"
+                title="Subir pista"
+              >
+                ↑
+              </button>
+
+              <button
+                type="button"
+                onClick={() => moveTimelineLane(lane.id, 1)}
+                disabled={index >= siblings.length - 1}
+                className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30"
+                title="Bajar pista"
+              >
+                ↓
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  addTimelineLane(lane.kind);
+                  setOpenLaneMenuId(null);
+                }}
+                className="flex h-7 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/15 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/25"
+                title={`Crear nueva pista vacía de ${lane.kind}`}
+              >
+                ＋Pista
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  deleteTimelineLane(lane.id);
+                  setOpenLaneMenuId(null);
+                }}
+                className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs text-slate-400 transition hover:border-rose-500/60 hover:bg-rose-500/20 hover:text-rose-200"
+                title="Eliminar esta pista"
+              >
+                🗑️
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
+  function executeDeleteTimelineLane(lane: TimelineLane, target: TimelineLane, deleteClips: boolean) {
+    if (deleteClips) {
+      if (lane.kind === 'audio') setAudioTracks((prev) => prev.filter((x) => x.laneId !== lane.id));
+      else if (lane.kind === 'image') setImageOverlays((prev) => prev.filter((x) => x.laneId !== lane.id));
+      else if (lane.kind === 'video') setVideoOverlays((prev) => prev.filter((x) => x.laneId !== lane.id));
+      else setTextOverlays((prev) => prev.filter((x) => x.laneId !== lane.id));
+    } else {
+      if (lane.kind === 'audio') setAudioTracks((prev) => prev.map((x) => x.laneId === lane.id ? { ...x, laneId: target.id } : x));
+      else if (lane.kind === 'image') setImageOverlays((prev) => prev.map((x) => x.laneId === lane.id ? { ...x, laneId: target.id } : x));
+      else if (lane.kind === 'video') setVideoOverlays((prev) => prev.map((x) => x.laneId === lane.id ? { ...x, laneId: target.id } : x));
+      else setTextOverlays((prev) => prev.map((x) => x.laneId === lane.id ? { ...x, laneId: target.id } : x));
+    }
+    setTimelineLanes((prev) => {
+      const filtered = prev.filter((x) => x.id !== lane.id);
+      const prefix = lane.kind === 'subtitle' ? 'SUB' : lane.kind === 'text' ? 'T' : lane.kind === 'audio' ? 'A' : lane.kind === 'image' ? 'I' : 'V';
+      let n = 0;
+      return filtered.map((x) => x.kind === lane.kind ? { ...x, name: `${prefix}${lane.kind === 'video' ? ++n + 1 : ++n}` } : x);
+    });
+    setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: prev[lane.kind] === lane.id ? target.id : prev[lane.kind] }));
+    showToast(`🗑️ Pista ${lane.name} eliminada`, 'info');
+  }
+
   function deleteTimelineLane(laneId: string) {
     const lane = timelineLanes.find((x) => x.id === laneId); if (!lane) return;
     const siblings = timelineLanes.filter((x) => x.kind === lane.kind);
     if (siblings.length <= 1) { showToast('⚠️ Tiene que quedar al menos una pista de cada tipo', 'warn'); return; }
     const target = siblings.find((x) => x.id !== laneId)!;
     const items = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === laneId) : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === laneId) : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === laneId) : textOverlays.filter((x) => x.laneId === laneId);
-    if (items.length && !window.confirm(`${lane.name} contiene ${items.length} clip(s). ¿Moverlos a ${target.name} y eliminar la pista?`)) return;
-    if (lane.kind === 'audio') setAudioTracks((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
-    else if (lane.kind === 'image') setImageOverlays((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
-    else if (lane.kind === 'video') setVideoOverlays((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
-    else setTextOverlays((prev) => prev.map((x) => x.laneId === laneId ? { ...x, laneId: target.id } : x));
-    setTimelineLanes((prev) => { const filtered = prev.filter((x) => x.id !== laneId); const prefix = lane.kind === 'subtitle' ? 'SUB' : lane.kind === 'text' ? 'T' : lane.kind === 'audio' ? 'A' : lane.kind === 'image' ? 'I' : 'V'; let n = 0; return filtered.map((x) => x.kind === lane.kind ? { ...x, name: `${prefix}${lane.kind === 'video' ? ++n + 1 : ++n}` } : x); });
-    setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: prev[lane.kind] === laneId ? target.id : prev[lane.kind] }));
-    showToast(`🗑️ Pista ${lane.name} eliminada`, 'info');
+    if (items.length > 0) {
+      setConfirmDialog({
+        icon: '🗑️',
+        title: `Eliminar pista ${lane.name}`,
+        message: 'Tienes clips en esta pista, ¿estás seguro que quieres eliminarla?',
+        detail: `Contiene ${items.length} ${items.length === 1 ? 'clip' : 'clips'} que también se eliminarán de la línea de tiempo (podés deshacer con Ctrl+Z).`,
+        confirmLabel: 'Sí, eliminar pista',
+        danger: true,
+        onConfirm: () => {
+          setConfirmDialog(null);
+          executeDeleteTimelineLane(lane, target, true);
+        },
+      });
+      return;
+    }
+    executeDeleteTimelineLane(lane, target, false);
   }
   function selectAndSeek(id: string) { selectOnly(id, 'clip'); }
 
-  function newProject() {
-    if (!window.confirm('¿Empezar un proyecto nuevo? Se descarta el actual (y su autoguardado).')) return;
+  function executeNewProject() {
     applyingRef.current = true;
     setClips([]); setImageOverlays([]); setTextOverlays([]); setAudioTracks([]); setVideoOverlays([]); setTimelineLanes(DEFAULT_TIMELINE_LANES); setActiveLaneIds({ audio: 'audio-1', image: 'image-1', video: 'video-1', text: 'text-1', subtitle: 'subtitle-1' }); setSelectedEventIds([]);
-setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
+    setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
     setPlayhead(0); playheadRef.current = 0;
     historyPast.current = []; historyFuture.current = []; lastSnapshotRef.current = '';
     setHistVersion((v) => v + 1);
     clearProject().catch(() => {});
     setTimeout(() => { applyingRef.current = false; }, 80);
     showToast('🆕 Proyecto nuevo listo', 'info');
+  }
+
+  function newProject() {
+    const hasContent = clips.length > 0 || imageOverlays.length > 0 || textOverlays.length > 0 || audioTracks.length > 0 || videoOverlays.length > 0;
+    if (!hasContent) {
+      executeNewProject();
+      return;
+    }
+    setConfirmDialog({
+      icon: '🆕',
+      title: 'Empezar proyecto nuevo',
+      message: '¿Estás seguro que quieres empezar un proyecto desde cero?',
+      detail: 'Se limpiará toda la línea de tiempo actual y se reemplazará el autoguardado de tu navegador.',
+      confirmLabel: 'Sí, crear nuevo',
+      danger: true,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        executeNewProject();
+      },
+    });
   }
 
   function splitAtPlayhead() {
@@ -2752,6 +3194,310 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
           setTextOverlays((prev) => { const idx = prev.findIndex((t) => t.id === txt.id); if (idx >= 0) { const next = [...prev]; next.splice(idx, 1, partA, partB); return next; } return prev; });
         }
       }
+    }
+  }
+
+  // ===== COPIAR, PEGAR, DUPLICAR Y MENÚ CONTEXTUAL =====
+  function copySelected(explicitType?: 'clip' | 'image' | 'text' | 'video' | 'audio', explicitId?: string) {
+    const tType = explicitType || (selectedId ? 'clip' : selectedImageId ? 'image' : selectedTextId ? 'text' : selectedVoId ? 'video' : selectedAudioId ? 'audio' : null);
+    const tId = explicitId || selectedId || selectedImageId || selectedTextId || selectedVoId || selectedAudioId;
+    if (!tType || !tId) {
+      showToast('⚠️ Seleccioná primero un clip de la timeline para copiar', 'warn');
+      return;
+    }
+    if (tType === 'clip') {
+      const c = clipsRef.current.find((x) => x.id === tId);
+      if (!c) return;
+      setClipboardItem({ kind: 'clip', data: { ...c } });
+      showToast(`📋 Video "${c.name}" copiado`, 'info', 2200);
+    } else if (tType === 'image') {
+      const img = imageOverlaysRef.current.find((x) => x.id === tId);
+      if (!img) return;
+      setClipboardItem({ kind: 'image', data: { ...img } });
+      showToast(`📋 Imagen "${img.name}" copiada`, 'info', 2200);
+    } else if (tType === 'text') {
+      const txt = textOverlaysRef.current.find((x) => x.id === tId);
+      if (!txt) return;
+      setClipboardItem({ kind: 'text', data: { ...txt, words: txt.words ? txt.words.map((w) => ({ ...w })) : undefined } });
+      showToast(`📋 ${txt.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'} copiado`, 'info', 2200);
+    } else if (tType === 'video') {
+      const vo = videoOverlaysRef.current.find((x) => x.id === tId);
+      if (!vo) return;
+      setClipboardItem({ kind: 'video', data: { ...vo } });
+      showToast(`📋 Superposición "${vo.name}" copiada`, 'info', 2200);
+    } else if (tType === 'audio') {
+      const aud = audioTracksRef.current.find((x) => x.id === tId);
+      if (!aud) return;
+      const g = trackGeom(aud);
+      setClipboardItem({ kind: 'audio', data: { ...aud, start: g.start, duration: g.duration, offset: g.offset } });
+      showToast(`📋 Audio "${aud.name}" copiado`, 'info', 2200);
+    }
+    setCtxMenu(null);
+  }
+
+  function pasteClipboard(opts?: { targetTime?: number; targetLaneKind?: TimelineLaneKind | 'main'; targetLaneId?: string }) {
+    if (!clipboardItem) {
+      showToast('⚠️ El portapapeles está vacío (copiá un clip primero)', 'warn');
+      return;
+    }
+    const desiredTime = Math.max(0, opts?.targetTime ?? playheadRef.current);
+
+    if (clipboardItem.kind === 'clip') {
+      const srcClip = clipboardItem.data;
+      const newClipId = uid();
+      const cloned: Clip = { ...srcClip, id: newClipId };
+      const origBlob = clipBlobMap.get(srcClip.id);
+      if (origBlob) clipBlobMap.set(newClipId, origBlob);
+      const rawAud = audioDataMap.get(srcClip.id);
+      if (rawAud) audioDataMap.set(newClipId, rawAud);
+
+      // Insertar después del clip donde está el tiempo objetivo (o al final de V1)
+      const loc = locateVideo(desiredTime, clipsRef.current, videoStartsRef.current);
+      const insertIdx = clipsRef.current.length === 0 ? 0 : loc.index + 1;
+      setClips((prev) => {
+        const next = [...prev];
+        next.splice(insertIdx, 0, cloned);
+        return next;
+      });
+
+      // Si el clip original tenía audio vinculado, creamos también su pista de audio vinculada
+      const linkedOrig = audioTracksRef.current.find((t) => t.sourceVideoId === srcClip.id);
+      if (linkedOrig || srcClip.hasAudio) {
+        const newTrackId = uid();
+        const audData = (linkedOrig && audioDataMap.get(linkedOrig.id)) || rawAud;
+        if (audData) audioDataMap.set(newTrackId, audData);
+        const targetAudLane =
+          (opts?.targetLaneKind === 'audio' && opts.targetLaneId) ||
+          (linkedOrig?.laneId && timelineLanes.some((l) => l.id === linkedOrig.laneId) ? linkedOrig.laneId : activeLaneIds.audio);
+        const newLinked: AudioTrack = {
+          id: newTrackId,
+          assetId: srcClip.assetId,
+          name: linkedOrig?.name || `Audio de ${srcClip.name}`,
+          url: srcClip.url,
+          duration: srcClip.duration,
+          offset: 0,
+          start: 0,
+          volume: linkedOrig?.volume ?? 1,
+          fadeIn: linkedOrig?.fadeIn ?? 0,
+          fadeOut: linkedOrig?.fadeOut ?? 0,
+          muted: linkedOrig?.muted ?? false,
+          peaks: audData ? getPeaksForSegment(newTrackId, 0, srcClip.duration) : (linkedOrig?.peaks || Array(WAVEFORM_SAMPLES).fill(0)),
+          sourceVideoId: newClipId,
+          released: false,
+          laneId: targetAudLane,
+        };
+        setAudioTracks((prev) => [...prev, newLinked]);
+      }
+      selectOnly(newClipId, 'clip');
+      showToast(`📥 Video "${cloned.name}" pegado en V1`, 'info');
+      setCtxMenu(null);
+      return;
+    }
+
+    if (clipboardItem.kind === 'image') {
+      const srcImg = clipboardItem.data;
+      const dur = Math.max(MIN_OVERLAY_LEN, srcImg.end - srcImg.start);
+      const destLane =
+        opts?.targetLaneKind === 'image' && opts.targetLaneId
+          ? opts.targetLaneId
+          : activeLaneIds.image || srcImg.laneId || 'image-1';
+      const sibs = getSiblingsIntervals('image', destLane, new Set());
+      const { start: s0 } = resolveMagneticSlot(desiredTime, dur, sibs, [desiredTime, playheadRef.current], 0.05);
+      const laneIdx = Math.max(0, laneList('image').findIndex((l) => l.id === destLane));
+      const newImg: ImageOverlay = { ...srcImg, id: uid(), start: s0, end: s0 + dur, laneId: destLane, lane: laneIdx };
+      setImageOverlays((prev) => [...prev, newImg]);
+      selectOnly(newImg.id, 'image');
+      const laneName = timelineLanes.find((l) => l.id === destLane)?.name || 'I1';
+      showToast(`📥 Imagen pegada en ${laneName} (${formatTime(s0)})`, 'info');
+    } else if (clipboardItem.kind === 'text') {
+      const srcTxt = clipboardItem.data;
+      const dur = Math.max(MIN_OVERLAY_LEN, srcTxt.end - srcTxt.start);
+      const isSub = opts?.targetLaneKind === 'subtitle' ? true : opts?.targetLaneKind === 'text' ? false : srcTxt.kind === 'subtitulo';
+      const fam: TimelineLaneKind = isSub ? 'subtitle' : 'text';
+      const destLane =
+        (opts?.targetLaneKind === 'text' || opts?.targetLaneKind === 'subtitle') && opts.targetLaneId
+          ? opts.targetLaneId
+          : activeLaneIds[fam] || srcTxt.laneId || (isSub ? 'subtitle-1' : 'text-1');
+      const sibs = getSiblingsIntervals('text', destLane, new Set());
+      const { start: s0 } = resolveMagneticSlot(desiredTime, dur, sibs, [desiredTime, playheadRef.current], 0.05);
+      const shift = s0 - srcTxt.start;
+      const newTxt: TextOverlay = {
+        ...srcTxt,
+        id: uid(),
+        kind: isSub ? 'subtitulo' : 'texto',
+        laneId: destLane,
+        start: s0,
+        end: s0 + dur,
+        words: srcTxt.words ? srcTxt.words.map((w) => ({ ...w, start: w.start + shift, end: w.end + shift })) : undefined,
+      };
+      setTextOverlays((prev) => [...prev, newTxt]);
+      selectOnly(newTxt.id, 'text');
+      const laneName = timelineLanes.find((l) => l.id === destLane)?.name || (isSub ? 'SUB1' : 'T1');
+      showToast(`📥 ${isSub ? 'Subtítulo' : 'Texto'} pegado en ${laneName} (${formatTime(s0)})`, 'info');
+    } else if (clipboardItem.kind === 'video') {
+      const srcVo = clipboardItem.data;
+      const dur = Math.max(MIN_OVERLAY_LEN, srcVo.end - srcVo.start);
+      const destLane =
+        opts?.targetLaneKind === 'video' && opts.targetLaneId
+          ? opts.targetLaneId
+          : activeLaneIds.video || srcVo.laneId || 'video-1';
+      const sibs = getSiblingsIntervals('video', destLane, new Set());
+      const { start: s0 } = resolveMagneticSlot(desiredTime, dur, sibs, [desiredTime, playheadRef.current], 0.05);
+      const laneIdx = Math.max(0, laneList('video').findIndex((l) => l.id === destLane));
+      const newVo: VideoOverlay = { ...srcVo, id: uid(), start: s0, end: s0 + dur, laneId: destLane, lane: laneIdx };
+      setVideoOverlays((prev) => [...prev, newVo]);
+      selectOnly(newVo.id, 'video');
+      const laneName = timelineLanes.find((l) => l.id === destLane)?.name || 'V2';
+      showToast(`📥 Superposición pegada en ${laneName} (${formatTime(s0)})`, 'info');
+    } else if (clipboardItem.kind === 'audio') {
+      const srcAud = clipboardItem.data;
+      const dur = Math.max(MIN_OVERLAY_LEN, srcAud.duration);
+      const destLane =
+        opts?.targetLaneKind === 'audio' && opts.targetLaneId
+          ? opts.targetLaneId
+          : activeLaneIds.audio || srcAud.laneId || 'audio-1';
+      const sibs = getSiblingsIntervals('audio', destLane, new Set());
+      const { start: s0 } = resolveMagneticSlot(desiredTime, dur, sibs, [desiredTime, playheadRef.current], 0.05);
+      const newAudId = uid();
+      const rawData = audioDataMap.get(srcAud.id) || (srcAud.sourceVideoId ? audioDataMap.get(srcAud.sourceVideoId) : undefined);
+      if (rawData) audioDataMap.set(newAudId, rawData);
+      // Al pegar una copia de audio, nace como pista independiente (liberada) para poder ubicarla en cualquier segundo
+      const newAud: AudioTrack = {
+        ...srcAud,
+        id: newAudId,
+        start: s0,
+        duration: dur,
+        sourceVideoId: undefined,
+        released: true,
+        laneId: destLane,
+      };
+      setAudioTracks((prev) => [...prev, newAud]);
+      selectOnly(newAudId, 'audio');
+      const laneName = timelineLanes.find((l) => l.id === destLane)?.name || 'A1';
+      showToast(`📥 Audio pegado en ${laneName} (${formatTime(s0)})`, 'info');
+    }
+    setCtxMenu(null);
+  }
+
+  function duplicateItem(explicitType?: 'clip' | 'image' | 'text' | 'video' | 'audio', explicitId?: string) {
+    const tType = explicitType || (selectedId ? 'clip' : selectedImageId ? 'image' : selectedTextId ? 'text' : selectedVoId ? 'video' : selectedAudioId ? 'audio' : null);
+    const tId = explicitId || selectedId || selectedImageId || selectedTextId || selectedVoId || selectedAudioId;
+    if (!tType || !tId) return;
+
+    if (tType === 'clip') {
+      const idx = clipsRef.current.findIndex((x) => x.id === tId);
+      if (idx < 0) return;
+      const srcClip = clipsRef.current[idx];
+      const newClipId = uid();
+      const cloned: Clip = { ...srcClip, id: newClipId };
+      const origBlob = clipBlobMap.get(srcClip.id);
+      if (origBlob) clipBlobMap.set(newClipId, origBlob);
+      const rawAud = audioDataMap.get(srcClip.id);
+      if (rawAud) audioDataMap.set(newClipId, rawAud);
+      setClips((prev) => {
+        const next = [...prev];
+        next.splice(idx + 1, 0, cloned);
+        return next;
+      });
+      const linkedOrig = audioTracksRef.current.find((t) => t.sourceVideoId === srcClip.id);
+      if (linkedOrig) {
+        const newTrackId = uid();
+        const audData = audioDataMap.get(linkedOrig.id) || rawAud;
+        if (audData) audioDataMap.set(newTrackId, audData);
+        setAudioTracks((prev) => [...prev, { ...linkedOrig, id: newTrackId, sourceVideoId: newClipId, released: false }]);
+      }
+      selectOnly(newClipId, 'clip');
+      showToast(`📑 Video "${srcClip.name}" duplicado al lado`, 'info');
+    } else if (tType === 'image') {
+      const img = imageOverlaysRef.current.find((x) => x.id === tId);
+      if (!img) return;
+      const dur = img.end - img.start;
+      const laneId = img.laneId || 'image-1';
+      const sibs = getSiblingsIntervals('image', laneId, new Set());
+      const { start: s0 } = resolveMagneticSlot(img.end, dur, sibs, [img.end], 0.05);
+      const clone: ImageOverlay = { ...img, id: uid(), start: s0, end: s0 + dur };
+      setImageOverlays((prev) => [...prev, clone]);
+      selectOnly(clone.id, 'image');
+      showToast(`📑 Imagen duplicada en ${formatTime(s0)}`, 'info');
+    } else if (tType === 'text') {
+      const txt = textOverlaysRef.current.find((x) => x.id === tId);
+      if (!txt) return;
+      const dur = txt.end - txt.start;
+      const laneId = txt.laneId || (txt.kind === 'subtitulo' ? 'subtitle-1' : 'text-1');
+      const sibs = getSiblingsIntervals('text', laneId, new Set());
+      const { start: s0 } = resolveMagneticSlot(txt.end, dur, sibs, [txt.end], 0.05);
+      const shift = s0 - txt.start;
+      const clone: TextOverlay = {
+        ...txt,
+        id: uid(),
+        start: s0,
+        end: s0 + dur,
+        words: txt.words ? txt.words.map((w) => ({ ...w, start: w.start + shift, end: w.end + shift })) : undefined,
+      };
+      setTextOverlays((prev) => [...prev, clone]);
+      selectOnly(clone.id, 'text');
+      showToast(`📑 ${txt.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'} duplicado en ${formatTime(s0)}`, 'info');
+    } else if (tType === 'video') {
+      const vo = videoOverlaysRef.current.find((x) => x.id === tId);
+      if (!vo) return;
+      const dur = vo.end - vo.start;
+      const laneId = vo.laneId || 'video-1';
+      const sibs = getSiblingsIntervals('video', laneId, new Set());
+      const { start: s0 } = resolveMagneticSlot(vo.end, dur, sibs, [vo.end], 0.05);
+      const clone: VideoOverlay = { ...vo, id: uid(), start: s0, end: s0 + dur };
+      setVideoOverlays((prev) => [...prev, clone]);
+      selectOnly(clone.id, 'video');
+      showToast(`📑 Superposición duplicada en ${formatTime(s0)}`, 'info');
+    } else if (tType === 'audio') {
+      const aud = audioTracksRef.current.find((x) => x.id === tId);
+      if (!aud) return;
+      const g = trackGeom(aud);
+      const laneId = aud.laneId || 'audio-1';
+      const sibs = getSiblingsIntervals('audio', laneId, new Set());
+      const { start: s0 } = resolveMagneticSlot(g.start + g.duration, g.duration, sibs, [g.start + g.duration], 0.05);
+      const newAudId = uid();
+      const rawData = audioDataMap.get(aud.id) || (aud.sourceVideoId ? audioDataMap.get(aud.sourceVideoId) : undefined);
+      if (rawData) audioDataMap.set(newAudId, rawData);
+      const clone: AudioTrack = { ...aud, id: newAudId, start: s0, duration: g.duration, offset: g.offset, sourceVideoId: undefined, released: true };
+      setAudioTracks((prev) => [...prev, clone]);
+      selectOnly(newAudId, 'audio');
+      showToast(`📑 Audio duplicado en ${formatTime(s0)}`, 'info');
+    }
+    setCtxMenu(null);
+  }
+
+  function openTimelineContextMenu(clientX: number, clientY: number, targetEl: HTMLElement) {
+    const rect = rulerRef.current?.getBoundingClientRect();
+    const timeAtCursor = rect ? Math.max(0, (clientX - rect.left) / ppsRef.current) : playheadRef.current;
+
+    const laneRow = targetEl.closest('[data-lanerow]') as HTMLElement | null;
+    let laneKind: TimelineLaneKind | 'main' | undefined;
+    let laneId: string | undefined;
+    if (laneRow && laneRow.dataset.lanerow) {
+      const raw = laneRow.dataset.lanerow;
+      const sep = raw.indexOf(':');
+      const fam = raw.slice(0, sep);
+      const lid = raw.slice(sep + 1);
+      if (lid === 'main') {
+        laneKind = 'main';
+        laneId = 'main';
+      } else if (fam === 'subtitle' || fam === 'text' || fam === 'image' || fam === 'video' || fam === 'audio') {
+        laneKind = fam;
+        laneId = lid;
+        setActiveLaneIds((prev) => ({ ...prev, [fam]: lid }));
+      }
+    }
+
+    const eventEl = targetEl.closest('[data-clip-item]') as HTMLElement | null;
+    if (eventEl && eventEl.dataset.clipItem) {
+      const [itemType, itemId] = eventEl.dataset.clipItem.split(':') as ['clip' | 'image' | 'text' | 'video' | 'audio', string];
+      selectOnly(itemId, itemType);
+      setCtxMenu({ x: clientX, y: clientY, target: 'item', itemType, itemId, laneKind, laneId, timeAtCursor });
+      return;
+    }
+
+    if (laneKind) {
+      setCtxMenu({ x: clientX, y: clientY, target: 'lane', laneKind, laneId, timeAtCursor });
     }
   }
 
@@ -2852,6 +3598,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       : [clip.id];
     setSelectedEventIds(next);
     setSelectedId(clip.id); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
+    setFocusedLaneId('main');
     moveDragRef.current = { id: clip.id, startX: e.clientX, active: false };
   }
   function moveMoveDrag(e: React.PointerEvent) {
@@ -3246,12 +3993,15 @@ async function generateSubtitles(clip: Clip, model: (typeof ASR_MODELS)[number],
 setSubtitleFor(null);
 if (remember) writeAsrPref(model.id, lang);
 setAsrProgress({ phase: 'model', pct: 0 });
+await yieldToMain();
 try {
 const audio = await decodeSegment16k(clip.url, clip.trimStart, clip.trimEnd);
+await yieldToMain();
 if (!audio) { setAsrProgress(null); showToast('⚠️ No se pudo extraer el audio de este clip', 'warn'); return; }
-const words = await transcribeSegment({
+const words = await transcribeSegmentChunked({
 modelId: model.id, hf: model.hf, language: lang, audio,
-onModelProgress: (pct) => setAsrProgress(pct >= 100 ? { phase: 'transcribe', pct: 0 } : { phase: 'model', pct }),
+onModelProgress: (pct) => setAsrProgress(pct >= 100 ? { phase: 'transcribe', pct: 5 } : { phase: 'model', pct }),
+onTranscribeProgress: (pct) => setAsrProgress({ phase: 'transcribe', pct }),
 });
 setAsrProgress(null);
 if (!words.length) { showToast('⚠️ Whisper no encontró habla en este clip', 'warn'); return; }
@@ -3309,26 +4059,29 @@ audio?.data instanceof Float32Array ? audio.data : null;
 const srHz = typeof audio?.sampleRate === 'number' && audio.sampleRate > 0 ? audio.sampleRate : 16000;
 const span = clip.trimEnd - clip.trimStart;
 let local: { s: number; e: number }[] = [];
+await yieldToMain();
 if (silenceCfg.method === 'whisper') {
 const pref = readAsrPref();
 const modelId = (pref?.model || 'base') as AsrModelId;
 const model = ASR_MODELS.find((m) => m.id === modelId) || ASR_MODELS[0];
 const lang = (pref?.lang || 'es') as AsrLanguage;
-const words = await transcribeSegment({ modelId: model.id, hf: model.hf, language: lang, audio, onModelProgress: (pct) => setSilencePct(pct) });
+const words = await transcribeSegmentChunked({
+  modelId: model.id,
+  hf: model.hf,
+  language: lang,
+  audio,
+  onModelProgress: (pct) => setSilencePct(Math.round(pct * 0.4)),
+  onTranscribeProgress: (pct) => setSilencePct(40 + Math.round(pct * 0.55)),
+});
 console.log('[Silencios] palabras de Whisper:', words?.length ?? 0);
 if (words?.[0]) console.log('[Silencios] muestra de palabra:', JSON.stringify(words[0]));
-// CAMBIO DE ROLES: los timestamps de palabra de Whisper vienen "azulejados"
-// (la "palabra" de 2.36s del log lo prueba): entre palabras NO hay huecos
-// reales, así que Whisper NO puede marcar silencios. La ENERGÍA pone los
-// bordes precisos (ráfagas y huecos reales); Whisper solo VETA las ráfagas
-// donde nadie habló (música o ruido sin transcripción encima).
 const wordZones = (words || []).map((w: any) => {
 const s = Number(w.start ?? w.t0 ?? w.from);
 const e = Number(w.end ?? w.t1 ?? w.to);
 return Number.isFinite(s) ? { s, e: Number.isFinite(e) && e > s ? e : s + 0.4 } : null;
 }).filter((x): x is { s: number; e: number } => x !== null);
 if (pcm && pcm.length) {
-const sound = energySpeechIntervals(pcm, srHz, 0.25, 0.12, 0.06, 0.06);
+const sound = await energySpeechIntervalsAsync(pcm, srHz, 0.25, 0.12, 0.06, 0.06);
 const validated = sound.filter((b) => {
 const bl = b.e - b.s;
 if (bl <= 0) return false;
@@ -3342,9 +4095,8 @@ local = mergeSpeechIntervals(wordZones, silenceCfg.minSilence, 0.2, silenceCfg.p
 }
 } else {
 if (!pcm || pcm.length === 0) { setSilenceMsg('⚠️ El audio decodificado no trajo muestras utilizables para el modo Energía.'); return; }
-setSilencePct(40);
-local = energySpeechIntervals(pcm, srHz, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad);
-setSilencePct(90);
+setSilencePct(15);
+local = await energySpeechIntervalsAsync(pcm, srHz, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad, (pct) => setSilencePct(pct));
 }
 console.log('[Silencios] tramos de habla detectados:', local.length);
 const segments = local.map((x) => ({ s: clip.trimStart + x.s, e: clip.trimStart + x.e }));
@@ -4169,7 +4921,7 @@ return css === 'none' ? undefined : css;
 const renderTextBlock = (txt: TextOverlay) => {
 const isSelected = isEventSelected(txt.id); const width = (txt.end - txt.start) * pps; const left = txt.start * pps;
 const isDraggingThis = dropPreview !== null && isSelected;
-return (<div key={txt.id} data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-fuchsia-300 bg-fuchsia-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'z-10 cursor-grab border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover o cambiar de pista · bordes para recortar">
+return (<div key={txt.id} data-timeline-event="true" data-clip-item={`text:${txt.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-fuchsia-300 bg-fuchsia-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'z-10 cursor-grab border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover o cambiar de pista · bordes para recortar">
 <div className="relative z-10 flex h-full items-center justify-between gap-1">
   <p className="truncate text-[10px] font-semibold text-fuchsia-100 drop-shadow">{txt.kind === 'subtitulo' ? '💬' : 'T:'} {txt.text}</p>
   {isDraggingThis && (
@@ -4375,10 +5127,15 @@ const asrProgressUI = asrProgress ? createPortal(
 <div className="fixed inset-0 z-[170] flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm">
 <div className="w-[min(92vw,24rem)] rounded-2xl border border-fuchsia-400/40 bg-slate-950/95 px-5 py-4 shadow-2xl shadow-fuchsia-500/20">
 <p className="text-sm font-bold text-fuchsia-200">
-{asrProgress.phase === 'model' ? `⬇️ Descargando/cargando modelo… ${asrProgress.pct}%` : '🎙 Transcribiendo audio… (Whisper escuchando en tu equipo)'}
+{asrProgress.phase === 'model'
+  ? `⬇️ Descargando/cargando modelo… ${asrProgress.pct}%`
+  : `🎙 Transcribiendo audio… ${asrProgress.pct > 0 ? asrProgress.pct + '%' : ''}`}
 </p>
 <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-800">
-<div className={`h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-cyan-400 transition-all duration-200 ${asrProgress.phase === 'transcribe' ? 'w-1/3 animate-pulse' : ''}`} style={asrProgress.phase === 'model' ? { width: `${asrProgress.pct}%` } : undefined} />
+<div
+  className="h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-cyan-400 transition-all duration-300"
+  style={{ width: `${Math.max(8, asrProgress.pct)}%` }}
+/>
 </div>
 <p className="mt-2 text-[11px] text-slate-400">La interfaz no miente: si dice transcribiendo, está escuchando. 🔒 Nada sale de tu pestaña.</p>
 </div>
@@ -4408,7 +5165,12 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
 
   return (
         <div ref={shellRef} style={{ '--shelloff': shellOffset + 'px' } as React.CSSProperties} className="flex h-[calc(100vh-var(--shelloff,0px))] flex-col gap-2 overflow-hidden p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] supports-[height:100dvh]:h-[calc(100dvh-var(--shelloff,0px))] lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:p-4 lg:pb-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
-      <style>{FONT_FACE_CSS}</style>
+      <style>{FONT_FACE_CSS + `
+@keyframes laneDrawerSlideIn {
+  0% { opacity: 0; transform: translateY(-50%) translateX(-14px) scaleX(0.92); }
+  100% { opacity: 1; transform: translateY(-50%) translateX(0) scaleX(1); }
+}
+`}</style>
       {/* ===== BARRA DE ACCIONES MÓVIL (Nuevo + Exportar) ===== */}
             {/* ===== BARRA DE ACCIONES MÓVIL (Importar + Nuevo + Exportar) ===== */}
       <div className="flex shrink-0 items-center gap-2 lg:hidden">
@@ -4442,6 +5204,211 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
 {asrProgressUI}
       {commentStudioUI}
 {transitionPickerUI}
+{confirmDialog && typeof document !== 'undefined' && createPortal(
+  <div
+    className="fixed inset-0 z-[280] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+    onClick={() => setConfirmDialog(null)}
+  >
+    <div
+      onClick={(e) => e.stopPropagation()}
+      className="w-[min(92vw,26rem)] overflow-hidden rounded-2xl border border-slate-700/90 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-950 p-5 shadow-2xl shadow-cyan-500/15"
+    >
+      <div className="flex items-start gap-3.5">
+        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border text-xl ${
+          confirmDialog.danger
+            ? 'border-rose-500/40 bg-rose-500/15 text-rose-300 shadow-[0_0_16px_rgba(244,63,94,0.25)]'
+            : 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.25)]'
+        }`}>
+          {confirmDialog.icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-base font-black text-white">{confirmDialog.title}</h3>
+          <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-200">{confirmDialog.message}</p>
+          {confirmDialog.detail && (
+            <p className="mt-1.5 rounded-lg border border-slate-800 bg-slate-900/70 px-2.5 py-2 text-[11px] leading-relaxed text-slate-400">
+              {confirmDialog.detail}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center gap-2.5">
+        <button
+          type="button"
+          onClick={() => setConfirmDialog(null)}
+          className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-bold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={confirmDialog.onConfirm}
+          className={`flex-1 rounded-xl px-4 py-2.5 text-xs font-black transition-transform hover:scale-[1.02] active:scale-95 ${
+            confirmDialog.danger
+              ? 'bg-gradient-to-r from-rose-500 to-red-500 text-white shadow-lg shadow-rose-500/25'
+              : 'bg-gradient-to-r from-cyan-400 to-violet-500 text-black shadow-lg shadow-cyan-500/25'
+          }`}
+        >
+          {confirmDialog.confirmLabel}
+        </button>
+      </div>
+    </div>
+  </div>,
+  document.body
+)}
+{ctxMenu && typeof document !== 'undefined' && createPortal(
+  <div
+    className="fixed inset-0 z-[260]"
+    onPointerDown={() => setCtxMenu(null)}
+    onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
+  >
+    <div
+      onPointerDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{
+        left: Math.max(10, Math.min(ctxMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 400) - 235)),
+        top: Math.max(10, Math.min(ctxMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 700) - 240)),
+      }}
+      className="fixed w-56 overflow-hidden rounded-xl border border-slate-700/90 bg-slate-950/95 p-1.5 shadow-2xl shadow-cyan-500/15 backdrop-blur-md"
+    >
+      <div className="mb-1 flex items-center justify-between border-b border-slate-800/80 px-2.5 py-1.5">
+        <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400">
+          {ctxMenu.target === 'item' ? '🎬 Opciones del Clip' : '📍 Opciones de Pista'}
+        </span>
+        <span className="font-mono text-[10px] text-slate-400">{formatTime(ctxMenu.timeAtCursor)}</span>
+      </div>
+
+      {ctxMenu.target === 'item' && ctxMenu.itemType && ctxMenu.itemId && (
+        <div className="space-y-0.5">
+          <button
+            type="button"
+            onClick={() => copySelected(ctxMenu.itemType, ctxMenu.itemId)}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/15 hover:text-cyan-200"
+          >
+            <span>📋 Copiar</span>
+            <span className="font-mono text-[10px] text-slate-500">Ctrl+C</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => duplicateItem(ctxMenu.itemType, ctxMenu.itemId)}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-200 transition hover:bg-violet-500/15 hover:text-violet-200"
+          >
+            <span>📑 Duplicar al lado</span>
+            <span className="font-mono text-[10px] text-slate-500">Ctrl+D</span>
+          </button>
+
+          {clipboardItem && (
+            <button
+              type="button"
+              onClick={() => pasteClipboard({ targetTime: ctxMenu.timeAtCursor, targetLaneKind: ctxMenu.laneKind, targetLaneId: ctxMenu.laneId })}
+              className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/15"
+            >
+              <span>📥 Pegar aquí</span>
+              <span className="font-mono text-[10px] text-emerald-400/80">Ctrl+V</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              seek(ctxMenu.timeAtCursor);
+              setTimeout(() => splitAtPlayhead(), 10);
+              setCtxMenu(null);
+            }}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
+          >
+            <span>✂️ Dividir aquí</span>
+            <span className="font-mono text-[10px] text-slate-500">{formatTime(ctxMenu.timeAtCursor)}</span>
+          </button>
+
+          <div className="my-1 h-px bg-slate-800/80" />
+
+          <button
+            type="button"
+            onClick={() => {
+              deleteSelected();
+              setCtxMenu(null);
+            }}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-rose-300 transition hover:bg-rose-500/15"
+          >
+            <span>🗑️ Eliminar</span>
+            <span className="font-mono text-[10px] text-rose-400/70">Supr</span>
+          </button>
+        </div>
+      )}
+
+      {ctxMenu.target === 'lane' && (
+        <div className="space-y-0.5">
+          <button
+            type="button"
+            disabled={!clipboardItem}
+            onClick={() => pasteClipboard({ targetTime: ctxMenu.timeAtCursor, targetLaneKind: ctxMenu.laneKind, targetLaneId: ctxMenu.laneId })}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/15 disabled:opacity-40"
+          >
+            <span className="truncate">
+              {clipboardItem
+                ? `📥 Pegar ${
+                    clipboardItem.kind === 'clip'
+                      ? 'Video en V1'
+                      : clipboardItem.kind === 'image'
+                      ? 'Imagen'
+                      : clipboardItem.kind === 'text'
+                      ? 'Texto'
+                      : clipboardItem.kind === 'video'
+                      ? 'Superposición'
+                      : 'Audio'
+                  } aquí`
+                : '📥 Pegar (portapapeles vacío)'}
+            </span>
+            <span className="ml-1 shrink-0 font-mono text-[10px] text-slate-400">Ctrl+V</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              seek(ctxMenu.timeAtCursor);
+              setCtxMenu(null);
+            }}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-300 transition hover:bg-slate-800"
+          >
+            <span>🎯 Mover cabezal aquí</span>
+            <span className="font-mono text-[10px] text-slate-500">{formatTime(ctxMenu.timeAtCursor)}</span>
+          </button>
+
+          {ctxMenu.laneKind && ctxMenu.laneKind !== 'main' && (
+            <>
+              <div className="my-1 h-px bg-slate-800/80" />
+              <button
+                type="button"
+                onClick={() => {
+                  addTimelineLane(ctxMenu.laneKind as TimelineLaneKind);
+                  setCtxMenu(null);
+                }}
+                className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-300 transition hover:bg-slate-800"
+              >
+                <span>➕ Nueva pista vacía</span>
+              </button>
+              {ctxMenu.laneId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    duplicateTimelineLane(ctxMenu.laneId!);
+                    setCtxMenu(null);
+                  }}
+                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-violet-200 transition hover:bg-violet-500/15"
+                >
+                  <span>📑 Duplicar pista con contenido</span>
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  </div>,
+  document.body
+)}
       <div className="pointer-events-none fixed inset-0 z-[300] flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
           {toasts.map((t) => (
@@ -5102,6 +6069,35 @@ Recordar mi elección
 <div className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-2">
 <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">🧰 Herramientas globales</p>
 <button onClick={() => setCommentStudioOpen(true)} className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Creá comentarios estilo TikTok/Instagram/YouTube/Twitter y agregalos como imagen">💬 Generador de comentarios</button>
+<div className="grid grid-cols-3 gap-1.5 pt-1">
+  <button
+    type="button"
+    disabled={!selectedClip && !selectedImage && !selectedText && !selectedVo && !selectedAudio}
+    onClick={() => copySelected()}
+    className="rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-[11px] font-bold text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:opacity-40"
+    title="Copiar seleccionado (Ctrl+C)"
+  >
+    📋 Copiar
+  </button>
+  <button
+    type="button"
+    disabled={!selectedClip && !selectedImage && !selectedText && !selectedVo && !selectedAudio}
+    onClick={() => duplicateItem()}
+    className="rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-[11px] font-bold text-slate-200 transition hover:border-violet-400 hover:text-violet-300 disabled:opacity-40"
+    title="Duplicar justo al lado (Ctrl+D)"
+  >
+    📑 Duplicar
+  </button>
+  <button
+    type="button"
+    disabled={!clipboardItem}
+    onClick={() => pasteClipboard()}
+    className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 py-1.5 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
+    title="Pegar en el cabezal dentro de la pista activa (Ctrl+V)"
+  >
+    📥 Pegar
+  </button>
+</div>
 </div>
 )}
 {propsTab === 'herramientas' && selectedClip && (<>
@@ -5186,10 +6182,67 @@ Recordar mi elección
           <button onClick={() => zoomBy(1.25)} className="rounded px-1.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-800 lg:px-2 lg:py-0.5" title="Acercar">+</button>
           <button onClick={() => { pendingAnchorRef.current = null; setPps(DEFAULT_PPS); }} className="rounded px-1 py-1 text-[9px] font-bold text-slate-400 hover:bg-slate-800 lg:px-2 lg:py-0.5 lg:text-[10px]" title="Restablecer zoom">1:1</button>
         </div>
-         <div ref={timelineScrollRef} onPointerDown={startTimelinePan} onPointerMove={moveTimelinePan} onPointerUp={endTimelinePan} onPointerCancel={endTimelinePan} className={`min-h-0 flex-1 overflow-auto overscroll-contain p-0 pb-2 pr-2 [touch-action:pan-x_pan-y] lg:pb-3 lg:pr-3 ${timelinePanning ? 'cursor-grabbing select-none' : ''}`} >
+         <div
+    ref={timelineScrollRef}
+    onContextMenu={(e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-clip-item]') || target.closest('[data-lanerow]')) {
+        e.preventDefault();
+        clearLongPress();
+        endMoveDrag();
+        endOverlayTimeDrag();
+        endTimelinePan();
+        openTimelineContextMenu(e.clientX, e.clientY, target);
+      }
+    }}
+    onPointerDownCapture={(e) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-lane-controls]')) {
+        setOpenLaneMenuId(null);
+      }
+      // Si toca el fondo de una pista, activamos esa pista como destino para Ctrl+V
+      const lr = target.closest('[data-lanerow]') as HTMLElement | null;
+      if (lr && lr.dataset.lanerow) {
+        const sep = lr.dataset.lanerow.indexOf(':');
+        const fam = lr.dataset.lanerow.slice(0, sep);
+        const lid = lr.dataset.lanerow.slice(sep + 1);
+        setFocusedLaneId(lid);
+        if (lid !== 'main' && (fam === 'subtitle' || fam === 'text' || fam === 'image' || fam === 'video' || fam === 'audio')) {
+          setActiveLaneIds((prev) => ({ ...prev, [fam]: lid }));
+        }
+      }
+      // En celular (touch): iniciar timer de 480ms para abrir el menú contextual al dejar apretado
+      if (e.pointerType === 'touch') {
+        clearLongPress();
+        longPressStartRef.current = { x: e.clientX, y: e.clientY };
+        const capturedTarget = target;
+        const cx = e.clientX;
+        const cy = e.clientY;
+        longPressTimerRef.current = window.setTimeout(() => {
+          longPressTimerRef.current = null;
+          endMoveDrag();
+          endOverlayTimeDrag();
+          endTrimDrag();
+          try { (navigator as any).vibrate?.(18); } catch {}
+          openTimelineContextMenu(cx, cy, capturedTarget);
+        }, 480);
+      }
+    }}
+    onPointerMoveCapture={(e) => {
+      if (longPressTimerRef.current) {
+        const dist = Math.hypot(e.clientX - longPressStartRef.current.x, e.clientY - longPressStartRef.current.y);
+        if (dist > 6) clearLongPress();
+      }
+    }}
+    onPointerUpCapture={() => clearLongPress()}
+    onPointerCancelCapture={() => clearLongPress()}
+    onPointerDown={startTimelinePan}
+    onPointerMove={moveTimelinePan}
+    onPointerUp={endTimelinePan}
+    onPointerCancel={endTimelinePan} className={`min-h-0 flex-1 overflow-auto overscroll-contain p-0 pb-2 pr-2 [touch-action:pan-x_pan-y] lg:pb-3 lg:pr-3 ${timelinePanning ? 'cursor-grabbing select-none' : ''}`} >
           <div className="relative" style={{ width: timelineFullWidth }}>
             <div className="sticky top-0 z-40 flex w-full rounded-tl-xl bg-slate-900 shadow-[0_3px_10px_rgba(0,0,0,0.28)]">
-              <div className="sticky left-0 z-50 flex h-6 w-[78px] shrink-0 items-center justify-center rounded-tl-md border-b border-r border-slate-700/80 bg-[#091729] text-[8px] font-bold tracking-[0.12em] text-slate-500 lg:h-7">PISTAS</div>
+              <div className="sticky left-0 z-50 flex h-6 w-[52px] shrink-0 items-center justify-center rounded-tl-md border-b border-r border-slate-700/80 bg-[#091729] text-[7px] font-bold tracking-wider text-slate-400 lg:h-7">PISTAS</div>
               <div ref={rulerRef} style={{ width: timelineContentWidth }} className="relative h-6 flex-none cursor-pointer select-none border-b border-slate-700 bg-slate-900 lg:h-7" onPointerDown={(e) => { scrubbingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); seek(timeFromPointer(e)); }} onPointerMove={(e) => { if (scrubbingRef.current) seek(timeFromPointer(e)); }} onPointerUp={() => { scrubbingRef.current = false; }} onPointerCancel={() => { scrubbingRef.current = false; }}>
                 {ticks.map((s) => (<div key={s} className="absolute top-0 h-full" style={{ left: s * pps }}><div className="h-2 w-px bg-slate-600" /><span className="ml-1 text-[10px] text-slate-500">{s}s</span></div>))}
                 <div ref={playheadHeadRef} className="pointer-events-none absolute bottom-0 top-0 z-30" style={{ left: playhead * pps }}>
@@ -5202,18 +6255,20 @@ Recordar mi elección
 {laneList('subtitle').map((lane) => {
   const items = subtitleOverlays.filter((txt) => (txt.laneId || 'subtitle-1') === lane.id);
   const dp = dropPreview?.laneKey === `subtitle:${lane.id}` ? dropPreview : null;
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`subtitle:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-fuchsia-400/80 bg-fuchsia-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-fuchsia-500/5'} lg:h-9`}>
+  const isFocused = focusedLaneId === lane.id;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`subtitle:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative z-10 my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-fuchsia-400/80 bg-fuchsia-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : isFocused ? 'border-cyan-500/25 bg-slate-800/35' : 'border-slate-800/80 bg-slate-900/20'} lg:h-9`}>
     {items.map(renderTextBlock)}{items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Subtítulos · soltá acá o generá subtítulos</div>}
   </div></div></React.Fragment>;
 })}
 {laneList('image').map((lane) => {
   const items = imageOverlays.filter((img) => (img.laneId || 'image-1') === lane.id);
   const dp = dropPreview?.laneKey === `image:${lane.id}` ? dropPreview : null;
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`image:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(2.25rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-pink-400/80 bg-pink-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'} lg:h-9`}>
+  const isFocused = focusedLaneId === lane.id;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`image:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative z-10 my-auto h-[calc(2.25rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-pink-400/80 bg-pink-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : isFocused ? 'border-cyan-500/25 bg-slate-800/35' : 'border-slate-800/80 bg-slate-900/20'} lg:h-9`}>
     {items.map((img) => {
       const isSelected = isEventSelected(img.id); const width = (img.end - img.start) * pps; const left = img.start * pps;
       const isDraggingThis = dropPreview !== null && isSelected;
-      return <div key={img.id} data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-pink-300 bg-pink-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'z-10 cursor-grab border-pink-400/60 bg-pink-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
+      return <div key={img.id} data-timeline-event="true" data-clip-item={`image:${img.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-pink-300 bg-pink-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'z-10 cursor-grab border-pink-400/60 bg-pink-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
         <div className="relative z-10 flex h-full items-center justify-between gap-1">
           <p className="truncate text-[10px] font-semibold text-pink-100 drop-shadow">🖼️ {img.name}</p>
           {isDraggingThis && (
@@ -5232,18 +6287,20 @@ Recordar mi elección
 {laneList('text').map((lane) => {
   const items = plainTextOverlays.filter((txt) => (txt.laneId || 'text-1') === lane.id);
   const dp = dropPreview?.laneKey === `text:${lane.id}` ? dropPreview : null;
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`text:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-fuchsia-400/80 bg-fuchsia-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'} lg:h-9`}>
+  const isFocused = focusedLaneId === lane.id;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`text:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative z-10 my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-fuchsia-400/80 bg-fuchsia-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : isFocused ? 'border-cyan-500/25 bg-slate-800/35' : 'border-slate-800/80 bg-slate-900/20'} lg:h-9`}>
     {items.map(renderTextBlock)}{items.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-600">Pista de texto vacía · hacé clic en + Texto</div>}
   </div></div></React.Fragment>;
 })}
 {laneList('video').map((lane) => {
   const items = videoOverlays.filter((vo) => (vo.laneId || 'video-1') === lane.id);
   const dp = dropPreview?.laneKey === `video:${lane.id}` ? dropPreview : null;
-  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`video:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-amber-400/80 bg-amber-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'} lg:h-9`}>
+  const isFocused = focusedLaneId === lane.id;
+  return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[48px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`video:${lane.id}`} style={{ width: timelineContentWidth }} className={`relative z-10 my-auto h-[calc(3rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors ${dp ? 'border-amber-400/80 bg-amber-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : isFocused ? 'border-cyan-500/25 bg-slate-800/35' : 'border-slate-800/80 bg-slate-900/20'} lg:h-9`}>
     {items.map((vo) => {
       const isSelected = isEventSelected(vo.id); const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
       const isDraggingThis = dropPreview !== null && isSelected;
-      return <div key={vo.id} data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-amber-300 bg-amber-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'z-10 cursor-grab border-amber-400/60 bg-amber-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
+      return <div key={vo.id} data-timeline-event="true" data-clip-item={`video:${vo.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-amber-300 bg-amber-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'z-10 cursor-grab border-amber-400/60 bg-amber-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
         <div className="relative z-10 flex h-full items-center justify-between gap-1">
           <p className="truncate text-[10px] font-semibold text-amber-100 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
           {isDraggingThis && (
@@ -5261,16 +6318,32 @@ Recordar mi elección
 })}
 
             <div className="mt-1.5 flex min-h-[84px] w-full items-stretch">
-              <div className="sticky left-0 z-20 flex w-[78px] shrink-0 flex-col justify-center gap-1 rounded-l-lg border border-r border-cyan-500/25 bg-[#0b2034] px-1 py-1 shadow-[4px_0_12px_rgba(2,6,23,0.28)]">
-                <div className="flex items-center justify-center gap-1"><span className="text-[12px] font-black tracking-wide text-cyan-200">V1</span><span className="rounded bg-cyan-500/10 px-1 py-0.5 text-[8px] font-bold tracking-wider text-cyan-300">FIJA</span></div>
-                <button type="button" onClick={() => addTimelineLane('video')} className="flex h-5 items-center justify-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/[0.08] text-[9px] font-semibold text-cyan-200 transition hover:border-cyan-400/60 hover:bg-cyan-500/20" title="Agregar pista de video superpuesto"><span className="text-[12px]">+</span> V2</button>
+              <div
+                data-lane-controls="true"
+                onClick={() => setFocusedLaneId('main')}
+                className={`sticky left-0 z-30 flex w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-l-lg border px-1 py-1.5 transition-all duration-150 ${
+                  focusedLaneId === 'main'
+                    ? 'border-cyan-400/90 border-l-[3px] border-l-cyan-300 bg-gradient-to-r from-[#144b6b] via-[#0e2f4f] to-[#0a2038] shadow-[0_0_16px_rgba(34,211,238,0.32),6px_0_14px_rgba(2,6,23,0.9)]'
+                    : 'border-slate-800 bg-[#07111f] hover:border-slate-700 hover:bg-[#0b192c] shadow-[6px_0_14px_rgba(2,6,23,0.85)]'
+                }`}
+              >
+                <div className="flex flex-col items-center leading-none">
+                  <div className="flex items-center gap-1">
+                    <span className={`text-[12px] font-black tracking-wide ${focusedLaneId === 'main' ? 'text-white drop-shadow-[0_0_8px_rgba(34,211,238,0.9)]' : 'text-slate-400'}`}>V1</span>
+                    {focusedLaneId === 'main' && (
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_8px_rgba(34,211,238,1)] ring-2 ring-cyan-400/40" />
+                    )}
+                  </div>
+                  <span className="mt-0.5 rounded bg-cyan-500/15 px-1 py-0.5 text-[7px] font-bold tracking-wider text-cyan-300">BASE</span>
+                </div>
+                <button type="button" onClick={(e) => { e.stopPropagation(); addTimelineLane('video'); }} className="flex h-6 w-9 items-center justify-center rounded-md border border-cyan-500/30 bg-cyan-500/10 text-[9px] font-bold text-cyan-200 transition hover:border-cyan-400 hover:bg-cyan-500/25" title="Agregar pista de video superpuesto">+V2</button>
               </div>
-              <div data-lanerow="video:main" className="relative my-auto h-[calc(4rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r border-cyan-500/25 bg-slate-800/40 lg:h-20" style={{ width: timelineContentWidth }}>
+              <div data-lanerow="video:main" className={`relative z-10 my-auto h-[calc(4rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors lg:h-20 ${focusedLaneId === 'main' ? 'border-cyan-500/30 bg-slate-800/45' : 'border-slate-800/90 bg-slate-900/30'}`} style={{ width: timelineContentWidth }}>
               {clips.map((c, i) => {
                 const hasTransition = c.transition && c.transition.type !== 'none' && i < clips.length - 1;
                 return (
                   <React.Fragment key={c.id}>
-                    <div onPointerDown={(e) => startMoveDrag(e, c)} onPointerMove={moveMoveDrag} onPointerUp={endMoveDrag} onPointerCancel={endMoveDrag} style={{ left: videoStarts[i] * pps, width: Math.max(effLen(c) * pps - 2, 8) }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 py-1 ${draggingId === c.id ? 'cursor-grabbing border-cyan-300 bg-cyan-500/30 opacity-60 ring-2 ring-cyan-300' : isEventSelected(c.id) ? 'cursor-grab border-violet-400 bg-violet-500/20 ring-1 ring-violet-400' : i === activeIndex ? 'cursor-grab border-cyan-400 bg-cyan-500/20' : 'cursor-grab border-slate-600 bg-gradient-to-br from-cyan-500/10 to-violet-500/10'}`}>
+                    <div data-timeline-event="true" data-clip-item={`clip:${c.id}`} onPointerDown={(e) => startMoveDrag(e, c)} onPointerMove={moveMoveDrag} onPointerUp={endMoveDrag} onPointerCancel={endMoveDrag} style={{ left: videoStarts[i] * pps, width: Math.max(effLen(c) * pps - 2, 8) }} className={`absolute bottom-1 top-1 select-none touch-pan-y overflow-hidden rounded-md border px-2 py-1 ${draggingId === c.id ? 'cursor-grabbing border-cyan-300 bg-cyan-500/30 opacity-60 ring-2 ring-cyan-300' : isEventSelected(c.id) ? 'cursor-grab border-violet-400 bg-violet-500/20 ring-1 ring-violet-400' : i === activeIndex ? 'cursor-grab border-cyan-400 bg-cyan-500/20' : 'cursor-grab border-slate-600 bg-gradient-to-br from-cyan-500/10 to-violet-500/10'}`}>
                                             <ClipFilmstrip clip={c} />
 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-950/25 to-slate-950/70" />
 {blendLen(i) > 0 && (
@@ -5319,13 +6392,14 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
             {laneList('audio').map((lane) => {
               const items = audioTracks.filter((track) => (track.laneId || 'audio-1') === lane.id);
               const dp = dropPreview?.laneKey === `audio:${lane.id}` ? dropPreview : null;
-              return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[52px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`audio:${lane.id}`} className={`relative my-auto min-h-[calc(2.5rem*var(--tz,1))] flex-none cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors lg:min-h-12 ${dp ? 'border-green-400/80 bg-green-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : 'border-slate-700/60 bg-slate-800/20'}`} style={{ width: timelineContentWidth }}>
+              const isFocused = focusedLaneId === lane.id;
+              return <React.Fragment key={lane.id}><div className="mt-1 flex min-h-[52px] w-full items-stretch">{renderLaneControls(lane)}<div data-lanerow={`audio:${lane.id}`} className={`relative z-10 flex-none self-stretch cursor-grab active:cursor-grabbing rounded-r-lg border-y border-r transition-colors min-h-[52px] h-[calc(3.25rem*var(--tz,1))] lg:h-12 ${dp ? 'border-green-400/80 bg-green-500/15' : lane.muted ? 'border-slate-700/60 bg-slate-900/30 opacity-50' : isFocused ? 'border-cyan-500/25 bg-slate-800/35' : 'border-slate-800/80 bg-slate-900/20'}`} style={{ width: timelineContentWidth }}>
                 {items.map((track) => {
                   const isSelected = isEventSelected(track.id); const g = trackGeom(track); const linked = !!linkedInfo(track);
                   const width = g.duration * pps; const left = g.start * pps;
                   const isDraggingThis = dropPreview !== null && isSelected;
-                  return <div key={track.id} className="absolute inset-0" style={{ minHeight: 48 }}>
-                    <div data-timeline-event="true" onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width, top: 3, bottom: 3 }} className={`absolute select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-green-300 bg-green-500/30 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : linked ? 'z-10 cursor-grab border-green-400/40 bg-green-500/5' : isSelected ? 'z-20 cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'z-10 cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
+                  return <div key={track.id} className="pointer-events-none absolute inset-0">
+                    <div data-timeline-event="true" data-clip-item={`audio:${track.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`pointer-events-auto bottom-1 top-1 ` +`absolute select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-green-300 bg-green-500/30 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : linked ? 'z-10 cursor-grab border-green-400/40 bg-green-500/5' : isSelected ? 'z-20 cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'z-10 cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
                       <WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
                       {track.sourceVideoId && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>}
                       <p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
