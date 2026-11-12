@@ -41,10 +41,89 @@ animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?:
 lane?: number; laneId?: string;
 };
 
-type OverlayAnim = 'none' | 'from-left' | 'from-right' | 'from-top' | 'from-bottom' | 'zoom-in' | 'zoom-out';
-type OverlayAnimOut = 'none' | 'to-left' | 'to-right' | 'to-top' | 'to-bottom' | 'zoom-in' | 'zoom-out';
-const ANIM_IN_LABELS: Record<OverlayAnim, string> = { 'none': 'Sin animación', 'from-left': '↩️ Desde la izquierda', 'from-right': '↪️ Desde la derecha', 'from-top': '⬇️ Desde arriba', 'from-bottom': '⬆️ Desde abajo', 'zoom-in': '🔍 Zoom creciendo', 'zoom-out': '🔭 Zoom encogiendo' };
-const ANIM_OUT_LABELS: Record<OverlayAnimOut, string> = { 'none': 'Sin animación', 'to-left': '⬅️ Hacia la izquierda', 'to-right': '➡️ Hacia la derecha', 'to-top': '⬆️ Hacia arriba', 'to-bottom': '⬇️ Hacia abajo', 'zoom-in': '🔍 Zoom creciendo', 'zoom-out': '🔭 Zoom encogiendo' };
+type OverlayAnim =
+  | 'none'
+  | 'pop-bounce'
+  | 'bounce-bottom'
+  | 'bounce-top'
+  | 'bounce-left'
+  | 'bounce-right'
+  | 'drop-bounce'
+  | 'shake-in'
+  | 'swing-in'
+  | 'neon-in'
+  | 'typewriter'
+  | 'from-left'
+  | 'from-right'
+  | 'from-top'
+  | 'from-bottom'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'pop-elastic'
+  | 'pulse-in';
+type OverlayAnimOut =
+  | 'none'
+  | 'pop-down'
+  | 'bounce-out-bottom'
+  | 'bounce-out-top'
+  | 'bounce-out-left'
+  | 'bounce-out-right'
+  | 'shake-out'
+  | 'neon-out'
+  | 'to-left'
+  | 'to-right'
+  | 'to-top'
+  | 'to-bottom'
+  | 'zoom-in'
+  | 'zoom-out';
+const ANIM_IN_LABELS: Record<OverlayAnim, string> = {
+  'none': 'Sin animación',
+  'pop-bounce': '💥 Pop con rebote (Impacto)',
+  'bounce-bottom': '🏀 Rebote desde abajo',
+  'bounce-top': '🏀 Rebote desde arriba',
+  'bounce-left': '🏀 Rebote desde izquierda',
+  'bounce-right': '🏀 Rebote desde derecha',
+  'drop-bounce': '🪨 Caída con pique',
+  'shake-in': '📳 Sacudida / Terremoto',
+  'swing-in': '🌊 Vaivén / Péndulo',
+  'neon-in': '⚡ Destello Neón',
+  'typewriter': '⌨️ Máquina de escribir',
+  'from-left': '↩️ Deslizar desde izquierda',
+  'from-right': '↪️ Deslizar desde derecha',
+  'from-top': '⬇️ Deslizar desde arriba',
+  'from-bottom': '⬆️ Deslizar desde abajo',
+  'pop-elastic': '🎈 Zoom elástico (Pop)',
+  'pulse-in': '💓 Pulso / Latido',
+  'zoom-in': '🔍 Zoom creciendo',
+  'zoom-out': '🔭 Zoom encogiendo',
+};
+const ANIM_OUT_LABELS: Record<OverlayAnimOut, string> = {
+  'none': 'Sin animación',
+  'pop-down': '💥 Caída rápida (Pop Out)',
+  'bounce-out-bottom': '🏀 Rebote hacia abajo',
+  'bounce-out-top': '🏀 Rebote hacia arriba',
+  'bounce-out-left': '🏀 Rebote hacia izquierda',
+  'bounce-out-right': '🏀 Rebote hacia derecha',
+  'shake-out': '📳 Sacudida final',
+  'neon-out': '⚡ Apagado Neón',
+  'to-left': '⬅️ Deslizar a izquierda',
+  'to-right': '➡️ Deslizar a derecha',
+  'to-top': '⬆️ Deslizar hacia arriba',
+  'to-bottom': '⬇️ Deslizar hacia abajo',
+  'zoom-in': '🔍 Zoom creciendo',
+  'zoom-out': '🔭 Zoom encogiendo',
+};
+const TEXT_ANIM_IN_KEYS: OverlayAnim[] = [
+  'none', 'pop-bounce', 'bounce-bottom', 'bounce-top', 'bounce-left', 'bounce-right',
+  'drop-bounce', 'shake-in', 'swing-in', 'neon-in', 'typewriter',
+  'from-left', 'from-right', 'from-top', 'from-bottom',
+];
+const TEXT_ANIM_OUT_KEYS: OverlayAnimOut[] = [
+  'none', 'pop-down', 'bounce-out-bottom', 'bounce-out-top', 'bounce-out-left', 'bounce-out-right',
+  'shake-out', 'neon-out', 'to-left', 'to-right', 'to-top', 'to-bottom',
+];
+const MEDIA_ANIM_IN_KEYS: OverlayAnim[] = (Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).filter((k) => k !== 'typewriter');
+const MEDIA_ANIM_OUT_KEYS: OverlayAnimOut[] = Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[];
 type OverlayShape = 'none' | 'round' | 'circle';
 type SubtitleStyle = 'static' | 'karaoke-color' | 'karaoke-box' | 'single-word';
 type WordTiming = { word: string; start: number; end: number };
@@ -64,6 +143,7 @@ type TextOverlay = {
   color: string; fadeIn: number; fadeOut: number; outline?: boolean;
   kind?: 'texto' | 'subtitulo'; laneId?: string; animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
   subStyle?: SubtitleStyle; highlightColor?: string; words?: WordTiming[];
+  shadow?: boolean; shadowColor?: string; shadowOpacity?: number; shadowX?: number; shadowY?: number;
 };
 type AudioTrack = {
   id: string; assetId: string; name: string; url: string; duration: number; offset: number; start: number;
@@ -301,27 +381,74 @@ function clamp(v: number, min: number, max: number) { return Math.min(Math.max(v
 // Convención de paridad: los slides recorren EXACTAMENTE un canvas de distancia
 // (refW/refH), igual en el preview que (en la Etapa 2) en las expresiones FFmpeg.
 // Easing smoothstep: suave al arranque y al freno, sin rebotes raros.
-function animOffsets(a: { animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number; start: number; end: number }, t: number, refW: number, refH: number): { dx: number; dy: number; f: number } {
-const smooth = (p: number) => p * p * (3 - 2 * p);
-const di = Math.max(0.05, a.animInDur ?? 0.5);
-const doo = Math.max(0.05, a.animOutDur ?? 0.5);
-const ei = a.animIn && a.animIn !== 'none' ? smooth(clamp((t - a.start) / di, 0, 1)) : 1;
-const eo = a.animOut && a.animOut !== 'none' ? smooth(clamp((t - (a.end - doo)) / doo, 0, 1)) : 0;
-let dx = 0; let dy = 0; let f = 1;
-const vin = 1 - ei;
-if (a.animIn === 'from-left') dx -= refW * vin;
-if (a.animIn === 'from-right') dx += refW * vin;
-if (a.animIn === 'from-top') dy -= refH * vin;
-if (a.animIn === 'from-bottom') dy += refH * vin;
-if (a.animIn === 'zoom-in') f *= 0.6 + 0.4 * ei;
-if (a.animIn === 'zoom-out') f *= 1.3 - 0.3 * ei;
-if (a.animOut === 'to-left') dx -= refW * eo;
-if (a.animOut === 'to-right') dx += refW * eo;
-if (a.animOut === 'to-top') dy -= refH * eo;
-if (a.animOut === 'to-bottom') dy += refH * eo;
-if (a.animOut === 'zoom-out') f *= 1 - 0.4 * eo;
-if (a.animOut === 'zoom-in') f *= 1 + 0.3 * eo;
-return { dx, dy, f };
+function animOffsets(a: { animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number; start: number; end: number }, t: number, refW: number, refH: number): { dx: number; dy: number; f: number; alphaMul: number } {
+  const smooth = (p: number) => p * p * (3 - 2 * p);
+  const di = Math.max(0.05, a.animInDur ?? 0.5);
+  const doo = Math.max(0.05, a.animOutDur ?? 0.5);
+  const pi = clamp((t - a.start) / di, 0, 1);
+  const po = clamp((t - (a.end - doo)) / doo, 0, 1);
+  const ei = a.animIn && a.animIn !== 'none' ? smooth(pi) : 1;
+  const eo = a.animOut && a.animOut !== 'none' ? smooth(po) : 0;
+  const springIn = Math.cos(pi * 7.85398) * (1 - pi) * (1 - pi);
+  const dropIn = Math.abs(Math.cos(pi * 7.85398)) * (1 - pi) * (1 - pi);
+  const backOut = po * po * (2.6 * po - 1.6);
+
+  let dx = 0; let dy = 0; let f = 1; let alphaMul = 1;
+  const vin = 1 - ei;
+  if (a.animIn === 'from-left') dx -= refW * vin;
+  if (a.animIn === 'from-right') dx += refW * vin;
+  if (a.animIn === 'from-top') dy -= refH * vin;
+  if (a.animIn === 'from-bottom') dy += refH * vin;
+  if (a.animIn === 'bounce-left') dx -= refW * 0.55 * springIn;
+  if (a.animIn === 'bounce-right') dx += refW * 0.55 * springIn;
+  if (a.animIn === 'bounce-top') dy -= refH * 0.55 * springIn;
+  if (a.animIn === 'bounce-bottom') dy += refH * 0.55 * springIn;
+  if (a.animIn === 'pop-bounce') {
+    dy += refH * 0.065 * springIn;
+    if (pi < 0.25) alphaMul *= pi / 0.25;
+  }
+  if (a.animIn === 'drop-bounce') dy -= refH * 0.48 * dropIn;
+  if (a.animIn === 'shake-in' && pi < 1) {
+    const damp = (1 - pi) * (1 - pi);
+    dx += Math.sin((t - a.start) * 55) * (refW * 0.032) * damp;
+    dy += Math.cos((t - a.start) * 42) * (refH * 0.018) * damp;
+  }
+  if (a.animIn === 'swing-in' && pi < 1) {
+    const damp = (1 - pi) * (1 - pi);
+    dx += Math.sin(pi * 12.56637) * (refW * 0.12) * damp;
+    dy -= refH * 0.18 * (1 - ei);
+  }
+  if (a.animIn === 'neon-in' && pi < 1) {
+    alphaMul *= Math.sin(pi * 37.699) >= 0 ? 1 : 0.15;
+  }
+  if (a.animIn === 'zoom-in') f *= 0.6 + 0.4 * ei;
+  if (a.animIn === 'zoom-out') f *= 1.3 - 0.3 * ei;
+  if (a.animIn === 'pop-elastic') f *= 1 - 0.75 * springIn;
+  if (a.animIn === 'pulse-in' && pi < 1) f *= 1 + 0.18 * Math.sin(pi * 12.56637) * (1 - pi);
+
+  if (a.animOut === 'to-left') dx -= refW * eo;
+  if (a.animOut === 'to-right') dx += refW * eo;
+  if (a.animOut === 'to-top') dy -= refH * eo;
+  if (a.animOut === 'to-bottom') dy += refH * eo;
+  if (a.animOut === 'bounce-out-left') dx -= refW * 0.6 * backOut;
+  if (a.animOut === 'bounce-out-right') dx += refW * 0.6 * backOut;
+  if (a.animOut === 'bounce-out-top') dy -= refH * 0.6 * backOut;
+  if (a.animOut === 'bounce-out-bottom') dy += refH * 0.6 * backOut;
+  if (a.animOut === 'pop-down') {
+    dy += refH * 0.08 * backOut;
+    if (po > 0.65) alphaMul *= Math.max(0, (1 - po) / 0.35);
+  }
+  if (a.animOut === 'shake-out' && po > 0) {
+    const gain = po * po;
+    dx += Math.sin((t - a.start) * 55) * (refW * 0.032) * gain;
+    dy += Math.cos((t - a.start) * 42) * (refH * 0.018) * gain;
+  }
+  if (a.animOut === 'neon-out' && po > 0) {
+    alphaMul *= Math.sin(po * 37.699) >= 0 ? (1 - po * 0.5) : 0.1;
+  }
+  if (a.animOut === 'zoom-out') f *= 1 - 0.4 * eo;
+  if (a.animOut === 'zoom-in') f *= 1 + 0.3 * eo;
+  return { dx, dy, f, alphaMul: clamp(alphaMul, 0, 1) };
 }
 // ===== CHROMA KEY (PARIDAD 1:1 RGB COLORKEY PREVIEW <-> FFMPEG) Y SUBTÍTULOS KARAOKE =====
 function hexToRgb255(hex: string): [number, number, number] {
@@ -445,6 +572,39 @@ function getEffectiveWords(txt: TextOverlay): WordTiming[] {
 function escDrawtext(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/%/g, '\\%');
 }
+function hexToRgbaCss(hex: string, alpha: number): string {
+  const [r, g, b] = hexToRgb255(hex || '#000000');
+  return `rgba(${r},${g},${b},${clamp(alpha, 0, 1).toFixed(3)})`;
+}
+
+function buildTextShadowCss(txt: TextOverlay): string {
+  const parts: string[] = [];
+  if (txt.outline) {
+    parts.push(
+      '2px 0 0 #000', '-2px 0 0 #000', '0 2px 0 #000', '0 -2px 0 #000',
+      '1px 1px 0 #000', '-1px -1px 0 #000', '1px -1px 0 #000', '-1px 1px 0 #000'
+    );
+  }
+  if (txt.shadow) {
+    const col = txt.shadowColor || '#000000';
+    const op = clamp(txt.shadowOpacity ?? 0.8, 0.05, 1);
+    const sx = txt.shadowX ?? 4;
+    const sy = txt.shadowY ?? 4;
+    // 6 capas de caída Gaussiana progresiva para engañar al ojo con un degradado continuo
+    parts.push(
+      `${sx}px ${sy}px 2px ${hexToRgbaCss(col, op * 0.42)}`,
+      `${sx}px ${sy}px 5px ${hexToRgbaCss(col, op * 0.34)}`,
+      `${sx}px ${sy}px 9px ${hexToRgbaCss(col, op * 0.26)}`,
+      `${sx}px ${sy}px 14px ${hexToRgbaCss(col, op * 0.19)}`,
+      `${sx}px ${sy}px 20px ${hexToRgbaCss(col, op * 0.13)}`,
+      `${sx}px ${sy}px 28px ${hexToRgbaCss(col, op * 0.08)}`
+    );
+  } else {
+    parts.push('0 2px 10px rgba(0,0,0,0.85)');
+  }
+  return parts.join(', ');
+}
+
 function buildTextChainFF(
   txt: TextOverlay,
   inLabel: string,
@@ -458,17 +618,79 @@ function buildTextChainFF(
 ): { chain: string; outLabel: string } {
   const style: SubtitleStyle = txt.subStyle || 'static';
   const anT = animExprFF(txt, S, E, refW, refH);
-  let alphaExpr = '';
-  if (txt.fadeIn > 0 && txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,min((t-${S.toFixed(6)})/${txt.fadeIn},(${E.toFixed(6)}-t)/${txt.fadeOut})))'`;
-  else if (txt.fadeIn > 0) alphaExpr = `:alpha='max(0,min(1,(t-${S.toFixed(6)})/${txt.fadeIn}))'`;
-  else if (txt.fadeOut > 0) alphaExpr = `:alpha='max(0,min(1,(${E.toFixed(6)}-t)/${txt.fadeOut}))'`;
+  let baseAlpha = '1';
+  if (txt.fadeIn > 0 && txt.fadeOut > 0) baseAlpha = `max(0,min(1,min((t-${S.toFixed(6)})/${txt.fadeIn},(${E.toFixed(6)}-t)/${txt.fadeOut})))`;
+  else if (txt.fadeIn > 0) baseAlpha = `max(0,min(1,(t-${S.toFixed(6)})/${txt.fadeIn}))`;
+  else if (txt.fadeOut > 0) baseAlpha = `max(0,min(1,(${E.toFixed(6)}-t)/${txt.fadeOut}))`;
+  const combinedAlpha = anT.alpha ? `(${baseAlpha})*(${anT.alpha})` : (baseAlpha !== '1' ? baseAlpha : '');
+  const alphaExpr = combinedAlpha ? `:alpha='${combinedAlpha}'` : '';
   const outline = txt.outline ? ':borderw=4:bordercolor=black' : '';
   const baseColor = (txt.color || '#ffffff').replace('#', '0x');
   const hiColor = (txt.highlightColor || '#facc15').replace('#', '0x');
 
+  // Emisor de Sombra Esfumada en 6 capas con caída Gaussiana (del halo más abierto al núcleo suave)
+  let shStep = 0;
+  const emitShadowLayers = (
+    curLbl: string,
+    escapedText: string,
+    cxPos: number,
+    cyPos: number,
+    fSize: number,
+    tStart: number,
+    tEnd: number
+  ): { chain: string; outLbl: string } => {
+    if (!txt.shadow) return { chain: '', outLbl: curLbl };
+    const sHex = (txt.shadowColor || '#000000').replace('#', '0x');
+    const sOp = clamp(txt.shadowOpacity ?? 0.8, 0.05, 1);
+    const sx = Math.round(txt.shadowX ?? 4);
+    const sy = Math.round(txt.shadowY ?? 4);
+    // 6 anillos concéntricos con curva Gaussiana: cero escalones visibles entre capas
+    const layers = [
+      { bw: Math.max(10, Math.round(fSize * 0.26)), mult: +(sOp * 0.065).toFixed(3) },
+      { bw: Math.max(8,  Math.round(fSize * 0.20)), mult: +(sOp * 0.105).toFixed(3) },
+      { bw: Math.max(6,  Math.round(fSize * 0.14)), mult: +(sOp * 0.155).toFixed(3) },
+      { bw: Math.max(4,  Math.round(fSize * 0.09)), mult: +(sOp * 0.215).toFixed(3) },
+      { bw: Math.max(2,  Math.round(fSize * 0.05)), mult: +(sOp * 0.280).toFixed(3) },
+      { bw: Math.max(1,  Math.round(fSize * 0.02)), mult: +(sOp * 0.350).toFixed(3) },
+    ];
+    let c = curLbl;
+    let ch = '';
+    for (const ly of layers) {
+      const nxt = `${outPrefix}_sh${shStep++}`;
+      const shAlpha = combinedAlpha ? `:alpha='(${combinedAlpha})*${ly.mult}'` : `:alpha='${ly.mult}'`;
+      ch += `[${c}]drawtext=text='${escapedText}':x='${cxPos + sx}-text_w/2+(${anT.dx})':y='${cyPos + sy}-text_h/2+(${anT.dy})':fontsize=${fSize}:fontcolor=${sHex}:fontfile=${fontFile}:borderw=${ly.bw}:bordercolor=${sHex}${shAlpha}:enable='between(t,${tStart.toFixed(6)},${tEnd.toFixed(6)})'[${nxt}];`;
+      c = nxt;
+    }
+    return { chain: ch, outLbl: c };
+  };
+
   if (style === 'static') {
+    if (txt.animIn === 'typewriter' && txt.text.trim().length > 1) {
+      const fullText = txt.text;
+      const inDur = Math.min(Math.max(0.1, txt.animInDur ?? 0.6), Math.max(0.1, E - S));
+      const steps = Math.min(fullText.length, 18);
+      let cur = inLabel;
+      let chain = '';
+      for (let s = 1; s <= steps; s++) {
+        const charCount = s === steps ? fullText.length : Math.max(1, Math.round((s / steps) * fullText.length));
+        const subStr = fullText.slice(0, charCount);
+        const t0 = S + ((s - 1) / steps) * inDur;
+        const t1 = s === steps ? E : S + (s / steps) * inDur;
+        if (t1 <= t0) continue;
+        const escSub = escDrawtext(subStr);
+        const sh = emitShadowLayers(cur, escSub, txt.x, txt.y, txt.size, t0, t1);
+        chain += sh.chain;
+        cur = sh.outLbl;
+        const nxt = s === steps ? `${outPrefix}_out` : `${outPrefix}_tw${s}`;
+        chain += `[${cur}]drawtext=text='${escSub}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${t0.toFixed(6)},${t1.toFixed(6)})'[${nxt}];`;
+        cur = nxt;
+      }
+      return { chain, outLabel: cur };
+    }
+    const escFull = escDrawtext(txt.text);
+    const sh = emitShadowLayers(inLabel, escFull, txt.x, txt.y, txt.size, S, E);
     const out = `${outPrefix}_out`;
-    const chain = `[${inLabel}]drawtext=text='${escDrawtext(txt.text)}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[${out}];`;
+    const chain = sh.chain + `[${sh.outLbl}]drawtext=text='${escFull}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[${out}];`;
     return { chain, outLabel: out };
   }
 
@@ -486,8 +708,12 @@ function buildTextChainFF(
       const ws = Math.max(S, w.start - timeOffset);
       const we = Math.min(E, w.end - timeOffset);
       if (we <= ws) return;
+      const wEsc = escDrawtext(w.word);
+      const sh = emitShadowLayers(cur, wEsc, txt.x, txt.y, bigSize, ws, we);
+      chain += sh.chain;
+      cur = sh.outLbl;
       const nxt = wi === words.length - 1 ? `${outPrefix}_out` : `${outPrefix}_w${wi}`;
-      chain += `[${cur}]drawtext=text='${escDrawtext(w.word)}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${bigSize}:fontcolor=${hiColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${ws.toFixed(6)},${we.toFixed(6)})'[${nxt}];`;
+      chain += `[${cur}]drawtext=text='${wEsc}':x='${txt.x}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${bigSize}:fontcolor=${hiColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${ws.toFixed(6)},${we.toFixed(6)})'[${nxt}];`;
       cur = nxt;
     });
     if (cur === inLabel) {
@@ -497,7 +723,6 @@ function buildTextChainFF(
     return { chain, outLabel: cur };
   }
 
-  // Modos 'karaoke-color' y 'karaoke-box': posicionamos cada palabra en la fila centrada
   const charW = txt.size * 0.54;
   const spaceW = txt.size * 0.28;
   const wordWidths = words.map((w) => Math.max(txt.size * 0.35, w.word.length * charW));
@@ -509,6 +734,8 @@ function buildTextChainFF(
     return Math.round(cx);
   });
 
+  // OPTIMIZACIÓN CLAVE: en Karaoke pintamos las 6 capas de penumbra por palabra base,
+  // manteniendo alineación exacta con cada coordenada wx de la fila
   let cur = inLabel;
   let chain = '';
   let step = 0;
@@ -517,11 +744,12 @@ function buildTextChainFF(
     const ws = Math.max(S, w.start - timeOffset);
     const we = Math.min(E, w.end - timeOffset);
     const wEsc = escDrawtext(w.word);
-    // Capa base de la palabra durante toda la frase
+    const sh = emitShadowLayers(cur, wEsc, wx, txt.y, txt.size, S, E);
+    chain += sh.chain;
+    cur = sh.outLbl;
     const baseLbl = `${outPrefix}_b${step++}`;
     chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[${baseLbl}];`;
     cur = baseLbl;
-    // Capa activa resaltada cuando se pronuncia la palabra
     if (we > ws) {
       const actLbl = `${outPrefix}_a${step++}`;
       const boxSpec = style === 'karaoke-box' ? `:box=1:boxcolor=${hiColor}@0.92:boxborderw=8` : '';
@@ -534,31 +762,77 @@ function buildTextChainFF(
   chain += `[${cur}]null[${finalOut}];`;
   return { chain, outLabel: finalOut };
 }
-// ===== PARIDAD DE EXPORT: mismas animaciones como expresiones FFmpeg =====
-// ein/eout replican el smoothstep del preview; dx/dy mueven el overlay y f
-// escala el bitmap (scale eval=frame). t = tiempo del grafo (ya corrido por
-// chunkStart en el export chunked).
-function animExprFF(a: { animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number }, S: number, E: number, refW: number, refH: number): { dx: string; dy: string; f: string | null } {
-const ein = a.animIn && a.animIn !== 'none' ? (() => { const d = Math.max(0.05, a.animInDur ?? 0.5); const p = `clip((t-${S.toFixed(6)})/${d.toFixed(6)},0,1)`; return `(${p}*${p}*(3-2*${p}))`; })() : null;
-const eout = a.animOut && a.animOut !== 'none' ? (() => { const d = Math.max(0.05, a.animOutDur ?? 0.5); const q = `clip((t-${(E - d).toFixed(6)})/${d.toFixed(6)},0,1)`; return `(${q}*${q}*(3-2*${q}))`; })() : null;
-const dxT: string[] = [];
-const dyT: string[] = [];
-if (a.animIn === 'from-left') dxT.push(`-${refW}*(1-${ein})`);
-if (a.animIn === 'from-right') dxT.push(`${refW}*(1-${ein})`);
-if (a.animIn === 'from-top') dyT.push(`-${refH}*(1-${ein})`);
-if (a.animIn === 'from-bottom') dyT.push(`${refH}*(1-${ein})`);
-if (a.animOut === 'to-left') dxT.push(`-${refW}*${eout}`);
-if (a.animOut === 'to-right') dxT.push(`${refW}*${eout}`);
-if (a.animOut === 'to-top') dyT.push(`-${refH}*${eout}`);
-if (a.animOut === 'to-bottom') dyT.push(`${refH}*${eout}`);
-const dx = dxT.length ? dxT.join('+') : '0';
-const dy = dyT.length ? dyT.join('+') : '0';
-const fT: string[] = [];
-if (a.animIn === 'zoom-in') fT.push(`(0.6+0.4*${ein})`);
-if (a.animIn === 'zoom-out') fT.push(`(1.3-0.3*${ein})`);
-if (a.animOut === 'zoom-out') fT.push(`(1-0.4*${eout})`);
-if (a.animOut === 'zoom-in') fT.push(`(1+0.3*${eout})`);
-return { dx, dy, f: fT.length ? fT.join('*') : null };
+
+function animExprFF(a: { animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number }, S: number, E: number, refW: number, refH: number): { dx: string; dy: string; f: string | null; alpha: string | null } {
+  const dIn = Math.max(0.05, a.animInDur ?? 0.5);
+  const dOut = Math.max(0.05, a.animOutDur ?? 0.5);
+  const p = `clip((t-${S.toFixed(6)})/${dIn.toFixed(6)},0,1)`;
+  const q = `clip((t-${(E - dOut).toFixed(6)})/${dOut.toFixed(6)},0,1)`;
+  const ein = a.animIn && a.animIn !== 'none' ? `(${p}*${p}*(3-2*${p}))` : null;
+  const eout = a.animOut && a.animOut !== 'none' ? `(${q}*${q}*(3-2*${q}))` : null;
+  const springIn = `(cos(${p}*7.85398)*(1-${p})*(1-${p}))`;
+  const dropIn = `(abs(cos(${p}*7.85398))*(1-${p})*(1-${p}))`;
+  const backOut = `(${q}*${q}*(2.6*${q}-1.6))`;
+
+  const dxT: string[] = [];
+  const dyT: string[] = [];
+  const alphaT: string[] = [];
+
+  if (a.animIn === 'from-left') dxT.push(`-${refW}*(1-${ein})`);
+  if (a.animIn === 'from-right') dxT.push(`${refW}*(1-${ein})`);
+  if (a.animIn === 'from-top') dyT.push(`-${refH}*(1-${ein})`);
+  if (a.animIn === 'from-bottom') dyT.push(`${refH}*(1-${ein})`);
+  if (a.animIn === 'bounce-left') dxT.push(`-${Math.round(refW * 0.55)}*${springIn}`);
+  if (a.animIn === 'bounce-right') dxT.push(`${Math.round(refW * 0.55)}*${springIn}`);
+  if (a.animIn === 'bounce-top') dyT.push(`-${Math.round(refH * 0.55)}*${springIn}`);
+  if (a.animIn === 'bounce-bottom') dyT.push(`${Math.round(refH * 0.55)}*${springIn}`);
+  if (a.animIn === 'pop-bounce') {
+    dyT.push(`${Math.round(refH * 0.065)}*${springIn}`);
+    alphaT.push(`clip((t-${S.toFixed(6)})/${(dIn * 0.25).toFixed(6)},0,1)`);
+  }
+  if (a.animIn === 'drop-bounce') dyT.push(`-${Math.round(refH * 0.48)}*${dropIn}`);
+  if (a.animIn === 'shake-in') {
+    dxT.push(`sin((t-${S.toFixed(6)})*55)*${Math.round(refW * 0.032)}*(1-${p})*(1-${p})`);
+    dyT.push(`cos((t-${S.toFixed(6)})*42)*${Math.round(refH * 0.018)}*(1-${p})*(1-${p})`);
+  }
+  if (a.animIn === 'swing-in') {
+    dxT.push(`sin(${p}*12.56637)*${Math.round(refW * 0.12)}*(1-${p})*(1-${p})`);
+    dyT.push(`-${Math.round(refH * 0.18)}*(1-${ein})`);
+  }
+  if (a.animIn === 'neon-in') {
+    alphaT.push(`if(lt(${p},1),if(gte(sin(${p}*37.699),0),1,0.15),1)`);
+  }
+
+  if (a.animOut === 'to-left') dxT.push(`-${refW}*${eout}`);
+  if (a.animOut === 'to-right') dxT.push(`${refW}*${eout}`);
+  if (a.animOut === 'to-top') dyT.push(`-${refH}*${eout}`);
+  if (a.animOut === 'to-bottom') dyT.push(`${refH}*${eout}`);
+  if (a.animOut === 'bounce-out-left') dxT.push(`-${Math.round(refW * 0.6)}*${backOut}`);
+  if (a.animOut === 'bounce-out-right') dxT.push(`${Math.round(refW * 0.6)}*${backOut}`);
+  if (a.animOut === 'bounce-out-top') dyT.push(`-${Math.round(refH * 0.6)}*${backOut}`);
+  if (a.animOut === 'bounce-out-bottom') dyT.push(`${Math.round(refH * 0.6)}*${backOut}`);
+  if (a.animOut === 'pop-down') {
+    dyT.push(`${Math.round(refH * 0.08)}*${backOut}`);
+    alphaT.push(`clip((${E.toFixed(6)}-t)/${(dOut * 0.35).toFixed(6)},0,1)`);
+  }
+  if (a.animOut === 'shake-out') {
+    dxT.push(`sin((t-${S.toFixed(6)})*55)*${Math.round(refW * 0.032)}*${q}*${q}`);
+    dyT.push(`cos((t-${S.toFixed(6)})*42)*${Math.round(refH * 0.018)}*${q}*${q}`);
+  }
+  if (a.animOut === 'neon-out') {
+    alphaT.push(`if(gt(${q},0),if(gte(sin(${q}*37.699),0),1-${q}*0.5,0.1),1)`);
+  }
+
+  const dx = dxT.length ? dxT.join('+') : '0';
+  const dy = dyT.length ? dyT.join('+') : '0';
+  const fT: string[] = [];
+  if (a.animIn === 'zoom-in') fT.push(`(0.6+0.4*${ein})`);
+  if (a.animIn === 'zoom-out') fT.push(`(1.3-0.3*${ein})`);
+  if (a.animIn === 'pop-elastic') fT.push(`(1-0.75*${springIn})`);
+  if (a.animIn === 'pulse-in') fT.push(`(1+0.18*sin(${p}*12.56637)*(1-${p}))`);
+  if (a.animOut === 'zoom-out') fT.push(`(1-0.4*${eout})`);
+  if (a.animOut === 'zoom-in') fT.push(`(1+0.3*${eout})`);
+  return { dx, dy, f: fT.length ? fT.join('*') : null, alpha: alphaT.length ? alphaT.join('*') : null };
 }
 function effLen(c: Clip) { return (c.trimEnd - c.trimStart) / c.speed; }
 function formatTime(t: number) {
@@ -838,7 +1112,7 @@ async function captureFilmstrip(url: string, duration: number): Promise<string[]
 
 type TrimDrag = { id: string; edge: 'start' | 'end'; startX: number; origStart: number; origEnd: number };
 type MoveDrag = { id: string; startX: number; active: boolean };
-type OverlayDragItem = { id: string; type: 'text' | 'image' | 'audio' | 'video'; origStart: number; origEnd: number; origDuration?: number; origOffset?: number };
+type OverlayDragItem = { id: string; type: 'text' | 'image' | 'audio' | 'video'; origStart: number; origEnd: number; origDuration?: number; origOffset?: number; origKind?: 'texto' | 'subtitulo'; origLaneId?: string };
 type OverlayTimeDrag = { id: string; type: 'text' | 'image' | 'audio' | 'video'; mode: 'move' | 'start' | 'end' | 'lane'; startX: number; origStart: number; origEnd: number; origDuration?: number; origOffset?: number; group?: OverlayDragItem[] };
 type PanDrag = { id: string; startX: number; startY: number; origX: number; origY: number };
 type TimelinePanDrag = { pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number; moved: boolean };
@@ -2714,7 +2988,7 @@ function toggleProxies() {
   function updateTextOverlay(id: string, patch: Partial<TextOverlay>) { setTextOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
 function applyStyleToAllSubtitles(src: TextOverlay) {
 const total = textOverlaysRef.current.filter((t) => t.kind === 'subtitulo').length;
-setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, subStyle: src.subStyle, highlightColor: src.highlightColor, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur } : t)));
+setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, subStyle: src.subStyle, highlightColor: src.highlightColor, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur, shadow: src.shadow, shadowColor: src.shadowColor, shadowOpacity: src.shadowOpacity, shadowX: src.shadowX, shadowY: src.shadowY } : t)));
 showToast(`📑 Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info');
 }
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
@@ -3654,7 +3928,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
     setSelectedVoId(type === 'video' ? id : null);
     const idsForDrag = nextSelection.includes(id) ? nextSelection : [id];
     const snapshot = (itemId: string): OverlayDragItem | null => {
-      const t = textOverlaysRef.current.find((x) => x.id === itemId); if (t) return { id: itemId, type: 'text', origStart: t.start, origEnd: t.end };
+      const t = textOverlaysRef.current.find((x) => x.id === itemId); if (t) return { id: itemId, type: 'text', origStart: t.start, origEnd: t.end, origKind: t.kind || 'texto', origLaneId: t.laneId || (t.kind === 'subtitulo' ? 'subtitle-1' : 'text-1') };
       const i = imageOverlaysRef.current.find((x) => x.id === itemId); if (i) return { id: itemId, type: 'image', origStart: i.start, origEnd: i.end };
       const a = audioTracksRef.current.find((x) => x.id === itemId); if (a) return { id: itemId, type: 'audio', origStart: a.start, origEnd: a.start + a.duration, origDuration: a.duration, origOffset: a.offset };
       const v = videoOverlaysRef.current.find((x) => x.id === itemId); if (v) return { id: itemId, type: 'video', origStart: v.start, origEnd: v.end, origDuration: v.end - v.start, origOffset: v.offset };
@@ -3915,13 +4189,93 @@ if (d.mode === 'lane') {
       updateVideoOverlay(d.id, patch);
     }
   }
+  function applySubtitleAppearanceToText(txtId: string, destSubLaneId: string) {
+    const sampleSub = textOverlaysRef.current.find((t) => t.id !== txtId && t.kind === 'subtitulo');
+    setTextOverlays((prev) =>
+      prev.map((t) => {
+        if (t.id !== txtId) return t;
+        const updated: TextOverlay = sampleSub
+          ? {
+              ...t,
+              kind: 'subtitulo',
+              laneId: destSubLaneId,
+              font: sampleSub.font,
+              size: sampleSub.size,
+              bold: sampleSub.bold,
+              color: sampleSub.color,
+              outline: sampleSub.outline ?? true,
+              x: sampleSub.x,
+              y: sampleSub.y,
+              subStyle: sampleSub.subStyle || 'karaoke-color',
+              highlightColor: sampleSub.highlightColor || '#facc15',
+              fadeIn: sampleSub.fadeIn,
+              fadeOut: sampleSub.fadeOut,
+              animIn: sampleSub.animIn,
+              animInDur: sampleSub.animInDur,
+              animOut: sampleSub.animOut,
+              animOutDur: sampleSub.animOutDur,
+              shadow: sampleSub.shadow,
+              shadowColor: sampleSub.shadowColor,
+              shadowOpacity: sampleSub.shadowOpacity,
+              shadowX: sampleSub.shadowX,
+              shadowY: sampleSub.shadowY,
+            }
+          : {
+              ...t,
+              kind: 'subtitulo',
+              laneId: destSubLaneId,
+              font: 'sans',
+              size: Math.round(REF_HEIGHT * 0.05),
+              bold: true,
+              color: '#ffffff',
+              outline: true,
+              x: REF_WIDTH * 0.5,
+              y: REF_HEIGHT * 0.9,
+              subStyle: 'karaoke-color',
+              highlightColor: '#facc15',
+            };
+        updated.words = getEffectiveWords(updated);
+        return updated;
+      })
+    );
+    setFocusedLaneId(destSubLaneId);
+    setActiveLaneIds((prev) => ({ ...prev, subtitle: destSubLaneId }));
+    showToast('💬 Texto convertido en subtítulo con formato de pista SUB', 'info');
+  }
+
   function endOverlayTimeDrag() {
-overlayTimeDragRef.current = null;
-if (liftTimerRef.current) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
-liftedRef.current = false;
-setGhost(null);
-setDropPreview(null);
-}
+    const d = overlayTimeDragRef.current;
+    overlayTimeDragRef.current = null;
+    if (liftTimerRef.current) { window.clearTimeout(liftTimerRef.current); liftTimerRef.current = null; }
+    liftedRef.current = false;
+    setGhost(null);
+    setDropPreview(null);
+
+    if (d && d.type === 'text' && d.mode === 'move' && (d.origKind || 'texto') === 'texto') {
+      const currentTxt = textOverlaysRef.current.find((x) => x.id === d.id);
+      if (currentTxt && currentTxt.kind === 'subtitulo') {
+        const destSubLaneId = currentTxt.laneId || activeLaneIds.subtitle || 'subtitle-1';
+        const prevTextLaneId = d.origLaneId || activeLaneIds.text || 'text-1';
+        updateTextOverlay(d.id, { kind: 'texto', laneId: prevTextLaneId });
+        const targetStart = currentTxt.start;
+        const targetEnd = currentTxt.end;
+
+        setConfirmDialog({
+          icon: '💬',
+          title: 'Convertir a Subtítulo',
+          message: '¿Deseás convertir este texto en subtítulo?',
+          detail: 'Se moverá a la pista de subtítulos y adoptará automáticamente la apariencia, posición inferior y estilo Karaoke de tus subtítulos.',
+          confirmLabel: 'Sí, convertir a subtítulo',
+          danger: false,
+          onConfirm: () => {
+            setConfirmDialog(null);
+            updateTextOverlay(d.id, { start: targetStart, end: targetEnd, laneId: destSubLaneId, kind: 'subtitulo' });
+            applySubtitleAppearanceToText(d.id, destSubLaneId);
+          },
+        });
+      }
+    }
+  }
   function startOverlayPosDrag(e: React.PointerEvent, type: 'text' | 'image' | 'video', id: string) {
     e.stopPropagation(); e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
     selectOnly(id, type);
@@ -5153,7 +5507,7 @@ const propsTabs = (() => {
 const tabs: { id: string; label: string; icon: React.ReactNode }[] = [{ id: 'inspector', label: 'Inspector', icon: <IconPropsInspector className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> }];
 if (selectedClip || selectedText || selectedVo) tabs.push({ id: 'estilo', label: 'Estilo', icon: <IconPropsPalette className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
 tabs.push({ id: 'animacion', label: 'Animación', icon: <IconPropsWand className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
-if (selectedClip || (selectedText && selectedText.kind === 'subtitulo')) tabs.push({ id: 'subtitulos', label: 'Subtítulos', icon: <IconPropsCaptions className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
+if (selectedClip) tabs.push({ id: 'subtitulos', label: 'Subtítulos', icon: <IconPropsCaptions className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
 tabs.push({ id: 'herramientas', label: 'Herramientas', icon: <IconPropsWrench className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
 return tabs;
 })();
@@ -5499,6 +5853,7 @@ const an = animOffsets(activeImage, playhead, REF_WIDTH, REF_HEIGHT);
                     let alpha = 1;
                     if (activeImage.fadeIn > 0 && localInWindow < activeImage.fadeIn) alpha = Math.max(localInWindow / activeImage.fadeIn, 0);
                     if (activeImage.fadeOut > 0 && localInWindow > windowLen - activeImage.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeImage.fadeOut, 0);
+                    alpha *= an.alphaMul;
                     return (
                       <div key={activeImage.id} onPointerDown={(e) => startOverlayPosDrag(e, 'image', activeImage.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag}
                         className="pointer-events-auto absolute cursor-move touch-none select-none"
@@ -5516,11 +5871,19 @@ const an = animOffsets(activeImage, playhead, REF_WIDTH, REF_HEIGHT);
                     let alpha = 1;
                     if (activeText.fadeIn > 0 && localInWindow < activeText.fadeIn) alpha = Math.max(localInWindow / activeText.fadeIn, 0);
                     if (activeText.fadeOut > 0 && localInWindow > windowLen - activeText.fadeOut) alpha = Math.max((windowLen - localInWindow) / activeText.fadeOut, 0);
+                    alpha *= an.alphaMul;
                     const styleMode: SubtitleStyle = activeText.subStyle || 'static';
+                    const displayStaticText = (() => {
+                      if (activeText.animIn === 'typewriter' && styleMode === 'static') {
+                        const inDur = Math.max(0.1, activeText.animInDur ?? 0.6);
+                        const prog = clamp(localInWindow / inDur, 0, 1);
+                        const count = Math.max(1, Math.ceil(prog * activeText.text.length));
+                        return activeText.text.slice(0, count);
+                      }
+                      return activeText.text;
+                    })();
                     const hiCol = activeText.highlightColor || '#facc15';
-                    const shadowCss = activeText.outline
-                      ? '2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 10px rgba(0,0,0,0.85)'
-                      : '0 2px 10px rgba(0,0,0,0.85)';
+                    const shadowCss = buildTextShadowCss(activeText);
                     const words = styleMode !== 'static' ? getEffectiveWords(activeText) : [];
                     const activeWordIdx = words.findIndex((w) => playhead >= w.start && playhead <= w.end);
                     return (
@@ -5530,7 +5893,7 @@ const an = animOffsets(activeImage, playhead, REF_WIDTH, REF_HEIGHT);
                         title="Arrastrá para mover el texto">
                         {styleMode === 'static' || words.length === 0 ? (
                           <p className="whitespace-nowrap" style={{ fontSize: activeText.size, fontWeight: activeText.bold ? 700 : 400, fontFamily: FONT_STACKS[activeText.font], color: activeText.color, textShadow: shadowCss }}>
-                            {activeText.text}
+                            {displayStaticText}
                           </p>
                         ) : styleMode === 'single-word' ? (
                           <p className="whitespace-nowrap transition-transform duration-75" style={{ fontSize: Math.round(activeText.size * 1.28), fontWeight: 900, fontFamily: FONT_STACKS[activeText.font], color: hiCol, textShadow: shadowCss }}>
@@ -5580,6 +5943,7 @@ const an = animOffsets(vo, playhead, REF_WIDTH, REF_HEIGHT);
 let voAlpha = 1;
 if (vo.fadeIn > 0 && liw < vo.fadeIn) voAlpha = Math.max(liw / vo.fadeIn, 0);
 if (vo.fadeOut > 0 && liw > wl - vo.fadeOut) voAlpha = Math.max((wl - liw) / vo.fadeOut, 0);
+voAlpha *= an.alphaMul;
 const voClip = vo.shape === 'circle' ? 'circle(closest-side at 50% 50%)' : vo.shape === 'round' ? 'inset(0 round 10%)' : undefined;
 return (
 <div key={vo.id} onPointerDown={(e) => startOverlayPosDrag(e, 'video', vo.id)} onPointerMove={moveOverlayPosDrag} onPointerUp={endOverlayPosDrag} onPointerCancel={endOverlayPosDrag}
@@ -5811,6 +6175,117 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
 <label className="block select-none text-xs text-slate-400">Color principal del texto</label>
 <input type="color" value={selectedText.color} onChange={(e) => updateTextOverlay(selectedText.id, { color: e.target.value })} className="h-9 w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-1" />
 <button onClick={() => updateTextOverlay(selectedText.id, { outline: !selectedText.outline })} className={cx('w-full rounded-lg py-2 text-xs font-semibold transition-colors', selectedText.outline ? 'border border-fuchsia-400/40 bg-fuchsia-500/20 text-fuchsia-200' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedText.outline ? '🔲 Contorno negro: ON' : '🔲 Contorno negro: OFF'}</button>
+
+{/* ===== SOMBRA PARALELA ESFUMADA ===== */}
+<div className="space-y-2.5 border-t border-slate-800 pt-3">
+  <div className="flex items-center justify-between gap-2">
+    <p className="truncate text-[10px] font-black uppercase tracking-wider text-cyan-300">🌑 Sombra paralela (Esfumada)</p>
+    <button
+      type="button"
+      onClick={() =>
+        updateTextOverlay(selectedText.id, {
+          shadow: !selectedText.shadow,
+          shadowColor: selectedText.shadowColor || '#000000',
+          shadowOpacity: selectedText.shadowOpacity ?? 0.8,
+          shadowX: selectedText.shadowX ?? 4,
+          shadowY: selectedText.shadowY ?? 4,
+        })
+      }
+      className={cx(
+        'shrink-0 rounded-lg border px-2.5 py-1 text-[10px] font-bold transition',
+        selectedText.shadow
+          ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
+          : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
+      )}
+    >
+      {selectedText.shadow ? 'Activa ✓' : 'Desactivada'}
+    </button>
+  </div>
+
+  {selectedText.shadow && (
+    <div className="space-y-2.5 rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-2.5">
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-semibold text-slate-300">Color de sombra / resplandor</span>
+          <button
+            type="button"
+            onClick={() => updateTextOverlay(selectedText.id, { shadowX: 0, shadowY: 0 })}
+            className="rounded border border-cyan-400/40 bg-cyan-500/15 px-2 py-0.5 text-[9px] font-bold text-cyan-200 transition hover:bg-cyan-500/25"
+            title="Centra la sombra detrás del texto para crear un efecto de luz de neón (Glow)"
+          >
+            💡 Centrar (Glow)
+          </button>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="color"
+            value={selectedText.shadowColor || '#000000'}
+            onChange={(e) => updateTextOverlay(selectedText.id, { shadowColor: e.target.value })}
+            className="h-8 w-14 cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-0.5"
+          />
+          {[
+            { hex: '#000000', label: 'Negro' },
+            { hex: '#22d3ee', label: 'Cian Neón' },
+            { hex: '#f43f5e', label: 'Rosa Neón' },
+            { hex: '#facc15', label: 'Dorado' },
+            { hex: '#a855f7', label: 'Violeta' },
+          ].map((preset) => (
+            <button
+              key={preset.hex}
+              type="button"
+              onClick={() => updateTextOverlay(selectedText.id, { shadowColor: preset.hex })}
+              className="h-6 w-6 rounded-full border border-slate-600 transition-transform hover:scale-110"
+              style={{ backgroundColor: preset.hex }}
+              title={preset.label}
+            />
+          ))}
+        </div>
+      </div>
+
+      <label className="block select-none text-xs text-slate-400">
+        Intensidad / Opacidad: <span className="font-mono text-cyan-300">{Math.round((selectedText.shadowOpacity ?? 0.8) * 100)}%</span>
+        <input
+          type="range"
+          min={0.1}
+          max={1}
+          step={0.05}
+          value={selectedText.shadowOpacity ?? 0.8}
+          onChange={(e) => updateTextOverlay(selectedText.id, { shadowOpacity: Number(e.target.value) })}
+          className="mt-1 w-full accent-cyan-400"
+        />
+      </label>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block select-none text-[11px] text-slate-400">
+          Posición X: <span className="font-mono text-cyan-300">{selectedText.shadowX ?? 4}px</span>
+          <input
+            type="range"
+            min={-25}
+            max={25}
+            step={1}
+            value={selectedText.shadowX ?? 4}
+            onChange={(e) => updateTextOverlay(selectedText.id, { shadowX: Number(e.target.value) })}
+            className="mt-1 w-full accent-cyan-400"
+          />
+        </label>
+        <label className="block select-none text-[11px] text-slate-400">
+          Posición Y: <span className="font-mono text-cyan-300">{selectedText.shadowY ?? 4}px</span>
+          <input
+            type="range"
+            min={-25}
+            max={25}
+            step={1}
+            value={selectedText.shadowY ?? 4}
+            onChange={(e) => updateTextOverlay(selectedText.id, { shadowY: Number(e.target.value) })}
+            className="mt-1 w-full accent-cyan-400"
+          />
+        </label>
+      </div>
+      <p className="text-[10px] leading-relaxed text-slate-500">Difuminado Gaussiano suave en 6 capas de penumbra (en preview y exportación).</p>
+    </div>
+  )}
+</div>
+
 <div className="space-y-2 border-t border-slate-800 pt-3">
   <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎤 Modo Karaoke / Hormozi</p>
   <div className="grid grid-cols-2 gap-1.5">
@@ -5843,7 +6318,7 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
   )}
   {selectedText.kind === 'subtitulo' && (
     <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-1.5 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20">
-      📑 Aplicar estilo a todos los subtítulos
+      📑 Aplicar estilo y sombra a todos los subtítulos
     </button>
   )}
 </div>
@@ -5943,7 +6418,7 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
   <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
     <select value={selectedText.animIn || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-      {(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+      {TEXT_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
     </select>
   </label>
   {selectedText.animIn && selectedText.animIn !== 'none' && (
@@ -5951,13 +6426,18 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
     <select value={selectedText.animOut || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-      {(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+      {TEXT_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
     </select>
   </label>
   {selectedText.animOut && selectedText.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedText.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animOutDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
   )}
-  <p className="text-[10px] leading-relaxed text-slate-500">Mismo movimiento en el preview y en el export. Los slides cruzan el canvas; el zoom escala el elemento.</p>
+  {selectedText.kind === 'subtitulo' && (
+    <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="mt-2 w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Aplica las animaciones, fades y estilo de este subtítulo a toda la pista SUB">
+      📑 Aplicar animaciones y estilo a todos los subtítulos
+    </button>
+  )}
+  <p className="text-[10px] leading-relaxed text-slate-500">Paridad 1:1 entre el preview y el exportador de FFmpeg.</p>
 </div>
 </>)}
 {propsTab === 'animacion' && selectedImage && (<>
@@ -5967,7 +6447,7 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
   <p className="text-[10px] font-black uppercase tracking-wider text-pink-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
     <select value={selectedImage.animIn || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
-      {(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+      {MEDIA_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
     </select>
   </label>
   {selectedImage.animIn && selectedImage.animIn !== 'none' && (
@@ -5975,13 +6455,13 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
     <select value={selectedImage.animOut || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
-      {(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+      {MEDIA_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
     </select>
   </label>
   {selectedImage.animOut && selectedImage.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedImage.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animOutDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
   )}
-  <p className="text-[10px] leading-relaxed text-slate-500">Mismo movimiento en el preview y en el export. Los slides cruzan el canvas; el zoom escala el elemento.</p>
+  <p className="text-[10px] leading-relaxed text-slate-500">Paridad 1:1 entre el preview y el exportador de FFmpeg.</p>
 </div>
 </>)}
 {propsTab === 'animacion' && selectedVo && (<>
@@ -5991,7 +6471,7 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
   <p className="text-[10px] font-black uppercase tracking-wider text-amber-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
     <select value={selectedVo.animIn || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-      {(Object.keys(ANIM_IN_LABELS) as OverlayAnim[]).map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+      {MEDIA_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
     </select>
   </label>
   {selectedVo.animIn && selectedVo.animIn !== 'none' && (
@@ -5999,13 +6479,13 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
     <select value={selectedVo.animOut || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-      {(Object.keys(ANIM_OUT_LABELS) as OverlayAnimOut[]).map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+      {MEDIA_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
     </select>
   </label>
   {selectedVo.animOut && selectedVo.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedVo.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animOutDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
   )}
-  <p className="text-[10px] leading-relaxed text-slate-500">Mismo movimiento en el preview y en el export. Los slides cruzan el canvas; el zoom escala el elemento.</p>
+  <p className="text-[10px] leading-relaxed text-slate-500">Paridad 1:1 entre el preview y el exportador de FFmpeg.</p>
 </div>
 </>)}
 {propsTab === 'animacion' && selectedAudio && (<>
