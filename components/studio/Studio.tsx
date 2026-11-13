@@ -8,7 +8,6 @@ import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, as
 import { extractSegment, extractAudioSegment } from './segmentExtractor';
 import { computeChunkBoundaries } from './chunkedExport';
 import { CommentStudioModal } from './commentStudio';
-import { UiIcon, DialogGlyph, cleanLabel, IconSelect, ANIM_ICON, TRANSITION_ICON, ASR_ICON, SUBSTYLE_ICON } from './uiIcons';
 
 
 type TransitionType =
@@ -79,40 +78,40 @@ type OverlayAnimOut =
   | 'zoom-out';
 const ANIM_IN_LABELS: Record<OverlayAnim, string> = {
   'none': 'Sin animación',
-  'pop-bounce': ' Pop con rebote (Impacto)',
-  'bounce-bottom': ' Rebote desde abajo',
-  'bounce-top': ' Rebote desde arriba',
-  'bounce-left': ' Rebote desde izquierda',
-  'bounce-right': ' Rebote desde derecha',
-  'drop-bounce': ' Caída con pique',
-  'shake-in': ' Sacudida / Terremoto',
-  'swing-in': ' Vaivén / Péndulo',
-  'neon-in': ' Destello Neón',
-  'typewriter': ' Máquina de escribir',
-  'from-left': '↩ Deslizar desde izquierda',
-  'from-right': '↪ Deslizar desde derecha',
-  'from-top': ' Deslizar desde arriba',
-  'from-bottom': ' Deslizar desde abajo',
-  'pop-elastic': ' Zoom elástico (Pop)',
-  'pulse-in': ' Pulso / Latido',
-  'zoom-in': ' Zoom creciendo',
-  'zoom-out': ' Zoom encogiendo',
+  'pop-bounce': '💥 Pop con rebote (Impacto)',
+  'bounce-bottom': '🏀 Rebote desde abajo',
+  'bounce-top': '🏀 Rebote desde arriba',
+  'bounce-left': '🏀 Rebote desde izquierda',
+  'bounce-right': '🏀 Rebote desde derecha',
+  'drop-bounce': '🪨 Caída con pique',
+  'shake-in': '📳 Sacudida / Terremoto',
+  'swing-in': '🌊 Vaivén / Péndulo',
+  'neon-in': '⚡ Destello Neón',
+  'typewriter': '⌨️ Máquina de escribir',
+  'from-left': '↩️ Deslizar desde izquierda',
+  'from-right': '↪️ Deslizar desde derecha',
+  'from-top': '⬇️ Deslizar desde arriba',
+  'from-bottom': '⬆️ Deslizar desde abajo',
+  'pop-elastic': '🎈 Zoom elástico (Pop)',
+  'pulse-in': '💓 Pulso / Latido',
+  'zoom-in': '🔍 Zoom creciendo',
+  'zoom-out': '🔭 Zoom encogiendo',
 };
 const ANIM_OUT_LABELS: Record<OverlayAnimOut, string> = {
   'none': 'Sin animación',
-  'pop-down': ' Caída rápida (Pop Out)',
-  'bounce-out-bottom': ' Rebote hacia abajo',
-  'bounce-out-top': ' Rebote hacia arriba',
-  'bounce-out-left': ' Rebote hacia izquierda',
-  'bounce-out-right': ' Rebote hacia derecha',
-  'shake-out': ' Sacudida final',
-  'neon-out': ' Apagado Neón',
-  'to-left': ' Deslizar a izquierda',
-  'to-right': ' Deslizar a derecha',
-  'to-top': ' Deslizar hacia arriba',
-  'to-bottom': ' Deslizar hacia abajo',
-  'zoom-in': ' Zoom creciendo',
-  'zoom-out': ' Zoom encogiendo',
+  'pop-down': '💥 Caída rápida (Pop Out)',
+  'bounce-out-bottom': '🏀 Rebote hacia abajo',
+  'bounce-out-top': '🏀 Rebote hacia arriba',
+  'bounce-out-left': '🏀 Rebote hacia izquierda',
+  'bounce-out-right': '🏀 Rebote hacia derecha',
+  'shake-out': '📳 Sacudida final',
+  'neon-out': '⚡ Apagado Neón',
+  'to-left': '⬅️ Deslizar a izquierda',
+  'to-right': '➡️ Deslizar a derecha',
+  'to-top': '⬆️ Deslizar hacia arriba',
+  'to-bottom': '⬇️ Deslizar hacia abajo',
+  'zoom-in': '🔍 Zoom creciendo',
+  'zoom-out': '🔭 Zoom encogiendo',
 };
 const TEXT_ANIM_IN_KEYS: OverlayAnim[] = [
   'none', 'pop-bounce', 'bounce-bottom', 'bounce-top', 'bounce-left', 'bounce-right',
@@ -232,35 +231,35 @@ function previewSrc(c: Clip) { return (proxiesEnabled && proxyUrlMap.get(c.asset
 
 const TRANSITION_TYPES: { id: TransitionType; label: string; icon: string }[] = [
   { id: 'none', label: 'Sin transición', icon: '⊘' },
-  { id: 'fade', label: 'Fade', icon: '' },
-  { id: 'dissolve', label: 'Disolver', icon: '' },
-  { id: 'fadeblack', label: 'Fundido negro', icon: '' },
-  { id: 'fadewhite', label: 'Fundido blanco', icon: '' },
-  { id: 'fadegrays', label: 'Fundido grises', icon: '' },
-  { id: 'pixelize', label: 'Pixelado', icon: '' },
-  { id: 'hblur', label: 'Blur', icon: '' },
-  { id: 'wipeleft', label: 'Barrido izq', icon: '' },
-  { id: 'wiperight', label: 'Barrido der', icon: '' },
-  { id: 'wipeup', label: 'Barrido arriba', icon: '' },
-  { id: 'wipedown', label: 'Barrido abajo', icon: '' },
-  { id: 'hlslice', label: 'Persianas H', icon: '' },
-  { id: 'vuslice', label: 'Persianas V', icon: '' },
-  { id: 'squeezeh', label: 'Granero H', icon: '' },
-  { id: 'squeezev', label: 'Granero V', icon: '' },
-  { id: 'slideleft', label: 'Deslizar izq', icon: '' },
-  { id: 'slideright', label: 'Deslizar der', icon: '' },
-  { id: 'slideup', label: 'Deslizar arriba', icon: '' },
-  { id: 'slidedown', label: 'Deslizar abajo', icon: '' },
-  { id: 'smoothleft', label: 'Suave izq', icon: '' },
-  { id: 'smoothright', label: 'Suave der', icon: '' },
-  { id: 'circleopen', label: 'Círculo abre', icon: '' },
-  { id: 'circleclose', label: 'Círculo cierra', icon: '' },
-  { id: 'circlecrop', label: 'Recorte círculo', icon: '' },
-  { id: 'rectcrop', label: 'Recorte rect', icon: '' },
-  { id: 'radial', label: 'Radial', icon: '' },
-  { id: 'zoomin', label: 'Zoom in', icon: '' },
-  { id: 'diagtl', label: 'Diagonal ↖', icon: '↖' },
-  { id: 'diagbr', label: 'Diagonal ↘', icon: '↘' },
+  { id: 'fade', label: 'Fade', icon: '🌫️' },
+  { id: 'dissolve', label: 'Disolver', icon: '💧' },
+  { id: 'fadeblack', label: 'Fundido negro', icon: '⬛' },
+  { id: 'fadewhite', label: 'Fundido blanco', icon: '⬜' },
+  { id: 'fadegrays', label: 'Fundido grises', icon: '🩶' },
+  { id: 'pixelize', label: 'Pixelado', icon: '🟪' },
+  { id: 'hblur', label: 'Blur', icon: '🌁' },
+  { id: 'wipeleft', label: 'Barrido izq', icon: '◀️' },
+  { id: 'wiperight', label: 'Barrido der', icon: '▶️' },
+  { id: 'wipeup', label: 'Barrido arriba', icon: '⬆️' },
+  { id: 'wipedown', label: 'Barrido abajo', icon: '⬇️' },
+  { id: 'hlslice', label: 'Persianas H', icon: '🪟' },
+  { id: 'vuslice', label: 'Persianas V', icon: '🪟' },
+  { id: 'squeezeh', label: 'Granero H', icon: '🚪' },
+  { id: 'squeezev', label: 'Granero V', icon: '🚪' },
+  { id: 'slideleft', label: 'Deslizar izq', icon: '⏪' },
+  { id: 'slideright', label: 'Deslizar der', icon: '⏩' },
+  { id: 'slideup', label: 'Deslizar arriba', icon: '🔼' },
+  { id: 'slidedown', label: 'Deslizar abajo', icon: '🔽' },
+  { id: 'smoothleft', label: 'Suave izq', icon: '🛝' },
+  { id: 'smoothright', label: 'Suave der', icon: '🛝' },
+  { id: 'circleopen', label: 'Círculo abre', icon: '⭕' },
+  { id: 'circleclose', label: 'Círculo cierra', icon: '🔵' },
+  { id: 'circlecrop', label: 'Recorte círculo', icon: '🎯' },
+  { id: 'rectcrop', label: 'Recorte rect', icon: '📐' },
+  { id: 'radial', label: 'Radial', icon: '🌀' },
+  { id: 'zoomin', label: 'Zoom in', icon: '🔍' },
+  { id: 'diagtl', label: 'Diagonal ↖', icon: '↖️' },
+  { id: 'diagbr', label: 'Diagonal ↘', icon: '↘️' },
 ];
 
 // Fusible: solo nombres que FFmpeg acepta en xfade. Cualquier otro → fade (evita crashes).
@@ -1293,7 +1292,7 @@ function TransitionPickerModal({ clip, onCancel, onApply }: { clip: Clip; onCanc
       <div className="flex max-h-[86vh] w-[min(94vw,30rem)] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl shadow-cyan-500/10" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
           <h2 className="text-sm font-black text-white">Transiciones</h2>
-          <button onClick={onCancel} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white" title="Cerrar"><UiIcon name="x" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
+          <button onClick={onCancel} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white" title="Cerrar">✕</button>
         </div>
         <div ref={gridRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-3">
           {TRANSITION_TYPES.map((t) => {
@@ -1306,7 +1305,7 @@ function TransitionPickerModal({ clip, onCancel, onApply }: { clip: Clip; onCanc
                 className="group flex flex-col gap-1.5 outline-none">
                 <div className={`relative overflow-hidden rounded-lg border-2 transition-all ${isPicked ? 'border-slate-200/90 shadow-lg shadow-slate-200/20 ring-2 ring-slate-200/40' : 'border-slate-700/60 group-hover:border-slate-500'}`}>
                   {noVideo ? (
-                    <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900 text-2xl">{<UiIcon name={TRANSITION_ICON[t.id] || 'sparkles'} className="h-7 w-7 text-slate-400" />}</div>
+                    <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900 text-2xl">{t.icon}</div>
                   ) : (
                     <video data-tid={t.id} src={`/transitions/${t.id}.mp4`} muted loop playsInline preload="metadata"
                       onError={() => setMissing((m) => (m.includes(t.id) ? m : [...m, t.id]))}
@@ -1381,11 +1380,11 @@ return (
 <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm" onClick={onCancel}>
 <div className="flex max-h-[88vh] w-[min(94vw,32rem)] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl shadow-fuchsia-500/10" onClick={(e) => e.stopPropagation()}>
 <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-<h2 className="text-sm font-black text-white"><UiIcon name="mic" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Subtítulos automáticos</h2>
-<button onClick={onCancel} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white" title="Cerrar"><UiIcon name="x" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
+<h2 className="text-sm font-black text-white">🎙 Subtítulos automáticos</h2>
+<button onClick={onCancel} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white" title="Cerrar">✕</button>
 </div>
 <div className="space-y-3 overflow-y-auto p-4">
-<p className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[11px] leading-relaxed text-cyan-200"><UiIcon name="lock" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Whisper corre 100% en tu dispositivo: tu voz nunca sale de esta pestaña. La primera vez por modelo se descarga; después queda en caché ().</p>
+<p className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[11px] leading-relaxed text-cyan-200">🔒 Whisper corre 100% en tu dispositivo: tu voz nunca sale de esta pestaña. La primera vez por modelo se descarga; después queda en caché (✓).</p>
 <div className="grid grid-cols-2 gap-2">
 {ASR_MODELS.map((m) => {
 const dis = locked(m);
@@ -1395,18 +1394,18 @@ const e = clipDuration * asrSpeedFactor(m.id, isMobile, f);
 return (
 <button key={m.id} disabled={dis} onClick={() => setModelId(m.id)}
 className={`relative rounded-xl border p-2.5 text-left transition ${sel ? 'border-fuchsia-400 bg-fuchsia-500/15 ring-1 ring-fuchsia-400' : dis ? 'border-slate-800 bg-slate-900/40 opacity-60' : 'border-slate-700 bg-slate-900/60 hover:border-slate-500'}`}>
-{m.plus && !isPlus && <span className="absolute -right-1.5 -top-1.5 text-xs"><UiIcon name="lock" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>}
-<div className="flex items-center gap-1.5 text-sm font-black text-white">{<UiIcon name={ASR_ICON[m.id] || 'mic'} className="mr-1 inline h-3.5 w-3.5 shrink-0 align-[-0.18em]" />} {m.label}</div>
-<div className="mt-0.5 text-[10px] text-amber-300">{''.repeat(m.stars)}{''.repeat(5 - m.stars)}</div>
+{m.plus && !isPlus && <span className="absolute -right-1.5 -top-1.5 text-xs">🔒</span>}
+<div className="flex items-center gap-1.5 text-sm font-black text-white">{m.icon} {m.label}</div>
+<div className="mt-0.5 text-[10px] text-amber-300">{'★'.repeat(m.stars)}{'☆'.repeat(5 - m.stars)}</div>
 <p className="mt-1 text-[10px] leading-snug text-slate-400">{m.desc}</p>
-<p className="mt-1 text-[10px] font-semibold text-slate-300">{downloaded.includes(m.id) ? ' ya en tu equipo' : `↓ ~${m.mb} MB`} · {f >= 999 ? '—' : fmtEst(e)}</p>
+<p className="mt-1 text-[10px] font-semibold text-slate-300">{downloaded.includes(m.id) ? '✓ ya en tu equipo' : `↓ ~${m.mb} MB`} · {f >= 999 ? '—' : fmtEst(e)}</p>
 {m.plus && !isPlus && <p className="mt-0.5 text-[9px] text-slate-500">Requiere Clipedia Plus</p>}
 {isMobile && f >= 999 && <p className="mt-0.5 text-[9px] text-slate-500">En el celular: usalo desde la PC</p>}
 </button>
 );
 })}
 </div>
-{isPlus && (<p className="text-[10px] text-amber-200"> Beta privada: modelos Plus desbloqueados temporalmente.</p>)}
+{isPlus && (<p className="text-[10px] text-amber-200">🎁 Beta privada: modelos Plus desbloqueados temporalmente.</p>)}
 <label className="block text-xs font-semibold text-slate-300">Idioma del audio
 <select value={lang} onChange={(e) => setLang(e.target.value as AsrLanguage)} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
 {ASR_LANGS.map((l) => (<option key={l.id} value={l.id}>{l.label}</option>))}
@@ -1683,7 +1682,7 @@ const blendLen = (i: number): number => {
   // ===== GEOMETRÍA DE TIMELINE (comprimida en modo preview de transiciones) =====
   const dAfter = (i: number): number => {
 // GEOMETRÍA CANÓNICA (29/10): la compresión por transiciones ya no depende
-// del modo : la timeline muestra SIEMPRE el solape real que el export
+// del modo 🟢: la timeline muestra SIEMPRE el solape real que el export
 // produce, y el audio vinculado vive en ese mismo espacio de tiempo.
 if (i < 0 || i >= clips.length - 1) return 0;
     const tr = clips[i].transition;
@@ -1806,7 +1805,7 @@ setDraggingId(null);
 const cur = ppsRef.current;
 const mid = midOf(e);
 pinchRef.current = { dist: distOf(e), pps: cur, timeAtMid: (mid.x + container.scrollLeft) / cur, lastMidY: mid.y };
-if (!pinchHintRef.current) { pinchHintRef.current = true; showToast(' Pinch = zoom · dos dedos arrastrando = pan vertical', 'info', 2600); }
+if (!pinchHintRef.current) { pinchHintRef.current = true; showToast('🤏 Pinch = zoom · dos dedos arrastrando = pan vertical', 'info', 2600); }
 e.preventDefault();
 };
 const onMove = (e: TouchEvent) => {
@@ -1946,7 +1945,7 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
           setActiveLaneIds({ audio: restoredLanes.find((l) => l.kind === 'audio')?.id || 'audio-1', image: restoredLanes.find((l) => l.kind === 'image')?.id || 'image-1', video: restoredLanes.find((l) => l.kind === 'video')?.id || 'video-1', text: restoredLanes.find((l) => l.kind === 'text')?.id || 'text-1', subtitle: restoredLanes.find((l) => l.kind === 'subtitle')?.id || 'subtitle-1' });
           if (proj.settings) setExportSettings((s) => ({ ...s, ...proj.settings }));
           setTimeout(() => { applyingRef.current = false; }, 80);
-          showToast(missing ? ` Proyecto restaurado (${missing} elemento(s) sin archivo local)` : ' Proyecto restaurado desde tu navegador', 'info');
+          showToast(missing ? `📂 Proyecto restaurado (${missing} elemento(s) sin archivo local)` : '📂 Proyecto restaurado desde tu navegador', 'info');
         }
       } catch (e) { console.error('[Autosave] Error restaurando:', e); }
     })();
@@ -2011,7 +2010,7 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
     fpRef.current = fp;
     if (previewTransitionsRef.current) {
       setPreviewTransitions(false);
-      showToast(' Previsualización desactivada: modificaste la pista de video', 'info');
+      showToast('🔴 Previsualización desactivada: modificaste la pista de video', 'info');
     }
   }, [fp]);
 
@@ -2104,13 +2103,13 @@ async function buildHeavyWaveform(assetId: string, blob: Blob, duration: number,
       const t1 = Math.min(duration, t0 + windowSeconds);
       const segment = await extractAudioSegment(blob, t0, t1, () => {});
       if (!segment) {
-        if (t0 === 0) showToast(' No se pudo generar la forma de onda: el extractor visual necesita audio AAC compatible.', 'warn', 8000);
+        if (t0 === 0) showToast('⚠️ No se pudo generar la forma de onda: el extractor visual necesita audio AAC compatible.', 'warn', 8000);
         break;
       }
       const mp4Bytes = segment.mp4.slice().buffer as ArrayBuffer;
       const decoded = await decodeAudioBlob(new Blob([mp4Bytes], { type: 'audio/mp4' }), waveformContext || undefined);
       if (!decoded || !decoded.channelData.length) {
-        if (t0 === 0) showToast(' El navegador no pudo decodificar el fragmento de audio para dibujar la onda.', 'warn', 8000);
+        if (t0 === 0) showToast('⚠️ El navegador no pudo decodificar el fragmento de audio para dibujar la onda.', 'warn', 8000);
         break;
       }
             const data = decoded.channelData;
@@ -2174,7 +2173,7 @@ return { mode: 'mp4', fps: 30, lead: 0 };
 }
 // (2) Clips grandes: byte-ranges (el archivo entero jamás entra a RAM)
 let reason = '';
-const seg = await extractSegment(srcBlob, t0, t1, (s) => { console.log('[Segment]', s); if (s.startsWith('')) reason = s; });
+const seg = await extractSegment(srcBlob, t0, t1, (s) => { console.log('[Segment]', s); if (s.startsWith('⚠️')) reason = s; });
 if (seg) {
 await ff.writeFile(`${base}.h264`, seg.annexB);
 return { mode: 'h264', fps: Math.max(seg.fps || 30, 1), lead: seg.firstTs };
@@ -2219,9 +2218,9 @@ const fB = specToFF(effSpec(b));
 const audioChain = '';
 // PASO 2: cada entrada se resuelve por byte-ranges (pesado) o archivo entero (liviano)
 const segA = await segmentInputFor(a, aStart, a.trimEnd, ff, 'pa');
-if (!segA) { showToast(` "${a.name}": ${lastSegmentReason || 'no se pudo segmentar'} · preview real salteado.`, 'warn', 7000); throw new Error('SKIP: segmentación A falló'); }
+if (!segA) { showToast(`⚠️ "${a.name}": ${lastSegmentReason || 'no se pudo segmentar'} · preview real salteado.`, 'warn', 7000); throw new Error('SKIP: segmentación A falló'); }
 const segB = await segmentInputFor(b, b.trimStart, bEnd, ff, 'pb');
-if (!segB) { showToast(` "${b.name}": ${lastSegmentReason || 'no se pudo segmentar'} · preview real salteado.`, 'warn', 7000); throw new Error('SKIP: segmentación B falló'); }
+if (!segB) { showToast(`⚠️ "${b.name}": ${lastSegmentReason || 'no se pudo segmentar'} · preview real salteado.`, 'warn', 7000); throw new Error('SKIP: segmentación B falló'); }
 // En modo h264 el stream arranca en firstTs (keyframe previo): corremos el trim
 // para que la ventana pedida quede alineada al timeline del segmento.
 const aT0 = segA.mode === 'h264' ? Math.max(aStart - segA.lead, 0) : aStart;
@@ -2296,7 +2295,7 @@ cache.delete(oldest);
         previewInFlightRef.current = i;
         snippetProgressRef.current = 0;
         progressSeenRef.current = false;
-        showToast(` Renderizando transición ${doneRef.current + 1}/${totalRef.current}...`, 'info', 2200);
+        showToast(`🎬 Renderizando transición ${doneRef.current + 1}/${totalRef.current}...`, 'info', 2200);
         await renderTransitionSnippet(i, key);
         previewInFlightRef.current = null;
         if (runId !== previewRunIdRef.current) return; // se canceló durante el render
@@ -2305,17 +2304,17 @@ cache.delete(oldest);
         setPreviewRenderStatus({ rendering: previewQueueRef.current.length > 0, done: doneRef.current, total: totalRef.current });
       }
       if (renderedThisRun > 0 && previewTransitionsRef.current && runId === previewRunIdRef.current) {
-        showToast(' Transiciones reales listas en el preview', 'info');
+        showToast('✨ Transiciones reales listas en el preview', 'info');
       }
 } catch (e: any) {
 previewInFlightRef.current = null;
 if (runId === previewRunIdRef.current) {
 console.error('[PreviewTransitions] Error renderizando snippet:', e);
-if (!String(e?.message || '').startsWith('SKIP:')) showToast(' No se pudo renderizar una transición real; seguimos con corte limpio', 'warn');
+if (!String(e?.message || '').startsWith('SKIP:')) showToast('⚠️ No se pudo renderizar una transición real; seguimos con corte limpio', 'warn');
 }
     } finally {
       // SIEMPRE liberamos el flag y relanzamos si quedó cola, aunque este run haya
-      // muerto por cancel: ningún fantasma se lleva más las llaves de la cola. 
+      // muerto por cancel: ningún fantasma se lleva más las llaves de la cola. 👻🔑
       if (lastIdx !== null && previewInFlightRef.current === lastIdx) previewInFlightRef.current = null;
       previewQueueRunningRef.current = false;
       if (runId === previewRunIdRef.current) {
@@ -2345,8 +2344,8 @@ if (!String(e?.message || '').startsWith('SKIP:')) showToast(' No se pudo render
   }, [previewRenderStatus.rendering]);
 
   function notifyTransitionApplied() {
-    if (previewTransitionsRef.current) showToast(' Transición aplicada — renderizando preview…', 'info', 2600);
-    else showToast(' Transición aplicada — presioná "Previsualizar transiciones" para verla', 'info', 4200);
+    if (previewTransitionsRef.current) showToast('✨ Transición aplicada — renderizando preview…', 'info', 2600);
+    else showToast('✨ Transición aplicada — presioná "Previsualizar transiciones" para verla', 'info', 4200);
   }
 
   function applyPickedTransition(clipIndex: number, type: TransitionType, duration: number) {
@@ -2371,13 +2370,13 @@ if (!String(e?.message || '').startsWith('SKIP:')) showToast(' No se pudo render
     showToast('⊘ Render de transiciones cancelado', 'info');
   }
   function togglePreviewTransitions() {
-    if (clips.length < 2) { showToast(' Agregá al menos 2 clips para previsualizar transiciones', 'warn'); return; }
-    if (previewTransitions && previewRenderStatus.rendering) { showToast(' Render en curso: mirá la barra de progreso sobre el preview ( para cancelar)', 'info', 3000); return; }
+    if (clips.length < 2) { showToast('⚠️ Agregá al menos 2 clips para previsualizar transiciones', 'warn'); return; }
+    if (previewTransitions && previewRenderStatus.rendering) { showToast('⏳ Render en curso: mirá la barra de progreso sobre el preview (✕ para cancelar)', 'info', 3000); return; }
     const next = !previewTransitions;
     setPreviewTransitions(next);
     if (next) {
       const hay = clips.some((c, i) => i < clips.length - 1 && c.transition && c.transition.type !== 'none');
-      showToast(hay ? ' Previsualización activada: las transiciones se ven en el preview' : ' Modo activado, pero no hay transiciones configuradas todavía (usá el botón  entre clips)', 'info', 5000);
+      showToast(hay ? '🟢 Previsualización activada: las transiciones se ven en el preview' : '🟢 Modo activado, pero no hay transiciones configuradas todavía (usá el botón ✨ entre clips)', 'info', 5000);
       doneRef.current = 0;
       totalRef.current = previewQueueRef.current.length;
       if (hay) enqueueTransitionRenders();
@@ -2557,7 +2556,7 @@ useEffect(() => { setPropsTab('inspector'); }, [selectedId, selectedImageId, sel
 
   function showToast(msg: string, kind: Toast['kind'] = 'info', ms = 3200) {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [...prev, { id, msg: cleanLabel(msg), kind }]);
+    setToasts((prev) => [...prev, { id, msg, kind }]);
     window.setTimeout(() => { setToasts((prev) => prev.filter((t) => t.id !== id)); }, ms);
   }
   const registerAudio = useCallback((id: string, el: HTMLAudioElement) => { audioElementsRef.current.set(id, el); }, []);
@@ -2588,7 +2587,7 @@ const cid = selectedId;
 const hadRel = audioTracksRef.current.some((t) => t.sourceVideoId === cid && t.released);
 setClips((prev) => prev.filter((c) => c.id !== cid));
 setAudioTracks((prev) => prev.filter((t) => !(t.sourceVideoId === cid && !t.released)).map((t) => (t.sourceVideoId === cid ? { ...t, sourceVideoId: undefined } : t)));
-if (hadRel) showToast(' El video se borró: su audio liberado quedó como pista independiente', 'info');
+if (hadRel) showToast('🔓 El video se borró: su audio liberado quedó como pista independiente', 'info');
 setSelectedId(null);
 }
       }
@@ -2717,7 +2716,7 @@ v.playbackRate = clip.speed;
 v.muted = clip.muted;
 if (src !== clip.url && !proxyToastRef.current) {
 proxyToastRef.current = true;
-showToast(' Preview usando proxy 480p', 'info');
+showToast('⚡ Preview usando proxy 480p', 'info');
 }
 }
 }
@@ -2747,15 +2746,15 @@ showToast(' Preview usando proxy 480p', 'info');
           while (proxyQueueRef.current.length > 0) {
       if (!proxiesEnabled) break;
       const item = proxyQueueRef.current.shift()!;
-        showToast(` Generando proxy 480p ${done + 1}/${total}...`, 'info', 2500);
+        showToast(`⚡ Generando proxy 480p ${done + 1}/${total}...`, 'info', 2500);
         await renderProxy(item.assetId, item.url);
         done += 1;
         setProxyVersion((v) => v + 1);
       }
-      if (done > 0) showToast(' Proxies listos: preview fluido en 480p (el export usa el original)', 'info', 5000);
+      if (done > 0) showToast('⚡ Proxies listos: preview fluido en 480p (el export usa el original)', 'info', 5000);
     } catch (e) {
       console.error('[Proxy] Error:', e);
-      showToast(' No se pudo generar el proxy; seguimos con el original', 'warn');
+      showToast('⚠️ No se pudo generar el proxy; seguimos con el original', 'warn');
     } finally {
       proxyRunningRef.current = false;
     }
@@ -2914,7 +2913,7 @@ const meta = await probeVideoMeta(url);
         const duration = meta.duration;
         if (duration > 0) {
           if (meta.width >= 3000 || meta.height >= 3000) {
-            showToast(' Archivo 4K detectado: editar y exportar desde el navegador puede ser lento y requerir un PC de gama alta. Para un flujo más ágil, probá trabajando en 1080p.', 'warn', 8000);
+            showToast('🎥 Archivo 4K detectado: editar y exportar desde el navegador puede ser lento y requerir un PC de gama alta. Para un flujo más ágil, probá trabajando en 1080p.', 'warn', 8000);
           }
           const assetId = uid();
 setImportProgress({ file: f.name, step: 'Guardando en tu navegador…', idx: vi, total: videos.length });
@@ -2945,8 +2944,8 @@ setAudioTracks((prev) => [...prev, linked]);
 setImportProgress({ file: f.name, step: 'Generando miniaturas…', idx: vi, total: videos.length });
 enqueueFilmstrip(assetId, url, duration);
 if (f.size <= SKIP_HEAVY_BYTES) enqueueProxy(assetId, url);
-else showToast(' Archivo pesado: la forma de onda se está calculando por fragmentos, sin cargar el audio completo en memoria.', 'info', 6000);
-          showToast(audioData || isHeavy ? ` Video "${f.name}" agregado · audio vinculado en la pista ` : ` Video "${f.name}" agregado (sin audio)`, 'info');
+else showToast('🎵 Archivo pesado: la forma de onda se está calculando por fragmentos, sin cargar el audio completo en memoria.', 'info', 6000);
+          showToast(audioData || isHeavy ? `🎬 Video "${f.name}" agregado · audio vinculado en la pista 🔗` : `🎬 Video "${f.name}" agregado (sin audio)`, 'info');
         }
       }
     }
@@ -2957,7 +2956,7 @@ else showToast(' Archivo pesado: la forma de onda se está calculando por fragme
         try { await putAsset(assetId, f); } catch (e) { console.error('[Autosave] No se pudo guardar el asset:', e); }
         const newOverlay: ImageOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 20, rotate: 0, fadeIn: 0, fadeOut: 0, laneId: activeLaneIds.image };
         setImageOverlays((prev) => [...prev, newOverlay]);
-        showToast(` Imagen "${f.name}" agregada`, 'info');
+        showToast(`🖼️ Imagen "${f.name}" agregada`, 'info');
       }
     }
     if (audios.length > 0) {
@@ -2971,7 +2970,7 @@ else showToast(' Archivo pesado: la forma de onda se está calculando por fragme
           audioDataMap.set(newTrack.id, { channelData: decoded.channelData, sampleRate: decoded.sampleRate });
           newTrack.peaks = getPeaksForSegment(newTrack.id, 0, decoded.duration);
 setAudioTracks((prev) => [...prev, newTrack]);
-showToast(` Audio "${f.name}" agregado`, 'info');
+showToast(`🎵 Audio "${f.name}" agregado`, 'info');
 }
 }
 }
@@ -2984,10 +2983,10 @@ if (!track || !track.sourceVideoId) return;
 if (!track.released) {
 const g = trackGeom(track);
 setAudioTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, released: true, start: g.start, duration: g.duration, offset: g.offset } : t)));
-showToast(' Audio liberado: ahora se mueve y recorta independiente', 'info');
+showToast('🔓 Audio liberado: ahora se mueve y recorta independiente', 'info');
 } else {
 setAudioTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, released: false } : t)));
-showToast(' Audio re-vinculado: sigue al video de nuevo', 'info');
+showToast('🔗 Audio re-vinculado: sigue al video de nuevo', 'info');
 }
 }
 function clipAudioMode(clip: Clip): 'linked' | 'released' | 'muted' | 'integrated' {
@@ -2999,14 +2998,14 @@ function cycleClipAudio(clip: Clip) {
 const mode = clipAudioMode(clip);
 const existing = audioTracks.find((x) => x.sourceVideoId === clip.id);
 if ((mode === 'linked' || mode === 'released') && existing) { toggleRelease(existing.id); return; }
-if (mode === 'muted') { updateClip(clip.id, { muted: false }); showToast(' Audio devuelto al video', 'info'); return; }
-if (!clip.hasAudio) { showToast(' Este video no tiene pista de audio', 'warn'); return; }
+if (mode === 'muted') { updateClip(clip.id, { muted: false }); showToast('🔊 Audio devuelto al video', 'info'); return; }
+if (!clip.hasAudio) { showToast('⚠️ Este video no tiene pista de audio', 'warn'); return; }
 const data = audioDataMap.get(clip.id);
 const trackId = uid();
 if (data) audioDataMap.set(trackId, data);
 setAudioTracks((prev) => [...prev, { id: trackId, assetId: clip.assetId, name: `Audio de ${clip.name}`, url: clip.url, duration: clip.duration, offset: 0, start: 0, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, peaks: data ? getPeaksForSegment(trackId, 0, clip.duration) : [], sourceVideoId: clip.id, released: false, laneId: activeLaneIds.audio }]);
 updateClip(clip.id, { muted: true });
-showToast(' Audio vinculado en la pista de audio', 'info');
+showToast('🎵 Audio vinculado en la pista de audio', 'info');
 }
 
   async function enterFullscreenPreview() {
@@ -3028,9 +3027,9 @@ function toggleProxies() {
     try { window.localStorage.setItem('clipedia:proxies', next ? 'on' : 'off'); } catch (e) {}
     if (next) {
       clipsRef.current.forEach((c) => enqueueProxy(c.assetId, c.url));
-      showToast(' Proxies activados: el preview usará las versiones 480p', 'info');
+      showToast('⚡ Proxies activados: el preview usará las versiones 480p', 'info');
     } else {
-      showToast(' Proxies desactivados: el preview decodifica el original. Si sentís tirones, reactivá.', 'warn', 5000);
+      showToast('🎥 Proxies desactivados: el preview decodifica el original. Si sentís tirones, reactivá.', 'warn', 5000);
     }
     setProxyVersion((v) => v + 1);
   }
@@ -3073,7 +3072,7 @@ function toggleProxies() {
 function applyStyleToAllSubtitles(src: TextOverlay) {
 const total = textOverlaysRef.current.filter((t) => t.kind === 'subtitulo').length;
 setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, subStyle: src.subStyle, highlightColor: src.highlightColor, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur, shadow: src.shadow, shadowColor: src.shadowColor, shadowOpacity: src.shadowOpacity, shadowX: src.shadowX, shadowY: src.shadowY } : t)));
-showToast(` Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info');
+showToast(`📑 Estilo aplicado a ${total} subtítulos de la pista SUB`, 'info');
 }
   function updateAudioTrack(id: string, patch: Partial<AudioTrack>) { setAudioTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
 function updateVideoOverlay(id: string, patch: Partial<VideoOverlay>) { setVideoOverlays((prev) => prev.map((v) => (v.id === id ? { ...v, ...patch } : v))); }
@@ -3144,7 +3143,7 @@ return FAMILY_RANK[family] * 100000 - lanePosOf(family, laneId) * 1000 + arrayId
     setTimelineLanes((prev) => [...prev, lane]);
     setActiveLaneIds((prev) => ({ ...prev, [kind]: lane.id }));
     setFocusedLaneId(lane.id);
-    showToast(` Pista ${lane.name} creada`, 'info');
+    showToast(`➕ Pista ${lane.name} creada`, 'info');
   }
   function moveTimelineLane(laneId: string, direction: -1 | 1) {
     setTimelineLanes((prev) => {
@@ -3223,7 +3222,7 @@ return FAMILY_RANK[family] * 100000 - lanePosOf(family, laneId) * 1000 + arrayId
     setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: newLaneId }));
     setFocusedLaneId(newLaneId);
     setOpenLaneMenuId(null);
-    showToast(` Pista ${lane.name} duplicada con todo su contenido`, 'info');
+    showToast(`📑 Pista ${lane.name} duplicada con todo su contenido`, 'info');
   }
 
   function renderLaneControls(lane: TimelineLane) {
@@ -3264,18 +3263,18 @@ function executeDeleteTimelineLane(lane: TimelineLane, target: TimelineLane, del
       return filtered.map((x) => x.kind === lane.kind ? { ...x, name: `${prefix}${lane.kind === 'video' ? ++n + 1 : ++n}` } : x);
     });
     setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: prev[lane.kind] === lane.id ? target.id : prev[lane.kind] }));
-    showToast(` Pista ${lane.name} eliminada`, 'info');
+    showToast(`🗑️ Pista ${lane.name} eliminada`, 'info');
   }
 
   function deleteTimelineLane(laneId: string) {
     const lane = timelineLanes.find((x) => x.id === laneId); if (!lane) return;
     const siblings = timelineLanes.filter((x) => x.kind === lane.kind);
-    if (siblings.length <= 1) { showToast(' Tiene que quedar al menos una pista de cada tipo', 'warn'); return; }
+    if (siblings.length <= 1) { showToast('⚠️ Tiene que quedar al menos una pista de cada tipo', 'warn'); return; }
     const target = siblings.find((x) => x.id !== laneId)!;
     const items = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === laneId) : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === laneId) : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === laneId) : textOverlays.filter((x) => x.laneId === laneId);
     if (items.length > 0) {
       setConfirmDialog({
-        icon: 'trash',
+        icon: '🗑️',
         title: `Eliminar pista ${lane.name}`,
         message: 'Tienes clips en esta pista, ¿estás seguro que quieres eliminarla?',
         detail: `Contiene ${items.length} ${items.length === 1 ? 'clip' : 'clips'} que también se eliminarán de la línea de tiempo (podés deshacer con Ctrl+Z).`,
@@ -3301,7 +3300,7 @@ function executeDeleteTimelineLane(lane: TimelineLane, target: TimelineLane, del
     setHistVersion((v) => v + 1);
     clearProject().catch(() => {});
     setTimeout(() => { applyingRef.current = false; }, 80);
-    showToast(' Proyecto nuevo listo', 'info');
+    showToast('🆕 Proyecto nuevo listo', 'info');
   }
 
   function newProject() {
@@ -3311,7 +3310,7 @@ function executeDeleteTimelineLane(lane: TimelineLane, target: TimelineLane, del
       return;
     }
     setConfirmDialog({
-      icon: 'new',
+      icon: '🆕',
       title: 'Empezar proyecto nuevo',
       message: '¿Estás seguro que quieres empezar un proyecto desde cero?',
       detail: 'Se limpiará toda la línea de tiempo actual y se reemplazará el autoguardado de tu navegador.',
@@ -3356,13 +3355,13 @@ next.splice(idx, 1, { ...lt, id: idA, sourceVideoId: partA.id }, { ...lt, id: id
 const rel = audioTracksRef.current.find((t) => t.sourceVideoId === clip.id && t.released);
 if (rel) {
 setAudioTracks((prev) => prev.map((t) => (t.id === rel.id ? { ...t, sourceVideoId: undefined } : t)));
-showToast(' El video se dividió: su audio liberado ahora es pista independiente', 'info');
+showToast('🔓 El video se dividió: su audio liberado ahora es pista independiente', 'info');
 }
         }
       }
     } else if (selectedAudioId) {
 const track = audioTracksRef.current.find((t) => t.id === selectedAudioId);
-if (track && track.sourceVideoId && !track.released) { showToast(' El audio vinculado se divide con el clip: seleccioná el video y usá Dividir', 'info'); return; }
+if (track && track.sourceVideoId && !track.released) { showToast('🔗 El audio vinculado se divide con el clip: seleccioná el video y usá Dividir', 'info'); return; }
 const g0 = track ? trackGeom(track) : null;
 if (track && g0 && currentTime >= g0.start && currentTime < g0.start + g0.duration) {
 const localTime = currentTime - g0.start;
@@ -3402,42 +3401,42 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
     const tType = explicitType || (selectedId ? 'clip' : selectedImageId ? 'image' : selectedTextId ? 'text' : selectedVoId ? 'video' : selectedAudioId ? 'audio' : null);
     const tId = explicitId || selectedId || selectedImageId || selectedTextId || selectedVoId || selectedAudioId;
     if (!tType || !tId) {
-      showToast(' Seleccioná primero un clip de la timeline para copiar', 'warn');
+      showToast('⚠️ Seleccioná primero un clip de la timeline para copiar', 'warn');
       return;
     }
     if (tType === 'clip') {
       const c = clipsRef.current.find((x) => x.id === tId);
       if (!c) return;
       setClipboardItem({ kind: 'clip', data: { ...c } });
-      showToast(` Video "${c.name}" copiado`, 'info', 2200);
+      showToast(`📋 Video "${c.name}" copiado`, 'info', 2200);
     } else if (tType === 'image') {
       const img = imageOverlaysRef.current.find((x) => x.id === tId);
       if (!img) return;
       setClipboardItem({ kind: 'image', data: { ...img } });
-      showToast(` Imagen "${img.name}" copiada`, 'info', 2200);
+      showToast(`📋 Imagen "${img.name}" copiada`, 'info', 2200);
     } else if (tType === 'text') {
       const txt = textOverlaysRef.current.find((x) => x.id === tId);
       if (!txt) return;
       setClipboardItem({ kind: 'text', data: { ...txt, words: txt.words ? txt.words.map((w) => ({ ...w })) : undefined } });
-      showToast(` ${txt.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'} copiado`, 'info', 2200);
+      showToast(`📋 ${txt.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'} copiado`, 'info', 2200);
     } else if (tType === 'video') {
       const vo = videoOverlaysRef.current.find((x) => x.id === tId);
       if (!vo) return;
       setClipboardItem({ kind: 'video', data: { ...vo } });
-      showToast(` Superposición "${vo.name}" copiada`, 'info', 2200);
+      showToast(`📋 Superposición "${vo.name}" copiada`, 'info', 2200);
     } else if (tType === 'audio') {
       const aud = audioTracksRef.current.find((x) => x.id === tId);
       if (!aud) return;
       const g = trackGeom(aud);
       setClipboardItem({ kind: 'audio', data: { ...aud, start: g.start, duration: g.duration, offset: g.offset } });
-      showToast(` Audio "${aud.name}" copiado`, 'info', 2200);
+      showToast(`📋 Audio "${aud.name}" copiado`, 'info', 2200);
     }
     setCtxMenu(null);
   }
 
   function pasteClipboard(opts?: { targetTime?: number; targetLaneKind?: TimelineLaneKind | 'main'; targetLaneId?: string }) {
     if (!clipboardItem) {
-      showToast(' El portapapeles está vacío (copiá un clip primero)', 'warn');
+      showToast('⚠️ El portapapeles está vacío (copiá un clip primero)', 'warn');
       return;
     }
     const desiredTime = Math.max(0, opts?.targetTime ?? playheadRef.current);
@@ -3489,7 +3488,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
         setAudioTracks((prev) => [...prev, newLinked]);
       }
       selectOnly(newClipId, 'clip');
-      showToast(` Video "${cloned.name}" pegado en V1`, 'info');
+      showToast(`📥 Video "${cloned.name}" pegado en V1`, 'info');
       setCtxMenu(null);
       return;
     }
@@ -3508,7 +3507,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       setImageOverlays((prev) => [...prev, newImg]);
       selectOnly(newImg.id, 'image');
       const laneName = timelineLanes.find((l) => l.id === destLane)?.name || 'I1';
-      showToast(` Imagen pegada en ${laneName} (${formatTime(s0)})`, 'info');
+      showToast(`📥 Imagen pegada en ${laneName} (${formatTime(s0)})`, 'info');
     } else if (clipboardItem.kind === 'text') {
       const srcTxt = clipboardItem.data;
       const dur = Math.max(MIN_OVERLAY_LEN, srcTxt.end - srcTxt.start);
@@ -3533,7 +3532,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       setTextOverlays((prev) => [...prev, newTxt]);
       selectOnly(newTxt.id, 'text');
       const laneName = timelineLanes.find((l) => l.id === destLane)?.name || (isSub ? 'SUB1' : 'T1');
-      showToast(` ${isSub ? 'Subtítulo' : 'Texto'} pegado en ${laneName} (${formatTime(s0)})`, 'info');
+      showToast(`📥 ${isSub ? 'Subtítulo' : 'Texto'} pegado en ${laneName} (${formatTime(s0)})`, 'info');
     } else if (clipboardItem.kind === 'video') {
       const srcVo = clipboardItem.data;
       const dur = Math.max(MIN_OVERLAY_LEN, srcVo.end - srcVo.start);
@@ -3548,7 +3547,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       setVideoOverlays((prev) => [...prev, newVo]);
       selectOnly(newVo.id, 'video');
       const laneName = timelineLanes.find((l) => l.id === destLane)?.name || 'V2';
-      showToast(` Superposición pegada en ${laneName} (${formatTime(s0)})`, 'info');
+      showToast(`📥 Superposición pegada en ${laneName} (${formatTime(s0)})`, 'info');
     } else if (clipboardItem.kind === 'audio') {
       const srcAud = clipboardItem.data;
       const dur = Math.max(MIN_OVERLAY_LEN, srcAud.duration);
@@ -3574,7 +3573,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       setAudioTracks((prev) => [...prev, newAud]);
       selectOnly(newAudId, 'audio');
       const laneName = timelineLanes.find((l) => l.id === destLane)?.name || 'A1';
-      showToast(` Audio pegado en ${laneName} (${formatTime(s0)})`, 'info');
+      showToast(`📥 Audio pegado en ${laneName} (${formatTime(s0)})`, 'info');
     }
     setCtxMenu(null);
   }
@@ -3607,7 +3606,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
         setAudioTracks((prev) => [...prev, { ...linkedOrig, id: newTrackId, sourceVideoId: newClipId, released: false }]);
       }
       selectOnly(newClipId, 'clip');
-      showToast(` Video "${srcClip.name}" duplicado al lado`, 'info');
+      showToast(`📑 Video "${srcClip.name}" duplicado al lado`, 'info');
     } else if (tType === 'image') {
       const img = imageOverlaysRef.current.find((x) => x.id === tId);
       if (!img) return;
@@ -3618,7 +3617,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       const clone: ImageOverlay = { ...img, id: uid(), start: s0, end: s0 + dur };
       setImageOverlays((prev) => [...prev, clone]);
       selectOnly(clone.id, 'image');
-      showToast(` Imagen duplicada en ${formatTime(s0)}`, 'info');
+      showToast(`📑 Imagen duplicada en ${formatTime(s0)}`, 'info');
     } else if (tType === 'text') {
       const txt = textOverlaysRef.current.find((x) => x.id === tId);
       if (!txt) return;
@@ -3636,7 +3635,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       };
       setTextOverlays((prev) => [...prev, clone]);
       selectOnly(clone.id, 'text');
-      showToast(` ${txt.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'} duplicado en ${formatTime(s0)}`, 'info');
+      showToast(`📑 ${txt.kind === 'subtitulo' ? 'Subtítulo' : 'Texto'} duplicado en ${formatTime(s0)}`, 'info');
     } else if (tType === 'video') {
       const vo = videoOverlaysRef.current.find((x) => x.id === tId);
       if (!vo) return;
@@ -3647,7 +3646,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       const clone: VideoOverlay = { ...vo, id: uid(), start: s0, end: s0 + dur };
       setVideoOverlays((prev) => [...prev, clone]);
       selectOnly(clone.id, 'video');
-      showToast(` Superposición duplicada en ${formatTime(s0)}`, 'info');
+      showToast(`📑 Superposición duplicada en ${formatTime(s0)}`, 'info');
     } else if (tType === 'audio') {
       const aud = audioTracksRef.current.find((x) => x.id === tId);
       if (!aud) return;
@@ -3661,7 +3660,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       const clone: AudioTrack = { ...aud, id: newAudId, start: s0, duration: g.duration, offset: g.offset, sourceVideoId: undefined, released: true };
       setAudioTracks((prev) => [...prev, clone]);
       selectOnly(newAudId, 'audio');
-      showToast(` Audio duplicado en ${formatTime(s0)}`, 'info');
+      showToast(`📑 Audio duplicado en ${formatTime(s0)}`, 'info');
     }
     setCtxMenu(null);
   }
@@ -3711,7 +3710,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       setVideoOverlays((prev) => prev.filter((x) => !ids.has(x.id)));
       setAudioTracks((prev) => prev.filter((x) => !ids.has(x.id) && !(x.sourceVideoId && removedClipIds.has(x.sourceVideoId) && !x.released)).map((x) => x.sourceVideoId && removedClipIds.has(x.sourceVideoId) ? { ...x, sourceVideoId: undefined } : x));
       setSelectedEventIds([]); setSelectedId(null); setSelectedImageId(null); setSelectedTextId(null); setSelectedAudioId(null); setSelectedVoId(null);
-      showToast(` ${ids.size} elementos eliminados`, 'info');
+      showToast(`🗑️ ${ids.size} elementos eliminados`, 'info');
       return;
     }
     if (selectedAudioId) { setAudioTracks((prev) => prev.filter((a) => a.id !== selectedAudioId)); setSelectedAudioId(null); }
@@ -3723,7 +3722,7 @@ const partB: AudioTrack = { ...track, id: uid(), start: currentTime, duration: g
       const hadRel = audioTracksRef.current.some((t) => t.sourceVideoId === cid && t.released);
       setClips((prev) => prev.filter((c) => c.id !== cid));
       setAudioTracks((prev) => prev.filter((t) => !(t.sourceVideoId === cid && !t.released)).map((t) => (t.sourceVideoId === cid ? { ...t, sourceVideoId: undefined } : t)));
-      if (hadRel) showToast(' El video se borró: su audio liberado quedó como pista independiente', 'info');
+      if (hadRel) showToast('🔓 El video se borró: su audio liberado quedó como pista independiente', 'info');
       setSelectedId(null);
     }
     setSelectedEventIds([]);
@@ -4166,7 +4165,7 @@ if (d.mode === 'lane') {
     );
     setFocusedLaneId(destSubLaneId);
     setActiveLaneIds((prev) => ({ ...prev, subtitle: destSubLaneId }));
-    showToast(' Texto convertido en subtítulo con formato de pista SUB', 'info');
+    showToast('💬 Texto convertido en subtítulo con formato de pista SUB', 'info');
   }
 
   function endOverlayTimeDrag() {
@@ -4187,7 +4186,7 @@ if (d.mode === 'lane') {
         const targetEnd = currentTxt.end;
 
         setConfirmDialog({
-          icon: 'comment',
+          icon: '💬',
           title: 'Convertir a Subtítulo',
           message: '¿Deseás convertir este texto en subtítulo?',
           detail: 'Se moverá a la pista de subtítulos y adoptará automáticamente la apariencia, posición inferior y estilo Karaoke de tus subtítulos.',
@@ -4243,8 +4242,8 @@ const voAudio = await decodeAudioBlob(f);
 const vo: VideoOverlay = { id: uid(), assetId, name: f.name, url, start: playheadRef.current, end: playheadRef.current + dur, offset: 0, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 35, rotate: 0, fadeIn: 0, fadeOut: 0, muted: true, shape: 'none', hasAudio: !!voAudio, srcW: meta.width || 16, srcH: meta.height || 9, laneId: activeLaneIds.video };
 setVideoOverlays((prev) => [...prev, vo]);
 setSelectedVoId(vo.id);
-if (/\.mov$/i.test(f.name)) showToast(' Capa agregada: los .mov con canal alpha NO se ven transparentes en este navegador. Para transparencia real, usá WebM VP9 con alpha.', 'warn', 7000);
-else showToast(' Capa de superposición agregada (WebM VP9 con alpha = transparencia real)', 'info');
+if (/\.mov$/i.test(f.name)) showToast('🎞️ Capa agregada: los .mov con canal alpha NO se ven transparentes en este navegador. Para transparencia real, usá WebM VP9 con alpha.', 'warn', 7000);
+else showToast('🎞️ Capa de superposición agregada (WebM VP9 con alpha = transparencia real)', 'info');
 }
 e.target.value = '';
 }
@@ -4254,7 +4253,7 @@ e.target.value = '';
     const { start: s0 } = resolveMagneticSlot(playheadRef.current, 5, sibs, [playheadRef.current], 0);
     const newOverlay: TextOverlay = { id: uid(), text: 'Tu texto aquí', start: s0, end: s0 + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 72, bold: true, font: 'sans', color: '#ffffff', fadeIn: 0, fadeOut: 0, kind: 'texto', laneId: activeLaneIds.text };
     setTextOverlays((prev) => [...prev, newOverlay]); setSelectedTextId(newOverlay.id);
-    showToast(' Texto agregado — editálo en el panel de propiedades', 'info');
+    showToast('✏️ Texto agregado — editálo en el panel de propiedades', 'info');
   }
 
 async function addCommentResult(blob: Blob) {
@@ -4267,7 +4266,7 @@ const ov: ImageOverlay = { id: uid(), assetId, name: 'Comentario', url, start: s
 setImageOverlays((prev) => [...prev, ov]);
 setSelectedImageId(ov.id);
 setCommentStudioOpen(false);
-showToast(' Comentario agregado a la pista de imágenes (5s, con fades)', 'info');
+showToast('💬 Comentario agregado a la pista de imágenes (5s, con fades)', 'info');
 }
 async function generateSubtitles(clip: Clip, model: (typeof ASR_MODELS)[number], lang: AsrLanguage, remember: boolean) {
 setSubtitleFor(null);
@@ -4277,16 +4276,16 @@ await yieldToMain();
 try {
 const audio = await decodeSegment16k(clip.url, clip.trimStart, clip.trimEnd);
 await yieldToMain();
-if (!audio) { setAsrProgress(null); showToast(' No se pudo extraer el audio de este clip', 'warn'); return; }
+if (!audio) { setAsrProgress(null); showToast('⚠️ No se pudo extraer el audio de este clip', 'warn'); return; }
 const words = await transcribeSegmentChunked({
 modelId: model.id, hf: model.hf, language: lang, audio,
 onModelProgress: (pct) => setAsrProgress(pct >= 100 ? { phase: 'transcribe', pct: 5 } : { phase: 'model', pct }),
 onTranscribeProgress: (pct) => setAsrProgress({ phase: 'transcribe', pct }),
 });
 setAsrProgress(null);
-if (!words.length) { showToast(' Whisper no encontró habla en este clip', 'warn'); return; }
+if (!words.length) { showToast('⚠️ Whisper no encontró habla en este clip', 'warn'); return; }
 const caps = groupWordsIntoCaptions(words);
-if (!caps.length) { showToast(' La transcripción no produjo subtítulos agrupables', 'warn'); return; }
+if (!caps.length) { showToast('⚠️ La transcripción no produjo subtítulos agrupables', 'warn'); return; }
 const idx = clipsRef.current.findIndex((c) => c.id === clip.id);
 if (idx < 0) return;
 const base = videoStartsRef.current[idx];
@@ -4312,11 +4311,11 @@ return {
 });
 subs.forEach((sub) => { sub.laneId = activeLaneIds.subtitle; });
 setTextOverlays((prev) => [...prev, ...subs]);
-showToast(` ${subs.length} subtítulos con ${model.label} · editá cualquier bloque en la pista T`, 'info', 5000);
+showToast(`✅ ${subs.length} subtítulos con ${model.label} · editá cualquier bloque en la pista T`, 'info', 5000);
 } catch (e: any) {
 console.error('[ASR]', e);
 setAsrProgress(null);
-showToast(` Subtítulos: ${e?.message || 'error'} — revisá la consola`, 'warn', 6000);
+showToast(`❌ Subtítulos: ${e?.message || 'error'} — revisá la consola`, 'warn', 6000);
 }
 }
 
@@ -4327,7 +4326,7 @@ setSilencePlan(null);
 setSilenceMsg(null);
 try {
 const audio: any = await decodeSegment16k(clip.url, clip.trimStart, clip.trimEnd);
-if (!audio) { setSilenceMsg(' No se pudo extraer el audio de este clip.'); return; }
+if (!audio) { setSilenceMsg('⚠️ No se pudo extraer el audio de este clip.'); return; }
 // decodeSegment16k puede devolver el PCM en distintas formas según asr.ts:
 const pcm: Float32Array | null =
 audio instanceof Float32Array ? audio :
@@ -4374,7 +4373,7 @@ local = mergeSpeechIntervals(validated, silenceCfg.minSilence, 0.2, silenceCfg.p
 local = mergeSpeechIntervals(wordZones, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad, 0, span);
 }
 } else {
-if (!pcm || pcm.length === 0) { setSilenceMsg(' El audio decodificado no trajo muestras utilizables para el modo Energía.'); return; }
+if (!pcm || pcm.length === 0) { setSilenceMsg('⚠️ El audio decodificado no trajo muestras utilizables para el modo Energía.'); return; }
 setSilencePct(15);
 local = await energySpeechIntervalsAsync(pcm, srHz, silenceCfg.minSilence, 0.2, silenceCfg.pad + 0.18, silenceCfg.pad, (pct) => setSilencePct(pct));
 }
@@ -4382,12 +4381,12 @@ console.log('[Silencios] tramos de habla detectados:', local.length);
 const segments = local.map((x) => ({ s: clip.trimStart + x.s, e: clip.trimStart + x.e }));
 const kept = segments.reduce((a, x) => a + (x.e - x.s), 0);
 const removed = Math.max(0, span - kept);
-if (!segments.length) { setSilenceMsg(' No se detectó habla en este clip: nada que recortar. Probá bajando el "silencio mínimo" o cambiá de método.'); return; }
-if (removed < 0.25) { setSilenceMsg(` Casi no hay silencios acá: solo se cortarían ${removed.toFixed(2)}s. Si querés recortar igual, bajá el "silencio mínimo" o el colchón.`); return; }
+if (!segments.length) { setSilenceMsg('⚠️ No se detectó habla en este clip: nada que recortar. Probá bajando el "silencio mínimo" o cambiá de método.'); return; }
+if (removed < 0.25) { setSilenceMsg(`✨ Casi no hay silencios acá: solo se cortarían ${removed.toFixed(2)}s. Si querés recortar igual, bajá el "silencio mínimo" o el colchón.`); return; }
 setSilencePlan({ segments, kept, removed });
 } catch (e: any) {
 console.error('[Silencios]', e);
-setSilenceMsg(` ${e?.message || 'error inesperado'} (detalle en consola)`);
+setSilenceMsg(`❌ ${e?.message || 'error inesperado'} (detalle en consola)`);
 } finally {
 setSilenceBusy(false);
 setSilencePct(0);
@@ -4407,7 +4406,7 @@ const i2 = prev.findIndex((t) => t.id === lt.id);
 const repl = newClips.map((nc) => ({ ...lt, id: uid(), sourceVideoId: nc.id, fadeIn: 0, fadeOut: 0 }));
 const n = [...prev]; n.splice(i2, 1, ...repl); return n;
 });
-showToast(` Silencios recortados: ${segs.length} tramos de habla · ${silencePlan.removed.toFixed(1)}s eliminados`, 'info', 6000);
+showToast(`✂️ Silencios recortados: ${segs.length} tramos de habla · ${silencePlan.removed.toFixed(1)}s eliminados`, 'info', 6000);
 setSilenceFor(null); setSilencePlan(null);
 }
 
@@ -4640,7 +4639,7 @@ return () => { token.cancelled = true; window.clearTimeout(timer); };
 // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [showExportModal, exporting, projectDuration, clips, imageOverlays, textOverlays, videoOverlays, exportSettings.ratio, exportSettings.fit, proxyVersion]);
 function openExportModal() {
-    if (projectDuration === 0) { showToast(' No hay nada en la timeline para exportar', 'warn'); return; }
+    if (projectDuration === 0) { showToast('⚠️ No hay nada en la timeline para exportar', 'warn'); return; }
     setShowExportModal(true);
   }
 
@@ -4654,14 +4653,14 @@ exportCancelledRef.current = false; exportPausedRef.current = false; setExportPa
 const heavyIdx = clips.map((c, i) => ({ c, i })).filter(({ c }) => (c.bytes ?? 0) > EXTRACT_THRESHOLD);
 const tooLong = heavyIdx.find(({ c }) => effLen(c) > CHUNKED_AUDIO_MAX_SECS);
 if (tooLong) {
-showToast(` "${tooLong.c.name}" supera los 10 min: recortalo para el export escalable v1 (techo de RAM del audio por byte-ranges).`, 'warn', 9000);
+showToast(`⚠️ "${tooLong.c.name}" supera los 10 min: recortalo para el export escalable v1 (techo de RAM del audio por byte-ranges).`, 'warn', 9000);
 return;
 }
 setExporting(true);
 previewQueueRef.current = [];
 if (previewFFRef.current) { try { await previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
 setExportProgress({ phase: 'preparing', percent: 0, speed: 0 });
-showToast(' Clip pesado detectado → export escalable por chunks', 'info', 5000);
+showToast('🧩 Clip pesado detectado → export escalable por chunks', 'info', 5000);
 const ffLogs: string[] = [];
 let ff: any = null;
 try {
@@ -4686,7 +4685,7 @@ const blob = await getClipSourceBlob(c);
 const probe = await extractSegment(blob, c.trimStart, Math.min(c.trimEnd, c.trimStart + 1), () => {});
 if (probe) { willExtract.add(i); continue; }
 if ((c.bytes ?? 0) <= SAFE_PROC_BYTES) continue; // entero residente alcanza
-showToast(` "${c.name}" no es H.264 y supera 1.5GB: el export escalable v1 no puede procesarlo.`, 'warn', 9000);
+showToast(`❌ "${c.name}" no es H.264 y supera 1.5GB: el export escalable v1 no puede procesarlo.`, 'warn', 9000);
 throw new Error(`precheck: extractor falló para ${c.name}`);
 }
 // Ventanas protegidas (transiciones) + chunks
@@ -4752,7 +4751,7 @@ for (const chk of chunks) {
 await waitWhileExportPaused();
 const cs = chk.start; const ce = chk.end;
 setExportProgress({ phase: 'rendering', percent: Math.round((chk.index / chunks.length) * 85), speed: 0 });
-showToast(` Chunk ${chk.index + 1}/${chunks.length} · ${cs.toFixed(0)}s–${ce.toFixed(0)}s`, 'info', 2000);
+showToast(`🧩 Chunk ${chk.index + 1}/${chunks.length} · ${cs.toFixed(0)}s–${ce.toFixed(0)}s`, 'info', 2000);
 const inChunk: any[] = [];
 for (let i = 0; i < clips.length; i++) {
 const clip = clips[i];
@@ -4961,7 +4960,7 @@ const segA = await extractAudioSegment(blob, g.offset, g.offset + g.duration * g
 });
 if (!segA) {
   const detail = audioExtractMessages.slice(-2).join(' · ') || 'el extractor no encontró una pista de audio compatible';
-  showToast(` No se pudo extraer el audio de "${aud.name}": ${detail}`, 'warn', 10000);
+  showToast(`⚠️ No se pudo extraer el audio de "${aud.name}": ${detail}`, 'warn', 10000);
   throw new Error(`Audio del clip pesado no compatible: ${detail}`);
 }
 totalFetched += segA.fetchedBytes;
@@ -5097,13 +5096,13 @@ a.href = url; a.download = outputFileName;
 document.body.appendChild(a); a.click(); document.body.removeChild(a);
 URL.revokeObjectURL(url);
 const elapsed = Math.round((performance.now() - renderStartRef.current) / 1000);
-showToast(` ¡Exportado: ${outputFileName}! (${(totalFetched / 1048576).toFixed(0)}MB leídos del disco · ${elapsed}s)`, 'info', 8000);
+showToast(`✅ ¡Exportado: ${outputFileName}! (${(totalFetched / 1048576).toFixed(0)}MB leídos del disco · ${elapsed}s)`, 'info', 8000);
 setTimeout(() => { setShowExportModal(false); setExportProgress(null); }, 1500);
 } catch (error: any) {
 if (exportCancelledRef.current || String(error?.message || "").includes("EXPORT_CANCELLED")) { showToast("⊘ Exportación cancelada", "info"); setExportProgress(null); return; }
 console.error('[ExportChunked] ERROR FATAL:', error);
 console.error('[ExportChunked] Últimas líneas FFmpeg:\n' + ffLogs.slice(-10).join('\n'));
-showToast(` Error: ${error.message || 'Revisá la consola'}`, 'warn');
+showToast(`❌ Error: ${error.message || 'Revisá la consola'}`, 'warn');
 setExportProgress(null);
 } finally {
 setExporting(false);
@@ -5114,9 +5113,9 @@ exportFFRef.current = null;
 
   async function runExport() {
 if (projectDuration === 0) return;
-if (resInfo.plus && !isPlus) { showToast(' Esta resolución requiere Clipedia Plus', 'warn'); return; }
+if (resInfo.plus && !isPlus) { showToast('🔒 Esta resolución requiere Clipedia Plus', 'warn'); return; }
 // FASE 6 · PASO 3b: los clips pesados ya no se niegan: cambian de arquitectura.
-// El fusible de 1.5GB se jubiló con honores. 
+// El fusible de 1.5GB se jubiló con honores. 🫡
 const needsChunked = clips.some((c) => (c.bytes ?? 0) > SAFE_PROC_BYTES);
 if (needsChunked) { await runExportChunked(); return; }
 exportCancelledRef.current = false; exportPausedRef.current = false; setExportPaused(false);
@@ -5124,7 +5123,7 @@ exportCancelledRef.current = false; exportPausedRef.current = false; setExportPa
     previewQueueRef.current = [];
     if (previewFFRef.current) { try { await previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
     setExportProgress({ phase: 'preparing', percent: 0, speed: 0 });
-    showToast(' Preparando motor de exportación...', 'info');
+    showToast('⏳ Preparando motor de exportación...', 'info');
     const ffLogs: string[] = [];
     let ff: any = null;
     try {
@@ -5437,14 +5436,14 @@ let execError = null;
       a.href = url; a.download = outputFileName;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast(` ¡Exportado: ${outputFileName}!`, 'info');
+      showToast(`✅ ¡Exportado: ${outputFileName}!`, 'info');
       setTimeout(() => { setShowExportModal(false); setExportProgress(null); }, 1500);
     } catch (error: any) {
       if (exportCancelledRef.current || String(error?.message || "").includes("EXPORT_CANCELLED")) { showToast("⊘ Exportación cancelada", "info"); setExportProgress(null); return; }
 console.error('[Export] ERROR FATAL:', error);
 console.error('[Export] filterComplex completo:\n' + filterComplex);
       console.error('[Export] Últimas líneas FFmpeg:\n' + ffLogs.slice(-10).join('\n'));
-      showToast(` Error: ${error.message || 'Revisá la consola'}`, 'warn');
+      showToast(`❌ Error: ${error.message || 'Revisá la consola'}`, 'warn');
       setExportProgress(null);
     } finally {
       setExporting(false);
@@ -5474,10 +5473,10 @@ const isSelected = isEventSelected(txt.id); const width = (txt.end - txt.start) 
 const isDraggingThis = dropPreview !== null && isSelected;
 return (<div key={txt.id} data-timeline-event="true" data-clip-item={`text:${txt.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, txt.id, 'text', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-fuchsia-300 bg-fuchsia-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-fuchsia-400 bg-fuchsia-500/20 ring-1 ring-fuchsia-400' : 'z-10 cursor-grab border-fuchsia-400/60 bg-fuchsia-500/10'}`} title="Arrastrá para mover o cambiar de pista · bordes para recortar">
 <div className="relative z-10 flex h-full items-center justify-between gap-1">
-  <p className="truncate text-[10px] font-semibold text-fuchsia-100 drop-shadow">{txt.kind === 'subtitulo' ? '' : 'T:'} {txt.text}</p>
+  <p className="truncate text-[10px] font-semibold text-fuchsia-100 drop-shadow">{txt.kind === 'subtitulo' ? '💬' : 'T:'} {txt.text}</p>
   {isDraggingThis && (
     <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
-      {dropPreview?.snapped ? ' ' : ''}{formatTime(txt.start)}
+      {dropPreview?.snapped ? '🧲 ' : ''}{formatTime(txt.start)}
     </span>
   )}
 </div>
@@ -5489,12 +5488,12 @@ return (<div key={txt.id} data-timeline-event="true" data-clip-item={`text:${txt
 const importProgressUI = importProgress && typeof document !== 'undefined' ? createPortal(
 <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm">
 <div className="w-[min(92vw,26rem)] rounded-2xl border border-cyan-400/40 bg-slate-950/95 px-5 py-4 shadow-2xl shadow-cyan-500/20">
-<p className="truncate text-sm font-bold text-cyan-200"><UiIcon name="paste" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Importando {importProgress.idx + 1}/{importProgress.total}: {importProgress.file}</p>
+<p className="truncate text-sm font-bold text-cyan-200">📥 Importando {importProgress.idx + 1}/{importProgress.total}: {importProgress.file}</p>
 <p className="mt-1 text-xs text-slate-400">{importProgress.step}</p>
 <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-800">
 <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-cyan-400 to-violet-400" />
 </div>
-<p className="mt-2 text-[11px] text-slate-500">Los archivos pesados tardan en guardarse: es tu navegador trabajando, no la nube. </p>
+<p className="mt-2 text-[11px] text-slate-500">Los archivos pesados tardan en guardarse: es tu navegador trabajando, no la nube. 🔒</p>
 </div>
 </div>,
 document.body
@@ -5544,7 +5543,7 @@ const exportModal = showExportModal && typeof document !== 'undefined' ? createP
 <div className="flex flex-1 gap-2">
 {(Object.keys(QUALITY_PRESETS) as Quality[]).map((q) => (
 <button key={q} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, quality: q }))} className={cx('flex flex-1 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-sm font-bold transition disabled:opacity-50', exportSettings.quality === q ? 'border-cyan-400 bg-gradient-to-r from-violet-600/70 to-fuchsia-600/50 text-white shadow-[0_0_12px_rgba(168,85,247,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>
-<UiIcon name={q === 'fast' ? 'bolt' : q === 'balanced' ? 'balance' : 'diamond'} className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{QUALITY_PRESETS[q].label}</span>
+<span>{q === 'fast' ? '⚡' : q === 'balanced' ? '⚖️' : '💎'}</span><span className="truncate">{QUALITY_PRESETS[q].label}</span>
 </button>
 ))}
 </div>
@@ -5554,7 +5553,7 @@ const exportModal = showExportModal && typeof document !== 'undefined' ? createP
 <div className="mb-2 flex items-center gap-2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 text-cyan-400"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" /></svg><span className="text-sm font-bold text-slate-100">Nombre de Archivo:</span></div>
 <div className="flex items-center gap-2">
 <input ref={exportNameRef} type="text" value={exportSettings.filename} disabled={exporting} onChange={(e) => setExportSettings((s) => ({ ...s, filename: e.target.value }))} className="flex-1 rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400 disabled:opacity-50" placeholder="Mi Video Editado" />
-<button onClick={() => { exportNameRef.current?.focus(); exportNameRef.current?.select(); showToast(' El archivo se guarda en tu carpeta de Descargas', 'info'); }} disabled={exporting} className="rounded-lg border border-violet-500/50 bg-violet-500/15 p-2.5 text-violet-300 transition hover:bg-violet-500/25 disabled:opacity-50" title="Carpeta de destino"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" /></svg></button>
+<button onClick={() => { exportNameRef.current?.focus(); exportNameRef.current?.select(); showToast('📁 El archivo se guarda en tu carpeta de Descargas', 'info'); }} disabled={exporting} className="rounded-lg border border-violet-500/50 bg-violet-500/15 p-2.5 text-violet-300 transition hover:bg-violet-500/25 disabled:opacity-50" title="Carpeta de destino"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" /></svg></button>
 </div>
 <div className="mt-4 rounded-xl border border-transparent p-3" style={{ background: 'linear-gradient(#141b3d,#141b3d) padding-box, linear-gradient(135deg,#22d3ee,#8b5cf6) border-box' }}>
 <div className="flex gap-3">
@@ -5566,7 +5565,7 @@ const exportModal = showExportModal && typeof document !== 'undefined' ? createP
 </div>
 )}
 <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-black/90 via-black/55 to-transparent px-1.5 pb-1 pt-4">
-<span className="flex items-center gap-1 font-mono text-[8px] font-black tracking-wide text-cyan-200"><UiIcon name="camera" className="h-2.5 w-2.5 shrink-0" />{formatTime(projectDuration / 2)}</span>
+<span className="font-mono text-[8px] font-black tracking-wide text-cyan-200">{'📸 ' + formatTime(projectDuration / 2)}</span>
 </div>
 </div>
 <div className="min-w-0 flex-1 text-xs sm:text-sm">
@@ -5611,7 +5610,7 @@ document.body
 const commentStudioUI = commentStudioOpen && typeof document !== 'undefined' ? createPortal(
 <CommentStudioModal
 onCancel={() => setCommentStudioOpen(false)}
-onDownload={(blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(a.href), 4000); showToast(' Comentario descargado como PNG', 'info'); }}
+onDownload={(blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(a.href), 4000); showToast('⬇️ Comentario descargado como PNG', 'info'); }}
 onInsert={(blob) => addCommentResult(blob)}
 />,
 document.body
@@ -5640,34 +5639,34 @@ const silenceClip = clips.find((c) => c.id === silenceFor) ?? null;
 const silenceUI = silenceClip ? createPortal(
 <div className="fixed inset-0 z-[165] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm" onClick={() => { if (!silenceBusy) { setSilenceFor(null); setSilencePlan(null); } }}>
 <div className="w-[min(94vw,30rem)] rounded-2xl border border-amber-400/40 bg-slate-950/95 p-5 shadow-2xl shadow-amber-500/10" onClick={(e) => e.stopPropagation()}>
-<h2 className="text-sm font-black text-white"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Recortar silencios · <span className="text-amber-300">{silenceClip.name}</span></h2>
+<h2 className="text-sm font-black text-white">✂️ Recortar silencios · <span className="text-amber-300">{silenceClip.name}</span></h2>
 {!silencePlan ? (
 <>
 <p className="mt-2 text-[11px] leading-relaxed text-slate-400">Se detectan los tramos donde hay habla y el clip se reemplaza por esos tramos: los silencios desaparecen de la timeline sin recodificar nada.</p>
-{(silenceClip.bytes ?? 0) > SKIP_HEAVY_BYTES && (<p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"> Clip pesado: el análisis decodifica su audio en memoria; puede tardar en archivos muy largos.</p>)}
+{(silenceClip.bytes ?? 0) > SKIP_HEAVY_BYTES && (<p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">⚠️ Clip pesado: el análisis decodifica su audio en memoria; puede tardar en archivos muy largos.</p>)}
 <label className="mt-3 block text-xs font-semibold text-slate-300">Método de detección
 <select value={silenceCfg.method} disabled={silenceBusy} onChange={(e) => setSilenceCfg((s) => ({ ...s, method: e.target.value as 'whisper' | 'energy' }))} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-<option value="whisper"><UiIcon name="mic" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Modo Voz (reconoce palabras)</option>
-<option value="energy"><UiIcon name="bolt" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Modo Audio (reconoce sonidos)</option>
+<option value="whisper">🎙 Modo Voz (reconoce palabras)</option>
+<option value="energy">⚡ Modo Audio (reconoce sonidos)</option>
 </select></label>
 <label className="mt-3 block text-xs text-slate-400">Silencio mínimo a cortar: <span className="font-mono text-amber-300">{silenceCfg.minSilence.toFixed(1)}s</span>
 <input type="range" min={0.02} max={2} step={0.05} disabled={silenceBusy} value={silenceCfg.minSilence} onChange={(e) => setSilenceCfg((s) => ({ ...s, minSilence: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
 <label className="mt-2 block text-xs text-slate-400">Colchón alrededor del habla: <span className="font-mono text-amber-300">{silenceCfg.pad.toFixed(2)}s</span>
 <input type="range" min={0} max={0.5} step={0.05} disabled={silenceBusy} value={silenceCfg.pad} onChange={(e) => setSilenceCfg((s) => ({ ...s, pad: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
 {silenceMsg && (<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">{silenceMsg}</p>)}
-{silenceBusy && (<div className="mt-3"><p className="text-[11px] font-semibold text-amber-200">{silenceCfg.method === 'whisper' ? ` Whisper escuchando… ${silencePct}%` : ' Midiendo energía del audio…'}</p><div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-fuchsia-400 transition-all duration-200" style={{ width: `${silenceCfg.method === 'whisper' ? silencePct : 70}%` }} /></div></div>)}
+{silenceBusy && (<div className="mt-3"><p className="text-[11px] font-semibold text-amber-200">{silenceCfg.method === 'whisper' ? `🎙 Whisper escuchando… ${silencePct}%` : '⚡ Midiendo energía del audio…'}</p><div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-fuchsia-400 transition-all duration-200" style={{ width: `${silenceCfg.method === 'whisper' ? silencePct : 70}%` }} /></div></div>)}
 <div className="mt-4 flex gap-2">
 <button onClick={() => { setSilenceFor(null); setSilencePlan(null); }} disabled={silenceBusy} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition-colors hover:border-slate-500 disabled:opacity-40">Cancelar</button>
-<button onClick={() => detectSilences(silenceClip)} disabled={silenceBusy} className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60">{silenceBusy ? 'Analizando…' : ' Detectar'}</button>
+<button onClick={() => detectSilences(silenceClip)} disabled={silenceBusy} className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60">{silenceBusy ? 'Analizando…' : '🔍 Detectar'}</button>
 </div>
 </>
 ) : (
 <>
 <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100">Se encontraron <strong>{silencePlan.segments.length} tramos de habla</strong> ({silencePlan.kept.toFixed(1)}s útiles). Se eliminarán <strong>{silencePlan.removed.toFixed(1)}s</strong> de silencio.</p>
-<p className="mt-2 text-[11px] leading-relaxed text-slate-400">El clip se reemplazará por {silencePlan.segments.length} bloques contiguos con cortes duros entre ellos. Si tiene audio vinculado , se divide junto con el video. Podés deshacer con Ctrl+Z.</p>
+<p className="mt-2 text-[11px] leading-relaxed text-slate-400">El clip se reemplazará por {silencePlan.segments.length} bloques contiguos con cortes duros entre ellos. Si tiene audio vinculado 🔗, se divide junto con el video. Podés deshacer con Ctrl+Z.</p>
 <div className="mt-4 flex gap-2">
 <button onClick={() => setSilencePlan(null)} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition-colors hover:border-slate-500">← Volver</button>
-<button onClick={applySilencePlan} className="flex-1 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Aplicar recorte</button>
+<button onClick={applySilencePlan} className="flex-1 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95">✂️ Aplicar recorte</button>
 </div>
 </>
 )}
@@ -5680,8 +5679,8 @@ const asrProgressUI = asrProgress ? createPortal(
 <div className="w-[min(92vw,24rem)] rounded-2xl border border-fuchsia-400/40 bg-slate-950/95 px-5 py-4 shadow-2xl shadow-fuchsia-500/20">
 <p className="text-sm font-bold text-fuchsia-200">
 {asrProgress.phase === 'model'
-  ? ` Descargando/cargando modelo… ${asrProgress.pct}%`
-  : ` Transcribiendo audio… ${asrProgress.pct > 0 ? asrProgress.pct + '%' : ''}`}
+  ? `⬇️ Descargando/cargando modelo… ${asrProgress.pct}%`
+  : `🎙 Transcribiendo audio… ${asrProgress.pct > 0 ? asrProgress.pct + '%' : ''}`}
 </p>
 <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-800">
 <div
@@ -5689,7 +5688,7 @@ const asrProgressUI = asrProgress ? createPortal(
   style={{ width: `${Math.max(8, asrProgress.pct)}%` }}
 />
 </div>
-<p className="mt-2 text-[11px] text-slate-400">La interfaz no miente: si dice transcribiendo, está escuchando.  Nada sale de tu pestaña.</p>
+<p className="mt-2 text-[11px] text-slate-400">La interfaz no miente: si dice transcribiendo, está escuchando. 🔒 Nada sale de tu pestaña.</p>
 </div>
 </div>,
 document.body
@@ -5770,7 +5769,9 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
           confirmDialog.danger
             ? 'border-rose-500/40 bg-rose-500/15 text-rose-300 shadow-[0_0_16px_rgba(244,63,94,0.25)]'
             : 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.25)]'
-        }`}><DialogGlyph name={confirmDialog.icon} className="h-6 w-6" /></div>
+        }`}>
+          {confirmDialog.icon}
+        </div>
         <div className="min-w-0 flex-1">
           <h3 className="text-base font-black text-white">{confirmDialog.title}</h3>
           <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-200">{confirmDialog.message}</p>
@@ -5822,23 +5823,23 @@ className="fixed z-[260] flex max-h-[calc(100vh-16px)] w-[206px] flex-col gap-1.
 <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-black text-cyan-300">{lane.name}</span>
 <span className="text-[10px] font-semibold text-slate-400">{count} {count === 1 ? 'clip' : 'clips'}</span>
 </div>
-<button type="button" onClick={() => setOpenLaneMenuId(null)} className="flex h-5 w-5 items-center justify-center rounded-md text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-white" title="Cerrar menú"><UiIcon name="x" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
+<button type="button" onClick={() => setOpenLaneMenuId(null)} className="flex h-5 w-5 items-center justify-center rounded-md text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-white" title="Cerrar menú">✕</button>
 </div>
 <div className="grid grid-cols-2 gap-1.5">
 <button type="button" onClick={() => toggleTimelineLaneMute(lane.id)} className={cx('flex h-7 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-bold transition', lane.muted ? 'border-rose-400/60 bg-rose-500/20 text-rose-200' : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200')} title={lane.kind === 'audio' ? (lane.muted ? 'Activar sonido' : 'Silenciar pista') : (lane.muted ? 'Mostrar pista' : 'Ocultar pista')}>
-{lane.kind === 'audio' ? (<><UiIcon name={lane.muted ? 'volumeX' : 'volume'} className="h-3.5 w-3.5 shrink-0" /><span>{lane.muted ? 'Muda' : 'Sonando'}</span></>) : (<><UiIcon name={lane.muted ? 'eyeOff' : 'eye'} className="h-3.5 w-3.5 shrink-0" /><span>{lane.muted ? 'Oculta' : 'Visible'}</span></>)}
+{lane.kind === 'audio' ? (<><span>{lane.muted ? '🔇' : '🔊'}</span><span>{lane.muted ? 'Muda' : 'Sonando'}</span></>) : (<><span>{lane.muted ? '🙈' : '👁️'}</span><span>{lane.muted ? 'Oculta' : 'Visible'}</span></>)}
 </button>
-<button type="button" onClick={() => duplicateTimelineLane(lane.id)} className="flex h-7 items-center justify-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 text-[11px] font-bold text-violet-200 transition hover:border-violet-400 hover:bg-violet-500/25" title={'Duplicar la pista ' + lane.name + ' con todos sus clips'}><span><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span><span>Duplicar</span></button>
+<button type="button" onClick={() => duplicateTimelineLane(lane.id)} className="flex h-7 items-center justify-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 text-[11px] font-bold text-violet-200 transition hover:border-violet-400 hover:bg-violet-500/25" title={'Duplicar la pista ' + lane.name + ' con todos sus clips'}><span>📑</span><span>Duplicar</span></button>
 </div>
 <div className="grid grid-cols-4 gap-1.5">
-<button type="button" onClick={() => moveTimelineLane(lane.id, -1)} disabled={index <= 0} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30" title="Subir pista"><UiIcon name="arrowUp" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
-<button type="button" onClick={() => moveTimelineLane(lane.id, 1)} disabled={index >= siblings.length - 1} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30" title="Bajar pista"><UiIcon name="arrowDown" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
-<button type="button" onClick={() => { addTimelineLane(lane.kind); setOpenLaneMenuId(null); }} className="flex h-7 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/15 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/25" title={'Crear nueva pista vacía de ' + lane.kind}><UiIcon name="plus" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Pista</button>
-<button type="button" onClick={() => { deleteTimelineLane(lane.id); setOpenLaneMenuId(null); }} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs text-slate-400 transition hover:border-rose-500/60 hover:bg-rose-500/20 hover:text-rose-200" title="Eliminar esta pista"><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
+<button type="button" onClick={() => moveTimelineLane(lane.id, -1)} disabled={index <= 0} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30" title="Subir pista">↑</button>
+<button type="button" onClick={() => moveTimelineLane(lane.id, 1)} disabled={index >= siblings.length - 1} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30" title="Bajar pista">↓</button>
+<button type="button" onClick={() => { addTimelineLane(lane.kind); setOpenLaneMenuId(null); }} className="flex h-7 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/15 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/25" title={'Crear nueva pista vacía de ' + lane.kind}>＋Pista</button>
+<button type="button" onClick={() => { deleteTimelineLane(lane.id); setOpenLaneMenuId(null); }} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs text-slate-400 transition hover:border-rose-500/60 hover:bg-rose-500/20 hover:text-rose-200" title="Eliminar esta pista">🗑️</button>
 </div>
 {(lane.kind === 'audio' || lane.kind === 'video') && (
 <div onPointerDown={(e) => e.stopPropagation()} className="mt-0.5 flex items-center gap-1.5 rounded-lg border border-slate-800/90 bg-slate-900/80 px-2 py-1.5" title="Volumen de la pista">
-<span className="shrink-0 text-xs"><UiIcon name={(lane.volume ?? 1) === 0 ? 'volumeX' : 'volume'} className="h-3.5 w-3.5 shrink-0" /></span>
+<span className="shrink-0 text-xs">{(lane.volume ?? 1) === 0 ? '🔇' : '🔊'}</span>
 <input type="range" min={0} max={1} step={0.01} value={lane.volume ?? 1} onChange={(e) => setTimelineLaneVolume(lane.id, Number(e.target.value))} className="h-1.5 min-w-0 flex-1 cursor-pointer accent-cyan-400" />
 <span className="w-8 shrink-0 text-right font-mono text-[10px] font-black text-cyan-300">{Math.round((lane.volume ?? 1) * 100)}%</span>
 </div>
@@ -5865,7 +5866,7 @@ document.body
     >
       <div className="mb-1 flex items-center justify-between border-b border-slate-800/80 px-2.5 py-1.5">
         <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400">
-          {ctxMenu.target === 'item' ? ' Opciones del Clip' : ' Opciones de Pista'}
+          {ctxMenu.target === 'item' ? '🎬 Opciones del Clip' : '📍 Opciones de Pista'}
         </span>
         <span className="font-mono text-[10px] text-slate-400">{formatTime(ctxMenu.timeAtCursor)}</span>
       </div>
@@ -5877,7 +5878,7 @@ document.body
             onClick={() => copySelected(ctxMenu.itemType, ctxMenu.itemId)}
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/15 hover:text-cyan-200"
           >
-            <span><UiIcon name="copy" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Copiar</span>
+            <span>📋 Copiar</span>
             <span className="font-mono text-[10px] text-slate-500">Ctrl+C</span>
           </button>
 
@@ -5886,7 +5887,7 @@ document.body
             onClick={() => duplicateItem(ctxMenu.itemType, ctxMenu.itemId)}
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-200 transition hover:bg-violet-500/15 hover:text-violet-200"
           >
-            <span><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Duplicar al lado</span>
+            <span>📑 Duplicar al lado</span>
             <span className="font-mono text-[10px] text-slate-500">Ctrl+D</span>
           </button>
 
@@ -5896,7 +5897,7 @@ document.body
               onClick={() => pasteClipboard({ targetTime: ctxMenu.timeAtCursor, targetLaneKind: ctxMenu.laneKind, targetLaneId: ctxMenu.laneId })}
               className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/15"
             >
-              <span><UiIcon name="paste" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Pegar aquí</span>
+              <span>📥 Pegar aquí</span>
               <span className="font-mono text-[10px] text-emerald-400/80">Ctrl+V</span>
             </button>
           )}
@@ -5910,7 +5911,7 @@ document.body
             }}
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
           >
-            <span><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Dividir aquí</span>
+            <span>✂️ Dividir aquí</span>
             <span className="font-mono text-[10px] text-slate-500">{formatTime(ctxMenu.timeAtCursor)}</span>
           </button>
 
@@ -5949,7 +5950,7 @@ document.body
                   className="flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/70 px-2.5 py-1.5"
                   title="Volumen del clip"
                 >
-                  <span className="shrink-0 text-xs"><UiIcon name={isMutedItem || curVol === 0 ? 'volumeX' : 'volume'} className="h-3.5 w-3.5 shrink-0" /></span>
+                  <span className="shrink-0 text-xs">{isMutedItem || curVol === 0 ? '🔇' : '🔊'}</span>
                   <input
                     type="range"
                     min={0}
@@ -5977,7 +5978,7 @@ document.body
             }}
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-rose-300 transition hover:bg-rose-500/15"
           >
-            <span><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Eliminar</span>
+            <span>🗑️ Eliminar</span>
             <span className="font-mono text-[10px] text-rose-400/70">Supr</span>
           </button>
         </div>
@@ -5993,7 +5994,7 @@ document.body
           >
             <span className="truncate">
               {clipboardItem
-                ? ` Pegar ${
+                ? `📥 Pegar ${
                     clipboardItem.kind === 'clip'
                       ? 'Video en V1'
                       : clipboardItem.kind === 'image'
@@ -6004,7 +6005,7 @@ document.body
                       ? 'Superposición'
                       : 'Audio'
                   } aquí`
-                : ' Pegar (portapapeles vacío)'}
+                : '📥 Pegar (portapapeles vacío)'}
             </span>
             <span className="ml-1 shrink-0 font-mono text-[10px] text-slate-400">Ctrl+V</span>
           </button>
@@ -6017,7 +6018,7 @@ document.body
             }}
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-300 transition hover:bg-slate-800"
           >
-            <span><UiIcon name="target" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Mover cabezal aquí</span>
+            <span>🎯 Mover cabezal aquí</span>
             <span className="font-mono text-[10px] text-slate-500">{formatTime(ctxMenu.timeAtCursor)}</span>
           </button>
 
@@ -6032,7 +6033,7 @@ document.body
                 }}
                 className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-slate-300 transition hover:bg-slate-800"
               >
-                <span><UiIcon name="plus" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Nueva pista vacía</span>
+                <span>➕ Nueva pista vacía</span>
               </button>
               {ctxMenu.laneId && (
                 <button
@@ -6043,7 +6044,7 @@ document.body
                   }}
                   className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-violet-200 transition hover:bg-violet-500/15"
                 >
-                  <span><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Duplicar pista con contenido</span>
+                  <span>📑 Duplicar pista con contenido</span>
                 </button>
               )}
             </>
@@ -6057,7 +6058,7 @@ document.body
       <div className="pointer-events-none fixed inset-0 z-[300] flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
           {toasts.map((t) => (
-            <div key={t.id} className={`rounded-lg border px-5 py-2.5 text-sm shadow-2xl backdrop-blur ${t.kind === 'warn' ? 'border-amber-400/40 bg-amber-950/90 text-amber-200' : 'border-cyan-400/40 bg-cyan-950/90 text-cyan-200'}`}><span className="flex items-center gap-2"><UiIcon name={t.kind === 'warn' ? 'warn' : 'info'} className="h-4 w-4 shrink-0" /><span>{t.msg}</span></span></div>
+            <div key={t.id} className={`rounded-lg border px-5 py-2.5 text-sm shadow-2xl backdrop-blur ${t.kind === 'warn' ? 'border-amber-400/40 bg-amber-950/90 text-amber-200' : 'border-cyan-400/40 bg-cyan-950/90 text-cyan-200'}`}>{t.msg}</div>
           ))}
         
 <button onClick={() => setPropsOpen(false)} aria-label="Cerrar propiedades" title="Volver a la timeline"
@@ -6253,14 +6254,14 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className={cx('pointer-
             )}
           </div>
           {activeUsesProxy && (
-            <div className="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-black/60 px-2 py-0.5 text-[10px] font-bold text-green-300 backdrop-blur-sm"><UiIcon name="bolt" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> PROXY 480p</div>
+            <div className="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-black/60 px-2 py-0.5 text-[10px] font-bold text-green-300 backdrop-blur-sm">⚡ PROXY 480p</div>
           )}
           {previewRenderStatus.rendering && (
             <div className="absolute bottom-2 left-1/2 z-20 w-[min(92%,26rem)] -translate-x-1/2 rounded-xl border border-violet-400/40 bg-slate-950/90 px-3 py-2 shadow-2xl shadow-violet-500/20 backdrop-blur">
               <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-violet-200">
-                <span className="truncate">{previewPreparing ? ' Preparando transiciones…' : ` Renderizando transiciones ${Math.min(doneRef.current + 1, Math.max(totalNow, 1))}/${Math.max(totalNow, 1)}`}</span>
+                <span className="truncate">{previewPreparing ? '⚙️ Preparando transiciones…' : `✨ Renderizando transiciones ${Math.min(doneRef.current + 1, Math.max(totalNow, 1))}/${Math.max(totalNow, 1)}`}</span>
                 <span className="shrink-0 font-mono text-violet-300">{previewPreparing ? '—' : `${previewPercent}%`}</span>
-                <button onClick={cancelPreviewRenders} className="shrink-0 rounded-md px-1.5 py-0.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-red-300" title="Cancelar render"><UiIcon name="x" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </button>
+                <button onClick={cancelPreviewRenders} className="shrink-0 rounded-md px-1.5 py-0.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-red-300" title="Cancelar render">✕</button>
               </div>
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
                                 <div className={`h-full rounded-full bg-gradient-to-r from-violet-400 to-cyan-400 transition-all duration-200 ${previewPreparing ? 'w-1/3 animate-pulse' : ''}`} style={previewPreparing ? undefined : { width: `${previewPercent}%` }} />
@@ -6331,7 +6332,7 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className={cx('pointer-
                     <button onClick={() => setExportSettings((s) => ({ ...s, fit: 'adaptar' }))} disabled={exporting}
             className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-bold transition ${exportSettings.fit === 'adaptar' ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
             title="El video entra completo (letterbox)"><IconFit className="h-3.5 w-3.5" /> Adaptar</button>
-          <button onClick={() => { setExportSettings((s) => ({ ...s, fit: 'recortar' })); showToast(' Modo Recortar: arrastrá el video en el preview para reencuadrar', 'info'); }} disabled={exporting}
+          <button onClick={() => { setExportSettings((s) => ({ ...s, fit: 'recortar' })); showToast('✂️ Modo Recortar: arrastrá el video en el preview para reencuadrar', 'info'); }} disabled={exporting}
             className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-bold transition ${exportSettings.fit === 'recortar' ? 'bg-gradient-to-r from-cyan-500 to-violet-500 text-black shadow-sm shadow-cyan-500/30' : 'text-slate-300 hover:bg-slate-800'} disabled:opacity-50`}
             title="El video cubre todo el canvas (recorta sobrantes)"><IconCrop className="h-3.5 w-3.5" /> Recortar</button>
         </div>
@@ -6375,7 +6376,7 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className={cx('pointer-
 {propsTabs.map((t) => (
 <button key={t.id} onClick={() => { if (propsTab === t.id && propsOpen) { setPropsOpen(false); } else { setPropsTab(t.id); setPropsOpen(true); } }}
 className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg py-1.5 transition-colors', propsTab === t.id && propsOpen ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200')} title={t.label}>
-{<UiIcon name={TRANSITION_ICON[t.id] || 'sparkles'} className="h-7 w-7 text-slate-400" />}<span className="w-full truncate text-center text-[8px] font-semibold leading-none">{t.label}</span>
+{t.icon}<span className="w-full truncate text-center text-[8px] font-semibold leading-none">{t.label}</span>
 </button>
 ))}
 </div>
@@ -6384,7 +6385,7 @@ className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg py-1
 {propsTabs.map((t) => (
 <button key={t.id} onClick={() => setPropsTab(t.id)}
 className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[clamp(2px,0.6vh,6px)] rounded-lg border py-1 transition-colors', propsTab === t.id ? 'border-cyan-400/60 bg-cyan-500/10 text-cyan-300' : 'border-transparent text-slate-400 hover:bg-slate-800/60 hover:text-slate-200')} title={t.label}>
-{<UiIcon name={TRANSITION_ICON[t.id] || 'sparkles'} className="h-7 w-7 text-slate-400" />}<span className="w-full truncate px-1 text-center text-[clamp(7px,1.1vh,10px)] font-semibold leading-none">{t.label}</span>
+{t.icon}<span className="w-full truncate px-1 text-center text-[clamp(7px,1.1vh,10px)] font-semibold leading-none">{t.label}</span>
 </button>
 ))}
 </div>
@@ -6396,17 +6397,17 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
 {propsTab === 'inspector' && selectedClip && (<>
 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clip: <span className="normal-case text-cyan-300">{selectedClip.name}</span></p>
 <div className="grid grid-cols-2 gap-2">
-<button onClick={() => updateClip(selectedClip.id, { rotate: ((selectedClip.rotate + 90) % 360) as Clip['rotate'] })} className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400"><UiIcon name="rotate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Rotar ({selectedClip.rotate}°)</button>
+<button onClick={() => updateClip(selectedClip.id, { rotate: ((selectedClip.rotate + 90) % 360) as Clip['rotate'] })} className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">⟲ Rotar ({selectedClip.rotate}°)</button>
 <select value={selectedClip.speed} onChange={(e) => updateClip(selectedClip.id, { speed: Number(e.target.value) })} className="rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
 {[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => (<option key={s} value={s}>Velocidad {s}x</option>))}
 </select>
 </div>
 {isCover && (
 <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-2">
-<p className="text-[11px] font-semibold text-cyan-200"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Encuadre (modo Recortar)</p>
+<p className="text-[11px] font-semibold text-cyan-200">✂️ Encuadre (modo Recortar)</p>
 <label className="block select-none text-xs text-slate-400">Horizontal: {Math.round(selectedClip.cropX * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedClip.cropX} onChange={(e) => updateClip(selectedClip.id, { cropX: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
 <label className="block select-none text-xs text-slate-400">Vertical: {Math.round(selectedClip.cropY * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedClip.cropY} onChange={(e) => updateClip(selectedClip.id, { cropY: Number(e.target.value) })} className="mt-1 w-full accent-cyan-400" /></label>
-<button onClick={() => updateClip(selectedClip.id, { cropX: 0.5, cropY: 0.5 })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400"><UiIcon name="crosshair" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Centrar encuadre</button>
+<button onClick={() => updateClip(selectedClip.id, { cropX: 0.5, cropY: 0.5 })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400">⌖ Centrar encuadre</button>
 </div>
 )}
 <p className="text-[11px] leading-relaxed text-slate-500">En timeline: {effLen(selectedClip).toFixed(1)}s{selectedClip.speed !== 1 ? ' · ' + selectedClip.speed + 'x' : ''}</p>
@@ -6426,51 +6427,51 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
 {propsTab === 'inspector' && selectedImage && (<>
 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Imagen: <span className="normal-case text-pink-300">{selectedImage.name}</span></p>
 <label className="block select-none text-xs text-slate-400">Tamaño: {selectedImage.size}%<input type="range" min={5} max={150} step={1} value={selectedImage.size} onChange={(e) => updateImageOverlay(selectedImage.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
-<button onClick={() => updateImageOverlay(selectedImage.id, { rotate: ((selectedImage.rotate + 90) % 360) as ImageOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-pink-400 hover:text-pink-400"><UiIcon name="rotate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Rotar imagen ({selectedImage.rotate}°)</button>
+<button onClick={() => updateImageOverlay(selectedImage.id, { rotate: ((selectedImage.rotate + 90) % 360) as ImageOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-pink-400 hover:text-pink-400">⟲ Rotar imagen ({selectedImage.rotate}°)</button>
 <p className="text-[11px] leading-relaxed text-slate-500">De {selectedImage.start.toFixed(1)}s a {selectedImage.end.toFixed(1)}s</p>
 </>)}
 {propsTab === 'inspector' && selectedVo && (<>
 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Superposición: <span className="normal-case text-amber-300">{selectedVo.name}</span></p>
 <label className="block select-none text-xs text-slate-400">Tamaño: {selectedVo.size}%<input type="range" min={5} max={150} step={1} value={selectedVo.size} onChange={(e) => updateVideoOverlay(selectedVo.id, { size: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
-<button onClick={() => updateVideoOverlay(selectedVo.id, { rotate: ((selectedVo.rotate + 90) % 360) as VideoOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-amber-400 hover:text-amber-400"><UiIcon name="rotate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Rotar capa ({selectedVo.rotate}°)</button>
+<button onClick={() => updateVideoOverlay(selectedVo.id, { rotate: ((selectedVo.rotate + 90) % 360) as VideoOverlay['rotate'] })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-amber-400 hover:text-amber-400">⟲ Rotar capa ({selectedVo.rotate}°)</button>
 <p className="text-[11px] leading-relaxed text-slate-500">De {selectedVo.start.toFixed(1)}s a {selectedVo.end.toFixed(1)}s · empieza en {selectedVo.offset.toFixed(1)}s del archivo</p>
 </>)}
 {propsTab === 'inspector' && selectedAudio && (<>
 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audio: <span className="normal-case text-green-300">{selectedAudio.name}</span></p>
 {selectedAudio.sourceVideoId && (
 <div className="space-y-1">
-<p className="text-[11px] text-slate-500">{selectedAudio.released ? ' Liberado: edición independiente' : ' Vinculado: sigue trim/move/velocidad/dividir del clip'}</p>
-<button onClick={() => toggleRelease(selectedAudio.id)} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-green-400 hover:text-green-300">{selectedAudio.released ? ' Re-vincular al video' : ' Liberar audio'}</button>
+<p className="text-[11px] text-slate-500">{selectedAudio.released ? '🔓 Liberado: edición independiente' : '🔗 Vinculado: sigue trim/move/velocidad/dividir del clip'}</p>
+<button onClick={() => toggleRelease(selectedAudio.id)} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-green-400 hover:text-green-300">{selectedAudio.released ? '🔗 Re-vincular al video' : '🔓 Liberar audio'}</button>
 </div>
 )}
 <label className="block select-none text-xs text-slate-400">Volumen: {Math.round(selectedAudio.volume * 100)}%<input type="range" min={0} max={1} step={0.01} value={selectedAudio.volume} onChange={(e) => updateAudioTrack(selectedAudio.id, { volume: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
-<button onClick={() => updateAudioTrack(selectedAudio.id, { muted: !selectedAudio.muted })} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors', selectedAudio.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700')}>{selectedAudio.muted ? <><UiIcon name="volumeX" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Desmutear</> : <><UiIcon name="volume" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Mutear</>}</button>
+<button onClick={() => updateAudioTrack(selectedAudio.id, { muted: !selectedAudio.muted })} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors', selectedAudio.muted ? 'bg-red-500/20 text-red-300 border border-red-400/40' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700')}>{selectedAudio.muted ? '🔇 Desmutear' : '🔊 Mutear'}</button>
 <p className="text-[11px] leading-relaxed text-slate-500">De {selectedAudio.start.toFixed(1)}s a {(selectedAudio.start + selectedAudio.duration).toFixed(1)}s</p>
 </>)}
 {propsTab === 'estilo' && selectedClip && (<>
-<label className="block select-none text-xs text-slate-400"><UiIcon name="film" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Filtro de color
+<label className="block select-none text-xs text-slate-400">🎞 Filtro de color
 <select value={selectedClip.filter || 'none'} onChange={(e) => updateClip(selectedClip.id, { filter: e.target.value as FilterType })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-cyan-400">
 {FILTERS.map((f) => (<option key={f.id} value={f.id}>{f.label}</option>))}
 </select>
 </label>
 <p className="text-[11px] leading-relaxed text-slate-500">{FILTERS.find((f) => f.id === (selectedClip.filter || 'none'))?.desc}</p>
 <p className="pt-1 text-[10px] font-black uppercase tracking-wider text-cyan-300">Ajustes manuales</p>
-<label className="block select-none text-xs text-slate-400"><UiIcon name="sun" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Brillo: {Math.round((effSpec(selectedClip).b ?? 1) * 100)}%<input type="range" min={0.5} max={1.5} step={0.05} value={effSpec(selectedClip).b ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), b: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
-<label className="block select-none text-xs text-slate-400"><UiIcon name="contrast" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Contraste: {Math.round((effSpec(selectedClip).c ?? 1) * 100)}%<input type="range" min={0.5} max={1.5} step={0.05} value={effSpec(selectedClip).c ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), c: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
-<label className="block select-none text-xs text-slate-400"><UiIcon name="palette" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Saturación: {Math.round((effSpec(selectedClip).s ?? 1) * 100)}%<input type="range" min={0} max={2} step={0.05} value={effSpec(selectedClip).s ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), s: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
-<label className="block select-none text-xs text-slate-400"><UiIcon name="spectrum" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Tono: {Math.round(effSpec(selectedClip).h ?? 0)}°<input type="range" min={-180} max={180} step={5} value={effSpec(selectedClip).h ?? 0} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), h: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
-<label className="block select-none text-xs text-slate-400"><UiIcon name="droplet" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Desenfoque: {(effSpec(selectedClip).blur ?? 0).toFixed(1)}px<input type="range" min={0} max={10} step={0.5} value={effSpec(selectedClip).blur ?? 0} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), blur: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
-<button onClick={() => updateClip(selectedClip.id, { adjust: {} })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400" title="Vuelve al preset elegido sin ajustes manuales"><UiIcon name="reset" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Resetear ajustes manuales</button>
+<label className="block select-none text-xs text-slate-400">☀️ Brillo: {Math.round((effSpec(selectedClip).b ?? 1) * 100)}%<input type="range" min={0.5} max={1.5} step={0.05} value={effSpec(selectedClip).b ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), b: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">🎚 Contraste: {Math.round((effSpec(selectedClip).c ?? 1) * 100)}%<input type="range" min={0.5} max={1.5} step={0.05} value={effSpec(selectedClip).c ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), c: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">🎨 Saturación: {Math.round((effSpec(selectedClip).s ?? 1) * 100)}%<input type="range" min={0} max={2} step={0.05} value={effSpec(selectedClip).s ?? 1} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), s: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">🌈 Tono: {Math.round(effSpec(selectedClip).h ?? 0)}°<input type="range" min={-180} max={180} step={5} value={effSpec(selectedClip).h ?? 0} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), h: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<label className="block select-none text-xs text-slate-400">💧 Desenfoque: {(effSpec(selectedClip).blur ?? 0).toFixed(1)}px<input type="range" min={0} max={10} step={0.5} value={effSpec(selectedClip).blur ?? 0} onChange={(e) => updateClip(selectedClip.id, { adjust: { ...(selectedClip.adjust || {}), blur: Number(e.target.value) } })} className="mt-1 w-full accent-cyan-400" /></label>
+<button onClick={() => updateClip(selectedClip.id, { adjust: {} })} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-400" title="Vuelve al preset elegido sin ajustes manuales">↺ Resetear ajustes manuales</button>
 </>)}
 {propsTab === 'estilo' && selectedText && (<>
 <label className="block select-none text-xs text-slate-400">Color principal del texto</label>
 <input type="color" value={selectedText.color} onChange={(e) => updateTextOverlay(selectedText.id, { color: e.target.value })} className="h-9 w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 p-1" />
-<button onClick={() => updateTextOverlay(selectedText.id, { outline: !selectedText.outline })} className={cx('w-full rounded-lg py-2 text-xs font-semibold transition-colors', selectedText.outline ? 'border border-fuchsia-400/40 bg-fuchsia-500/20 text-fuchsia-200' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedText.outline ? ' Contorno negro: ON' : ' Contorno negro: OFF'}</button>
+<button onClick={() => updateTextOverlay(selectedText.id, { outline: !selectedText.outline })} className={cx('w-full rounded-lg py-2 text-xs font-semibold transition-colors', selectedText.outline ? 'border border-fuchsia-400/40 bg-fuchsia-500/20 text-fuchsia-200' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedText.outline ? '🔲 Contorno negro: ON' : '🔲 Contorno negro: OFF'}</button>
 
 {/* ===== SOMBRA PARALELA ESFUMADA ===== */}
 <div className="space-y-2.5 border-t border-slate-800 pt-3">
   <div className="flex items-center justify-between gap-2">
-    <p className="truncate text-[10px] font-black uppercase tracking-wider text-cyan-300"><UiIcon name="moon" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Sombra paralela (Esfumada)</p>
+    <p className="truncate text-[10px] font-black uppercase tracking-wider text-cyan-300">🌑 Sombra paralela (Esfumada)</p>
     <button
       type="button"
       onClick={() =>
@@ -6489,7 +6490,7 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
           : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
       )}
     >
-      {selectedText.shadow ? 'Activa ' : 'Desactivada'}
+      {selectedText.shadow ? 'Activa ✓' : 'Desactivada'}
     </button>
   </div>
 
@@ -6503,7 +6504,8 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
             onClick={() => updateTextOverlay(selectedText.id, { shadowX: 0, shadowY: 0 })}
             className="rounded border border-cyan-400/40 bg-cyan-500/15 px-2 py-0.5 text-[9px] font-bold text-cyan-200 transition hover:bg-cyan-500/25"
             title="Centra la sombra detrás del texto para crear un efecto de luz de neón (Glow)"
-          ><UiIcon name="bulb" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Centrar (Glow)
+          >
+            💡 Centrar (Glow)
           </button>
         </div>
         <div className="flex items-center gap-1.5">
@@ -6577,24 +6579,22 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
 </div>
 
 <div className="space-y-2 border-t border-slate-800 pt-3">
-  <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300"><UiIcon name="mic" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Modo Karaoke / Hormozi</p>
+  <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎤 Modo Karaoke / Hormozi</p>
   <div className="grid grid-cols-2 gap-1.5">
     {([
-{ id: 'static', label: 'Estático', hint: 'Subtítulo completo, sin resaltado por palabra' },
-{ id: 'karaoke-color', label: 'Karaoke Color', hint: 'La palabra activa cambia al color de acento' },
-{ id: 'karaoke-box', label: 'Karaoke Caja', hint: 'La palabra activa se resalta en una pastilla de color' },
-{ id: 'single-word', label: '1 Palabra', hint: 'Una sola palabra a la vez, en grande' },
-] as { id: SubtitleStyle; label: string; hint: string }[]).map((st) => {
-const cur = selectedText.subStyle || 'static';
-const on = cur === st.id;
-return (
-<button key={st.id} type="button" title={st.hint} onClick={() => updateTextOverlay(selectedText.id, { subStyle: st.id, highlightColor: selectedText.highlightColor || '#facc15' })}
-className={cx('flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-bold leading-none transition', on ? 'border-fuchsia-400 bg-fuchsia-500/20 text-fuchsia-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
-<UiIcon name={SUBSTYLE_ICON[st.id] || 'textLines'} className="h-3 w-3 shrink-0" />
-<span className="truncate">{st.label}</span>
-</button>
-);
-})}
+      { id: 'static', label: '📝 Estático' },
+      { id: 'karaoke-color', label: '🎤 Karaoke Color' },
+      { id: 'karaoke-box', label: '📦 Karaoke Caja' },
+      { id: 'single-word', label: '⚡ 1 Palabra' },
+    ] as { id: SubtitleStyle; label: string }[]).map((st) => {
+      const cur = selectedText.subStyle || 'static';
+      return (
+        <button key={st.id} onClick={() => updateTextOverlay(selectedText.id, { subStyle: st.id, highlightColor: selectedText.highlightColor || '#facc15' })}
+          className={cx('rounded-lg border px-2 py-1.5 text-[11px] font-bold transition', cur === st.id ? 'border-fuchsia-400 bg-fuchsia-500/20 text-fuchsia-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
+          {st.label}
+        </button>
+      );
+    })}
   </div>
   {(selectedText.subStyle && selectedText.subStyle !== 'static') && (
     <div>
@@ -6609,7 +6609,8 @@ className={cx('flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg bor
     </div>
   )}
   {selectedText.kind === 'subtitulo' && (
-    <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-1.5 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20"><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Aplicar estilo y sombra a todos los subtítulos
+    <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-1.5 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20">
+      📑 Aplicar estilo y sombra a todos los subtítulos
     </button>
   )}
 </div>
@@ -6627,7 +6628,7 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 </div>
 <div className="space-y-2.5 border-t border-slate-800 pt-3">
   <div className="flex items-center justify-between gap-2">
-    <p className="truncate text-[10px] font-black uppercase tracking-wider text-emerald-300"><UiIcon name="chroma" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Chroma Key</p>
+    <p className="truncate text-[10px] font-black uppercase tracking-wider text-emerald-300">🟩 Chroma Key</p>
     <button onClick={() => {
       const nextOn = !selectedVo.chroma;
       const autoHex = nextOn ? sampleCornerHex(voElementsRef.current.get(selectedVo.id)) : null;
@@ -6639,7 +6640,7 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
       });
     }}
       className={cx('shrink-0 rounded-lg border px-2.5 py-1 text-[10px] font-bold transition', selectedVo.chroma ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200')}>
-      {selectedVo.chroma ? 'Activo ' : 'Desactivado'}
+      {selectedVo.chroma ? 'Activo ✓' : 'Desactivado'}
     </button>
   </div>
   {selectedVo.chroma && (
@@ -6653,14 +6654,15 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
               const detected = sampleCornerHex(voElementsRef.current.get(selectedVo.id));
               if (detected) {
                 updateVideoOverlay(selectedVo.id, { chromaColor: detected });
-                showToast(` Color de fondo detectado: ${detected}`, 'info');
+                showToast(`💧 Color de fondo detectado: ${detected}`, 'info');
               } else {
-                showToast(' Ubicá el cabezal sobre el clip para detectar el color del borde', 'warn');
+                showToast('⚠️ Ubicá el cabezal sobre el clip para detectar el color del borde', 'warn');
               }
             }}
             className="rounded border border-emerald-400/50 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 transition hover:bg-emerald-500/25"
             title="Detecta automáticamente el color de la esquina del video"
-          ><UiIcon name="droplet" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Auto-detectar
+          >
+            💧 Auto-detectar
           </button>
         </div>
         <div className="grid grid-cols-4 gap-1.5">
@@ -6705,21 +6707,26 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <label className="block select-none text-xs text-slate-400">Fade in: {selectedText.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeIn} onChange={(e) => updateTextOverlay(selectedText.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out: {selectedText.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedText.fadeOut} onChange={(e) => updateTextOverlay(selectedText.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
 <div data-anim-inout="text" className="space-y-2 border-t border-slate-800 pt-3">
-  <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300"><UiIcon name="clapper" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Movimiento · entrada / salida</p>
+  <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
-    <IconSelect value={selectedText.animIn || 'none'} accent="fuchsia" ariaLabel="Animación de entrada" options={(TEXT_ANIM_IN_KEYS).map((a) => ({ id: a, label: ANIM_IN_LABELS[a], icon: ANIM_ICON[a] || 'dot' }))} onChange={(nv) => updateTextOverlay(selectedText.id, { animIn: nv as OverlayAnim })} />
+    <select value={selectedText.animIn || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+      {TEXT_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+    </select>
   </label>
   {selectedText.animIn && selectedText.animIn !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedText.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animInDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
-    <IconSelect value={selectedText.animOut || 'none'} accent="fuchsia" ariaLabel="Animación de salida" options={(TEXT_ANIM_OUT_KEYS).map((a) => ({ id: a, label: ANIM_OUT_LABELS[a], icon: ANIM_ICON[a] || 'dot' }))} onChange={(nv) => updateTextOverlay(selectedText.id, { animOut: nv as OverlayAnimOut })} />
+    <select value={selectedText.animOut || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
+      {TEXT_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+    </select>
   </label>
   {selectedText.animOut && selectedText.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedText.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animOutDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
   )}
   {selectedText.kind === 'subtitulo' && (
-    <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="mt-2 w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Aplica las animaciones, fades y estilo de este subtítulo a toda la pista SUB"><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Aplicar animaciones y estilo a todos los subtítulos
+    <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="mt-2 w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Aplica las animaciones, fades y estilo de este subtítulo a toda la pista SUB">
+      📑 Aplicar animaciones y estilo a todos los subtítulos
     </button>
   )}
   <p className="text-[10px] leading-relaxed text-slate-500">Paridad 1:1 entre el preview y el exportador de FFmpeg.</p>
@@ -6729,15 +6736,19 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <label className="block select-none text-xs text-slate-400">Fade in: {selectedImage.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeIn} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out: {selectedImage.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedImage.fadeOut} onChange={(e) => updateImageOverlay(selectedImage.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
 <div data-anim-inout="image" className="space-y-2 border-t border-slate-800 pt-3">
-  <p className="text-[10px] font-black uppercase tracking-wider text-pink-300"><UiIcon name="clapper" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Movimiento · entrada / salida</p>
+  <p className="text-[10px] font-black uppercase tracking-wider text-pink-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
-    <IconSelect value={selectedImage.animIn || 'none'} accent="pink" ariaLabel="Animación de entrada" options={(MEDIA_ANIM_IN_KEYS).map((a) => ({ id: a, label: ANIM_IN_LABELS[a], icon: ANIM_ICON[a] || 'dot' }))} onChange={(nv) => updateImageOverlay(selectedImage.id, { animIn: nv as OverlayAnim })} />
+    <select value={selectedImage.animIn || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
+      {MEDIA_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+    </select>
   </label>
   {selectedImage.animIn && selectedImage.animIn !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedImage.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animInDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
-    <IconSelect value={selectedImage.animOut || 'none'} accent="pink" ariaLabel="Animación de salida" options={(MEDIA_ANIM_OUT_KEYS).map((a) => ({ id: a, label: ANIM_OUT_LABELS[a], icon: ANIM_ICON[a] || 'dot' }))} onChange={(nv) => updateImageOverlay(selectedImage.id, { animOut: nv as OverlayAnimOut })} />
+    <select value={selectedImage.animOut || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
+      {MEDIA_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+    </select>
   </label>
   {selectedImage.animOut && selectedImage.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedImage.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animOutDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
@@ -6749,15 +6760,19 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <label className="block select-none text-xs text-slate-400">Fade in (opacidad): {selectedVo.fadeIn.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeIn} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeIn: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
 <label className="block select-none text-xs text-slate-400">Fade out (opacidad): {selectedVo.fadeOut.toFixed(1)}s<input type="range" min={0} max={2} step={0.1} value={selectedVo.fadeOut} onChange={(e) => updateVideoOverlay(selectedVo.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
 <div data-anim-inout="vo" className="space-y-2 border-t border-slate-800 pt-3">
-  <p className="text-[10px] font-black uppercase tracking-wider text-amber-300"><UiIcon name="clapper" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Movimiento · entrada / salida</p>
+  <p className="text-[10px] font-black uppercase tracking-wider text-amber-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
-    <IconSelect value={selectedVo.animIn || 'none'} accent="amber" ariaLabel="Animación de entrada" options={(MEDIA_ANIM_IN_KEYS).map((a) => ({ id: a, label: ANIM_IN_LABELS[a], icon: ANIM_ICON[a] || 'dot' }))} onChange={(nv) => updateVideoOverlay(selectedVo.id, { animIn: nv as OverlayAnim })} />
+    <select value={selectedVo.animIn || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+      {MEDIA_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
+    </select>
   </label>
   {selectedVo.animIn && selectedVo.animIn !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedVo.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animInDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
-    <IconSelect value={selectedVo.animOut || 'none'} accent="amber" ariaLabel="Animación de salida" options={(MEDIA_ANIM_OUT_KEYS).map((a) => ({ id: a, label: ANIM_OUT_LABELS[a], icon: ANIM_ICON[a] || 'dot' }))} onChange={(nv) => updateVideoOverlay(selectedVo.id, { animOut: nv as OverlayAnimOut })} />
+    <select value={selectedVo.animOut || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
+      {MEDIA_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
+    </select>
   </label>
   {selectedVo.animOut && selectedVo.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedVo.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animOutDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
@@ -6770,13 +6785,13 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <label className="block select-none text-xs text-slate-400">Fade out: {selectedAudio.fadeOut.toFixed(1)}s<input type="range" min={0} max={3} step={0.1} value={selectedAudio.fadeOut} onChange={(e) => updateAudioTrack(selectedAudio.id, { fadeOut: Number(e.target.value) })} className="mt-1 w-full accent-green-400" /></label>
 </>)}
 {propsTab === 'subtitulos' && selectedClip && (<>
-<p className="text-[11px] font-semibold text-slate-300"><UiIcon name="mic" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Modelo de Whisper</p>
+<p className="text-[11px] font-semibold text-slate-300">🎙 Modelo de Whisper</p>
 <div className="grid grid-cols-2 gap-1.5">
 {ASR_MODELS.map((m) => { const dis = (m.plus && !isPlus) || (IS_MOBILE && m.factorMobile >= 999); const sel = asrModelPick === m.id; const f = IS_MOBILE ? m.factorMobile : m.factorDesktop; const e = effLen(selectedClip) * asrSpeedFactor(m.id, IS_MOBILE, f); return (
 <button key={m.id} disabled={dis} onClick={() => setAsrModelPick(m.id)} className={cx('relative rounded-lg border p-2 text-left transition', sel ? 'border-fuchsia-400 bg-fuchsia-500/15 ring-1 ring-fuchsia-400' : dis ? 'border-slate-800 bg-slate-900/40 opacity-60' : 'border-slate-700 bg-slate-900/60 hover:border-slate-500')}>
-{m.plus && !isPlus && <span className="absolute -right-1 -top-1 text-xs"><UiIcon name="lock" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>}
-<div className="text-[11px] font-black text-white">{<UiIcon name={ASR_ICON[m.id] || 'mic'} className="mr-1 inline h-3.5 w-3.5 shrink-0 align-[-0.18em]" />} {m.label}</div>
-<p className="mt-0.5 text-[9px] font-semibold text-slate-300">{asrDownloadedModels().includes(m.id) ? ' en tu equipo' : '↓ ~' + m.mb + 'MB'} · {f >= 999 ? '—' : fmtAsrEst(e)}</p>
+{m.plus && !isPlus && <span className="absolute -right-1 -top-1 text-xs">🔒</span>}
+<div className="text-[11px] font-black text-white">{m.icon} {m.label}</div>
+<p className="mt-0.5 text-[9px] font-semibold text-slate-300">{asrDownloadedModels().includes(m.id) ? '✓ en tu equipo' : '↓ ~' + m.mb + 'MB'} · {f >= 999 ? '—' : fmtAsrEst(e)}</p>
 </button>); })}
 </div>
 <label className="block text-xs font-semibold text-slate-300">Idioma del audio
@@ -6788,19 +6803,19 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <input type="checkbox" checked={asrRemember} onChange={(e) => setAsrRemember(e.target.checked)} className="accent-fuchsia-400" />
 Recordar mi elección
 </label>
-<button onClick={() => { const m = ASR_MODELS.find((x) => x.id === asrModelPick); if (m && selectedClip.hasAudio) generateSubtitles(selectedClip, m, asrLangPick, asrRemember); }} disabled={!selectedClip.hasAudio || !!asrProgress} className="w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-4 py-2.5 text-sm font-black text-white transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50"><UiIcon name="mic" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Generar subtítulos</button>
+<button onClick={() => { const m = ASR_MODELS.find((x) => x.id === asrModelPick); if (m && selectedClip.hasAudio) generateSubtitles(selectedClip, m, asrLangPick, asrRemember); }} disabled={!selectedClip.hasAudio || !!asrProgress} className="w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-4 py-2.5 text-sm font-black text-white transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50">🎙 Generar subtítulos</button>
 {asrProgress && (
 <div className="rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 p-2">
-<p className="text-[11px] font-semibold text-fuchsia-200">{asrProgress.phase === 'model' ? ' Modelo… ' + asrProgress.pct + '%' : ' Transcribiendo…'}</p>
+<p className="text-[11px] font-semibold text-fuchsia-200">{asrProgress.phase === 'model' ? '⬇️ Modelo… ' + asrProgress.pct + '%' : '🎙 Transcribiendo…'}</p>
 <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800"><div className={cx('h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-cyan-400', asrProgress.phase === 'transcribe' && 'w-1/3 animate-pulse')} style={asrProgress.phase === 'model' ? { width: asrProgress.pct + '%' } : undefined} /></div>
 </div>
 )}
 <div className="border-t border-slate-800 pt-3">
-<p className="text-[11px] font-semibold text-amber-200"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Recortar silencios</p>
+<p className="text-[11px] font-semibold text-amber-200">✂️ Recortar silencios</p>
 <label className="mt-2 block text-xs font-semibold text-slate-300">Método
 <select value={silenceCfg.method} disabled={silenceBusy} onChange={(e) => setSilenceCfg((s) => ({ ...s, method: e.target.value as 'whisper' | 'energy' }))} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-<option value="whisper"><UiIcon name="mic" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Modo Voz (reconoce palabras)</option>
-<option value="energy"><UiIcon name="bolt" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Modo Audio (reconoce sonidos)</option>
+<option value="whisper">🎙 Modo Voz (reconoce palabras)</option>
+<option value="energy">⚡ Modo Audio (reconoce sonidos)</option>
 </select>
 </label>
 <label className="mt-2 block text-xs text-slate-400">Silencio mínimo: <span className="font-mono text-amber-300">{silenceCfg.minSilence.toFixed(2)}s</span><input type="range" min={0.02} max={2} step={0.05} disabled={silenceBusy} value={silenceCfg.minSilence} onChange={(e) => setSilenceCfg((s) => ({ ...s, minSilence: Number(e.target.value) }))} className="mt-1 w-full accent-amber-400" /></label>
@@ -6808,24 +6823,24 @@ Recordar mi elección
 {silenceMsg && (<p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">{silenceMsg}</p>)}
 {silenceBusy && (<div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-fuchsia-400" style={{ width: (silenceCfg.method === 'whisper' ? silencePct : 70) + '%' }} /></div>)}
 {!silencePlan ? (
-<button onClick={() => detectSilences(selectedClip)} disabled={silenceBusy || !selectedClip.hasAudio} className="mt-2 w-full rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60">{silenceBusy ? 'Analizando…' : ' Detectar silencios'}</button>
+<button onClick={() => detectSilences(selectedClip)} disabled={silenceBusy || !selectedClip.hasAudio} className="mt-2 w-full rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-black text-black transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60">{silenceBusy ? 'Analizando…' : '🔍 Detectar silencios'}</button>
 ) : (<>
 <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100"><strong>{silencePlan.segments.length} tramos de habla</strong> ({silencePlan.kept.toFixed(1)}s) · se irán <strong>{silencePlan.removed.toFixed(1)}s</strong> de silencio.</p>
 <div className="mt-2 flex gap-2">
 <button onClick={() => setSilencePlan(null)} className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300">← Volver</button>
-<button onClick={() => applySilencePlan(selectedClip.id)} className="flex-1 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-3 py-2 text-xs font-black text-black"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Aplicar</button>
+<button onClick={() => applySilencePlan(selectedClip.id)} className="flex-1 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 px-3 py-2 text-xs font-black text-black">✂️ Aplicar</button>
 </div>
 </>)}
 </div>
 </>)}
 {propsTab === 'subtitulos' && selectedText && selectedText.kind === 'subtitulo' && (<>
-<button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, contorno, fades y posición de este subtítulo a todos los de la pista SUB"><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Aplicar cambio a todos los subtítulos</button>
+<button onClick={() => applyStyleToAllSubtitles(selectedText)} className="w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Copia fuente, tamaño, color, negrita, contorno, fades y posición de este subtítulo a todos los de la pista SUB">📑 Aplicar cambio a todos los subtítulos</button>
 <p className="text-[11px] leading-relaxed text-slate-500">Unifica el look de toda la pista SUB con un clic.</p>
 </>)}
 {propsTab === 'herramientas' && (
 <div className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-2">
-<p className="text-[10px] font-black uppercase tracking-wider text-slate-400"><UiIcon name="toolbox" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Herramientas globales</p>
-<button onClick={() => setCommentStudioOpen(true)} className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Creá comentarios estilo TikTok/Instagram/YouTube/Twitter y agregalos como imagen"><UiIcon name="comment" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Generador de comentarios</button>
+<p className="text-[10px] font-black uppercase tracking-wider text-slate-400">🧰 Herramientas globales</p>
+<button onClick={() => setCommentStudioOpen(true)} className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Creá comentarios estilo TikTok/Instagram/YouTube/Twitter y agregalos como imagen">💬 Generador de comentarios</button>
 <div className="grid grid-cols-3 gap-1.5 pt-1">
   <button
     type="button"
@@ -6833,7 +6848,8 @@ Recordar mi elección
     onClick={() => copySelected()}
     className="rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-[11px] font-bold text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:opacity-40"
     title="Copiar seleccionado (Ctrl+C)"
-  ><UiIcon name="copy" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Copiar
+  >
+    📋 Copiar
   </button>
   <button
     type="button"
@@ -6841,7 +6857,8 @@ Recordar mi elección
     onClick={() => duplicateItem()}
     className="rounded-lg border border-slate-700 bg-slate-900 py-1.5 text-[11px] font-bold text-slate-200 transition hover:border-violet-400 hover:text-violet-300 disabled:opacity-40"
     title="Duplicar justo al lado (Ctrl+D)"
-  ><UiIcon name="duplicate" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Duplicar
+  >
+    📑 Duplicar
   </button>
   <button
     type="button"
@@ -6849,33 +6866,34 @@ Recordar mi elección
     onClick={() => pasteClipboard()}
     className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 py-1.5 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
     title="Pegar en el cabezal dentro de la pista activa (Ctrl+V)"
-  ><UiIcon name="paste" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Pegar
+  >
+    📥 Pegar
   </button>
 </div>
 </div>
 )}
 {propsTab === 'herramientas' && selectedClip && (<>
 <button onClick={() => cycleClipAudio(selectedClip)} disabled={!selectedClip.hasAudio && clipAudioMode(selectedClip) === 'integrated'} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40', clipAudioMode(selectedClip) === 'linked' ? 'border border-green-400/40 bg-green-500/15 text-green-300 hover:bg-green-500/25' : clipAudioMode(selectedClip) === 'released' ? 'border border-amber-400/40 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')} title="Cambiar dónde vive el audio de este clip">
-{clipAudioMode(selectedClip) === 'linked' ? ' Audio vinculado a la pista · liberar' : clipAudioMode(selectedClip) === 'released' ? ' Audio liberado · re-vincular' : clipAudioMode(selectedClip) === 'muted' ? ' Clip muteado · devolver audio al video' : ' Audio en el video · enviar a la pista'}
+{clipAudioMode(selectedClip) === 'linked' ? '🔗 Audio vinculado a la pista · liberar' : clipAudioMode(selectedClip) === 'released' ? '🔓 Audio liberado · re-vincular' : clipAudioMode(selectedClip) === 'muted' ? '🔇 Clip muteado · devolver audio al video' : '🎵 Audio en el video · enviar a la pista'}
 </button>
-<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Dividir en el cabezal</button>
-<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400"><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Eliminar clip</button>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar clip</button>
 </>)}
 {propsTab === 'herramientas' && selectedText && (<>
-<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Dividir en el cabezal</button>
-<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400"><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Eliminar texto</button>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar texto</button>
 </>)}
 {propsTab === 'herramientas' && selectedImage && (<>
-<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Dividir en el cabezal</button>
-<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400"><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Eliminar imagen</button>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar imagen</button>
 </>)}
 {propsTab === 'herramientas' && selectedAudio && (<>
-<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400"><UiIcon name="scissors" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Dividir en el cabezal</button>
-<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400"><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Eliminar audio</button>
+<button onClick={splitAtPlayhead} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-cyan-400 hover:text-cyan-400">✂️ Dividir en el cabezal</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar audio</button>
 </>)}
 {propsTab === 'herramientas' && selectedVo && (<>
-<button onClick={() => updateVideoOverlay(selectedVo.id, { muted: !selectedVo.muted })} disabled={selectedVo.hasAudio === false} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40', selectedVo.muted ? 'border border-red-400/40 bg-red-500/20 text-red-300' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedVo.muted ? <><UiIcon name="volumeX" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Sin audio (activar)</> : <><UiIcon name="volume" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Con audio</>}</button>
-<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400"><UiIcon name="trash" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Eliminar capa</button>
+<button onClick={() => updateVideoOverlay(selectedVo.id, { muted: !selectedVo.muted })} disabled={selectedVo.hasAudio === false} className={cx('w-full rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40', selectedVo.muted ? 'border border-red-400/40 bg-red-500/20 text-red-300' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700')}>{selectedVo.muted ? '🔇 Sin audio (click para activar)' : '🔊 Con audio'}</button>
+<button onClick={deleteSelected} className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-400 transition-colors hover:border-red-400 hover:text-red-400">🗑 Eliminar capa</button>
 </>)}
 {!selectedClip && !selectedImage && !selectedText && !selectedAudio && !selectedVo && (
 <p className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-4 text-center text-xs text-slate-500">Hacé clic en un bloque de la timeline para ver sus propiedades acá.</p>
@@ -7024,10 +7042,10 @@ Recordar mi elección
       const isDraggingThis = dropPreview !== null && isSelected;
       return <div key={img.id} data-timeline-event="true" data-clip-item={`image:${img.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, img.id, 'image', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-pink-300 bg-pink-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-pink-400 bg-pink-500/20 ring-1 ring-pink-400' : 'z-10 cursor-grab border-pink-400/60 bg-pink-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
         <div className="relative z-10 flex h-full items-center justify-between gap-1">
-          <p className="truncate text-[10px] font-semibold text-pink-100 drop-shadow"><UiIcon name="image" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> {img.name}</p>
+          <p className="truncate text-[10px] font-semibold text-pink-100 drop-shadow">🖼️ {img.name}</p>
           {isDraggingThis && (
             <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
-              {dropPreview?.snapped ? ' ' : ''}{formatTime(img.start)}
+              {dropPreview?.snapped ? '🧲 ' : ''}{formatTime(img.start)}
             </span>
           )}
         </div>
@@ -7062,10 +7080,10 @@ Recordar mi elección
 </div>
 ); })()}
 <div className="relative z-10 flex h-full items-center justify-between gap-1">
-          <p className="truncate text-[10px] font-semibold text-amber-100 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? <UiIcon name="volumeX" className="ml-1 inline h-3 w-3 align-[-0.15em]" /> : null}</p>
+          <p className="truncate text-[10px] font-semibold text-amber-100 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
           {isDraggingThis && (
             <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
-              {dropPreview?.snapped ? ' ' : ''}{formatTime(vo.start)}
+              {dropPreview?.snapped ? '🧲 ' : ''}{formatTime(vo.start)}
             </span>
           )}
         </div>
@@ -7114,7 +7132,7 @@ Recordar mi elección
   <div className="pointer-events-none absolute bottom-0 left-0 top-0 border-r border-dashed border-cyan-300/70"
     style={{ width: `${(blendLen(i - 1) / effLen(c)) * 100}%`, background: 'repeating-linear-gradient(-45deg, rgba(34,211,238,0.32) 0 5px, rgba(34,211,238,0.10) 5px 10px)' }} />
 )}
-                      <p className="relative truncate text-xs font-semibold text-cyan-200 drop-shadow">{c.name}{c.muted && <UiIcon name="volumeX" className="ml-1 inline h-3 w-3 align-[-0.15em]" />}</p>
+                      <p className="relative truncate text-xs font-semibold text-cyan-200 drop-shadow">{c.name}{c.muted && ' 🔇'}</p>
                       <p className="relative text-[10px] text-slate-400 drop-shadow">{effLen(c).toFixed(1)}s{c.speed !== 1 && ` · ${c.speed}x`}{c.rotate !== 0 && ` · ${c.rotate}°`}</p>
                       <div onPointerDown={(e) => startTrimDrag(e, c, 'start')} onPointerMove={moveTrimDrag} onPointerUp={endTrimDrag} onPointerCancel={endTrimDrag} className="absolute bottom-0 left-0 top-0 w-2 cursor-ew-resize touch-none bg-cyan-400/40 transition-colors hover:bg-cyan-400" title="Recortar inicio" />
                       <div onPointerDown={(e) => startTrimDrag(e, c, 'end')} onPointerMove={moveTrimDrag} onPointerUp={endTrimDrag} onPointerCancel={endTrimDrag} className="absolute bottom-0 right-0 top-0 w-2 cursor-ew-resize touch-none bg-cyan-400/40 transition-colors hover:bg-cyan-400" title="Recortar final" />
@@ -7159,7 +7177,7 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
                   const width = g.duration * pps; const left = g.start * pps;
                   const isDraggingThis = dropPreview !== null && isSelected;
                   return <div key={track.id} className="pointer-events-none absolute inset-0">
-                    <div data-timeline-event="true" data-clip-item={`audio:${track.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`pointer-events-auto bottom-1 top-1 ` +`absolute select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-green-300 bg-green-500/30 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : linked ? 'z-10 cursor-grab border-green-400/40 bg-green-500/5' : isSelected ? 'z-20 cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'z-10 cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? ' Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
+                    <div data-timeline-event="true" data-clip-item={`audio:${track.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`pointer-events-auto bottom-1 top-1 ` +`absolute select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-green-300 bg-green-500/30 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : linked ? 'z-10 cursor-grab border-green-400/40 bg-green-500/5' : isSelected ? 'z-20 cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'z-10 cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
                       <WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
 {(() => { const vol = track.muted ? 0 : clamp(track.volume ?? 1, 0, 1); const gainTop = (1 - vol) * 100; return (
 <div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: `calc(${gainTop}% - ${(1 - vol) * 2}px)` }}>
@@ -7167,8 +7185,8 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
 </div>
 ); })()}
 
-                      {track.sourceVideoId && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? <UiIcon name="lock" className="h-3 w-3" /> : <UiIcon name="unlock" className="h-3 w-3" />}</button>}
-                      <p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow"><UiIcon name="music" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> {track.name}{linked ? <UiIcon name="link" className="ml-1 inline h-3 w-3 align-[-0.15em]" /> : track.sourceVideoId ? ' (video)' : ''}</p>
+                      {track.sourceVideoId && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>}
+                      <p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
                       {!linked && <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />}
                       {!linked && <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'end')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 right-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />}
                     </div>
@@ -7186,7 +7204,7 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
       {/* ===== GRILLA DE IMPORTS MÓVIL ===== */}
          
       <p className="hidden shrink-0 text-center text-[11px] text-slate-600 lg:block">
-        Shift + clic = selección múltiple · Arrastrá clips seleccionados para moverlos juntos · Arrastrá el fondo vacío con el mouse = desplazarte por la timeline · Ruedita = zoom · Ctrl+Z deshacer · Tu proyecto se autoguarda en este navegador · Supr = eliminar seleccionado ·  entre clips = transición ·  Previsualizar = verlas en el preview
+        Shift + clic = selección múltiple · Arrastrá clips seleccionados para moverlos juntos · Arrastrá el fondo vacío con el mouse = desplazarte por la timeline · Ruedita = zoom · Ctrl+Z deshacer · Tu proyecto se autoguarda en este navegador · Supr = eliminar seleccionado · ✨ entre clips = transición · 🟢 Previsualizar = verlas en el preview
       </p>
     </div>
   );
