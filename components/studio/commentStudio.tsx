@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
+import { UiIcon } from './uiIcons';
 
 export type CommentPlatform = 'instagram' | 'tiktok' | 'twitter' | 'youtube';
 export type CommentVariant =
@@ -473,7 +474,7 @@ export async function renderCommentPng(cfg: CommentConfig, scale = 2): Promise<B
   return new Promise((resolve) => cropped.toBlob((b) => resolve(b), 'image/png'));
 }
 
-const DEFAULT_TEXT = 'Escribí cualquier comentario y mirá cómo queda 😊';
+const DEFAULT_TEXT = 'Escribí cualquier comentario y mirá cómo queda ';
 
 const PLATFORM_ACTIVE_STYLE: Record<CommentPlatform, string> = {
   instagram: 'border-fuchsia-500/80 bg-gradient-to-r from-fuchsia-500/25 to-purple-500/20 text-fuchsia-200 shadow-sm shadow-fuchsia-500/20',
@@ -586,8 +587,7 @@ export function CommentStudioModal({
         <div className="border-b border-slate-800/90 bg-slate-950/60 px-3.5 py-2.5 sm:px-5 sm:py-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-700/80 bg-slate-900 text-sm shadow-inner">
-                💬
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-700/80 bg-slate-900 text-sm shadow-inner"><UiIcon name="comment" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> 
               </span>
               <div>
                 <h2 className="text-sm font-black tracking-wide text-white">Estudio de Comentarios</h2>
@@ -617,8 +617,7 @@ export function CommentStudioModal({
               onClick={onCancel}
               className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
               title="Cerrar"
-            >
-              ✕
+            ><UiIcon name="x" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> 
             </button>
           </div>
 
@@ -703,7 +702,7 @@ export function CommentStudioModal({
                       : 'border-slate-700 bg-slate-800/80 text-slate-200 hover:border-slate-600'
                   }`}
                 >
-                  <span>{cfg.theme === 'dark' ? '🌙' : '☀️'}</span>
+                  <UiIcon name={cfg.theme === 'dark' ? 'moon' : 'sun'} className="h-3.5 w-3.5 shrink-0" />
                   <span>{cfg.theme === 'dark' ? 'Modo Oscuro' : 'Modo Claro'}</span>
                 </button>
 
@@ -717,7 +716,7 @@ export function CommentStudioModal({
                         : 'border-slate-700 bg-slate-800/80 text-slate-400 hover:text-slate-200'
                     }`}
                   >
-                    <span>▢</span>
+                    <span><UiIcon name="roundedSquare" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                     <span>Redondeado</span>
                   </button>
                 )}
@@ -731,7 +730,7 @@ export function CommentStudioModal({
                       : 'border-slate-700 bg-slate-800/80 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <span>🏁</span>
+                  <span><UiIcon name="checkerboard" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                   <span>Fondo PNG</span>
                 </button>
               </div>
@@ -743,8 +742,7 @@ export function CommentStudioModal({
             {/* 1. TARJETA DE PERFIL DEL AUTOR */}
             <div className="rounded-xl border border-slate-800/90 bg-slate-900/60 p-3 sm:p-3.5">
               <div className="mb-2.5 flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400">
-                  👤 Perfil del Autor
+                <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400"><UiIcon name="user" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Perfil del Autor
                 </span>
                 <button
                   type="button"
@@ -752,7 +750,7 @@ export function CommentStudioModal({
                   className="flex items-center gap-1 rounded-lg border border-slate-700/80 bg-slate-800/90 px-2.5 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-fuchsia-400/60 hover:bg-fuchsia-500/15 hover:text-fuchsia-200"
                   title="Generar usuario y números al azar"
                 >
-                  <span>🔀</span>
+                  <span><UiIcon name="shuffle" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                   <span>Al azar</span>
                 </button>
               </div>
@@ -786,8 +784,7 @@ export function CommentStudioModal({
                         <path d="M4 20c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5" />
                       </svg>
                     )}
-                    <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-xs opacity-0 transition-opacity group-hover:opacity-100">
-                      📷
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-xs opacity-0 transition-opacity group-hover:opacity-100"><UiIcon name="camera" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> 
                     </span>
                   </button>
                   {cfg.avatar && (
@@ -796,8 +793,7 @@ export function CommentStudioModal({
                       onClick={() => set({ avatar: null })}
                       title="Quitar foto"
                       className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-[10px] text-slate-300 hover:bg-rose-500 hover:text-white"
-                    >
-                      ✕
+                    ><UiIcon name="x" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> 
                     </button>
                   )}
                 </div>
@@ -840,7 +836,7 @@ export function CommentStudioModal({
                           : 'border-slate-800 bg-slate-950/70 text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      <span>✓</span>
+                      <span><UiIcon name="badgeCheck" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                       <span>Verificado</span>
                     </button>
                   </div>
@@ -851,16 +847,14 @@ export function CommentStudioModal({
             {/* 2. MENSAJE DEL COMENTARIO (Área más alta y cómoda) */}
             <div className="rounded-xl border border-slate-800/90 bg-slate-900/60 p-3 sm:p-3.5">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-fuchsia-400">
-                  ✍️ Mensaje del Comentario
+                <span className="text-[11px] font-bold uppercase tracking-wider text-fuchsia-400"><UiIcon name="pen" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Mensaje del Comentario
                 </span>
                 <button
                   type="button"
                   onClick={() => set({ text: DEFAULT_TEXT })}
                   className="text-[11px] font-semibold text-slate-400 transition hover:text-slate-200"
                   title="Restaurar texto de ejemplo"
-                >
-                  ↺ Restaurar
+                ><UiIcon name="reset" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Restaurar
                 </button>
               </div>
 
@@ -880,8 +874,7 @@ export function CommentStudioModal({
             {isFullComment && (
               <div className="rounded-xl border border-slate-800/90 bg-slate-900/60 p-3 sm:p-3.5">
                 <div className="mb-2.5 flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
-                    📊 Métricas e Interacción
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300"><UiIcon name="chart" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> Métricas e Interacción
                   </span>
                   <button
                     type="button"
@@ -892,7 +885,7 @@ export function CommentStudioModal({
                         : 'border-slate-700 bg-slate-800/80 text-slate-300 hover:text-white'
                     }`}
                   >
-                    <span>❤️</span>
+                    <span><UiIcon name="heartFilled" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                     <span>{cfg.liked ? 'Con Like' : 'Dar Like'}</span>
                   </button>
                 </div>
@@ -901,7 +894,7 @@ export function CommentStudioModal({
                   <label className="block">
                     <span className="mb-1 block text-[10px] font-semibold text-slate-400">Tiempo</span>
                     <div className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/90 px-2 focus-within:border-cyan-400">
-                      <span className="text-[11px] text-slate-400">🕒</span>
+                      <span className="text-[11px] text-slate-400"><UiIcon name="clock" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                       <input
                         className="w-full bg-transparent text-xs text-slate-200 outline-none"
                         value={cfg.timeAgo}
@@ -913,7 +906,7 @@ export function CommentStudioModal({
                   <label className="block">
                     <span className="mb-1 block text-[10px] font-semibold text-slate-400">Likes</span>
                     <div className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/90 px-2 focus-within:border-cyan-400">
-                      <span className="text-[11px] text-slate-400">♡</span>
+                      <span className="text-[11px] text-slate-400"><UiIcon name="heart" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                       <input
                         className="w-full bg-transparent text-xs text-slate-200 outline-none"
                         value={cfg.likes}
@@ -925,7 +918,7 @@ export function CommentStudioModal({
                   <label className="block">
                     <span className="mb-1 block text-[10px] font-semibold text-slate-400">Respuestas</span>
                     <div className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/90 px-2 focus-within:border-cyan-400">
-                      <span className="text-[11px] text-slate-400">💬</span>
+                      <span className="text-[11px] text-slate-400"><UiIcon name="comment" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                       <input
                         className="w-full bg-transparent text-xs text-slate-200 outline-none"
                         value={cfg.replies}
@@ -939,7 +932,7 @@ export function CommentStudioModal({
                       <label className="block">
                         <span className="mb-1 block text-[10px] font-semibold text-slate-400">Retweets</span>
                         <div className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/90 px-2 focus-within:border-cyan-400">
-                          <span className="text-[11px] text-slate-400">🔁</span>
+                          <span className="text-[11px] text-slate-400"><UiIcon name="repeat" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                           <input
                             className="w-full bg-transparent text-xs text-slate-200 outline-none"
                             value={cfg.retweets}
@@ -951,7 +944,7 @@ export function CommentStudioModal({
                       <label className="col-span-2 block">
                         <span className="mb-1 block text-[10px] font-semibold text-slate-400">Visualizaciones</span>
                         <div className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/90 px-2 focus-within:border-cyan-400">
-                          <span className="text-[11px] text-slate-400">📊</span>
+                          <span className="text-[11px] text-slate-400"><UiIcon name="chart" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
                           <input
                             className="w-full bg-transparent text-xs text-slate-200 outline-none"
                             value={cfg.views}
@@ -982,7 +975,7 @@ export function CommentStudioModal({
               disabled={!preview}
               className="flex items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-2.5 text-xs font-bold text-slate-200 transition hover:border-slate-500 disabled:opacity-50 sm:px-4"
             >
-              <span>{copied ? '✅' : '📋'}</span>
+              <UiIcon name={copied ? 'check' : 'copy'} className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate">{copied ? 'Copiado' : 'Copiar PNG'}</span>
             </button>
 
@@ -993,7 +986,7 @@ export function CommentStudioModal({
               disabled={!preview}
               className="flex items-center justify-center gap-1 rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-2.5 py-2.5 text-xs font-black text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-50 sm:px-4"
             >
-              <span>⬇️</span>
+              <span><UiIcon name="download" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
               <span className="truncate">Descargar PNG</span>
             </button>
           </div>
@@ -1003,7 +996,7 @@ export function CommentStudioModal({
             disabled={!preview}
             className="flex w-full sm:w-auto sm:ml-auto items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-5 py-3 sm:py-2.5 text-xs font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:scale-[1.01] active:scale-95 disabled:opacity-50"
           >
-            <span>➕</span>
+            <span><UiIcon name="plus" className="inline h-[1.15em] w-[1.15em] shrink-0 align-[-0.18em]" /> </span>
             <span>Agregar a la timeline</span>
           </button>
         </div>
