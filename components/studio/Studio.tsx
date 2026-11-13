@@ -26,7 +26,7 @@ type TransitionType =
 
 type Clip = {
   id: string; assetId: string; name: string; url: string; duration: number; trimStart: number; trimEnd: number;
-  rotate: 0 | 90 | 180 | 270; speed: number; fadeIn: number; fadeOut: number; muted: boolean;
+  rotate: 0 | 90 | 180 | 270; speed: number; fadeIn: number; fadeOut: number; muted: boolean; volume?: number;
 cropX: number; cropY: number;
 hasAudio?: boolean;
 bytes?: number;
@@ -131,7 +131,7 @@ type VideoOverlay = {
 id: string; assetId: string; name: string; url: string;
 start: number; end: number; offset: number;
 x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270;
-fadeIn: number; fadeOut: number; muted: boolean; shape: OverlayShape; hasAudio?: boolean; srcW?: number; srcH?: number;
+fadeIn: number; fadeOut: number; muted: boolean; volume?: number; shape: OverlayShape; hasAudio?: boolean; srcW?: number; srcH?: number;
 animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
 chroma?: boolean; chromaColor?: string; chromaSimilarity?: number; chromaBlend?: number;
 lane?: number; laneId?: string;
@@ -151,14 +151,14 @@ type AudioTrack = {
 };
 
 type TimelineLaneKind = 'audio' | 'image' | 'video' | 'text' | 'subtitle';
-type TimelineLane = { id: string; kind: TimelineLaneKind; name: string; muted: boolean };
+type TimelineLane = { id: string; kind: TimelineLaneKind; name: string; muted: boolean; volume?: number };
 const TIMELINE_GUTTER_WIDTH = 52;
 const DEFAULT_TIMELINE_LANES: TimelineLane[] = [
-  { id: 'subtitle-1', kind: 'subtitle', name: 'SUB1', muted: false },
-  { id: 'text-1', kind: 'text', name: 'T1', muted: false },
-  { id: 'image-1', kind: 'image', name: 'I1', muted: false },
-  { id: 'video-1', kind: 'video', name: 'V2', muted: false },
-  { id: 'audio-1', kind: 'audio', name: 'A1', muted: false },
+  { id: 'subtitle-1', kind: 'subtitle', name: 'SUB1', muted: false, volume: 1 },
+  { id: 'text-1', kind: 'text', name: 'T1', muted: false, volume: 1 },
+  { id: 'image-1', kind: 'image', name: 'I1', muted: false, volume: 1 },
+  { id: 'video-1', kind: 'video', name: 'V2', muted: false, volume: 1 },
+  { id: 'audio-1', kind: 'audio', name: 'A1', muted: false, volume: 1 },
 ];
 type AspectRatio = '16:9' | '9:16' | '1:1' | '4:3';
 type Resolution = '480p' | '720p' | '1080p' | '4K';
@@ -1205,6 +1205,46 @@ if (peak < 0.004) continue;
 const h = Math.max(1.5, peak * 38);
 ctx.fillRect(i * barWidth, center - h / 2, Math.max(1, barWidth * 0.8), h);
 }
+// ===== ENVOLVENTE DE AMPLITUD: línea verde neón (RMS suavizado) sobre las barritas =====
+const env = new Array(bars);
+if (audioDataMap.has(id)) {
+const d0 = audioDataMap.get(id);
+const s0 = offset + visS * speed;
+const s1 = offset + visE * speed;
+const a0 = Math.max(0, Math.floor(s0 * d0.sampleRate));
+const a1 = Math.min(d0.channelData.length, Math.max(a0 + 1, Math.ceil(s1 * d0.sampleRate)));
+const span = a1 - a0;
+for (let i = 0; i < bars; i++) {
+const b0 = a0 + Math.floor((i * span) / bars);
+const b1 = Math.max(b0 + 1, a0 + Math.floor(((i + 1) * span) / bars));
+let sum = 0;
+for (let j = b0; j < b1; j++) { const v = d0.channelData[j] || 0; sum += v * v; }
+env[i] = Math.sqrt(sum / (b1 - b0));
+}
+} else {
+for (let i = 0; i < bars; i++) env[i] = Number(vals[i]) || 0;
+}
+for (let pass = 0; pass < 2; pass++) {
+const sm = new Array(bars);
+for (let i = 0; i < bars; i++) {
+const a = env[Math.max(0, i - 2)]; const b = env[Math.max(0, i - 1)]; const c = env[i];
+const d = env[Math.min(bars - 1, i + 1)]; const e = env[Math.min(bars - 1, i + 2)];
+sm[i] = (a + 2 * b + 3 * c + 2 * d + e) / 9;
+}
+for (let i = 0; i < bars; i++) env[i] = sm[i];
+}
+ctx.save();
+ctx.beginPath();
+for (let i = 0; i < bars; i++) {
+const y = center - clamp(env[i], 0, 1) * 19;
+if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * barWidth + barWidth / 2, y);
+}
+ctx.strokeStyle = 'rgba(74, 222, 128, 0.95)';
+ctx.lineWidth = 1.6;
+ctx.shadowColor = 'rgba(74, 222, 128, 0.7)';
+ctx.shadowBlur = 4;
+ctx.stroke();
+ctx.restore();
 ctx.globalAlpha = 1;
 }, [id, offset, speed, duration, sourceDuration, assetKey, fallbackPeaks, visS, visE, cssWidth, selected]);
 return <canvas ref={ref} className="absolute bottom-0 top-0 h-full" style={{ left: cssLeft, width: cssWidth }} />;
@@ -1396,6 +1436,7 @@ export default function Studio() {
   const [activeLaneIds, setActiveLaneIds] = useState<Record<TimelineLaneKind, string>>({ audio: 'audio-1', image: 'image-1', video: 'video-1', text: 'text-1', subtitle: 'subtitle-1' });
   const [focusedLaneId, setFocusedLaneId] = useState<string>('main');
   const [openLaneMenuId, setOpenLaneMenuId] = useState<string | null>(null);
+  const [mainLaneVolume, setMainLaneVolume] = useState<number>(1);
   const [confirmDialog, setConfirmDialog] = useState<{
     icon: string;
     title: string;
@@ -1419,6 +1460,13 @@ export default function Studio() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress>(null);
+const [exportThumb, setExportThumb] = useState<string | null>(null);
+const [exportThumbBusy, setExportThumbBusy] = useState(false);
+const [exportPaused, setExportPaused] = useState(false);
+const exportPausedRef = useRef(false);
+const exportCancelledRef = useRef(false);
+const exportFFRef = useRef<any>(null);
+const exportNameRef = useRef<HTMLInputElement>(null);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({
     ratio: '16:9', resolution: '1080p', format: 'mp4', quality: 'balanced',
     filename: `clipedia_export_${new Date().toISOString().slice(0, 10)}`,
@@ -1527,6 +1575,36 @@ const [ctxMenu, setCtxMenu] = useState<{
 } | null>(null);
 const longPressTimerRef = useRef<number | null>(null);
 const longPressStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+const laneMenuRef = useRef<HTMLDivElement>(null);
+const [laneMenuPos, setLaneMenuPos] = useState<{ left: number; top: number; ready: boolean }>({ left: -9999, top: -9999, ready: false });
+useLayoutEffect(() => {
+if (!openLaneMenuId) { setLaneMenuPos((p) => (p.ready ? { ...p, ready: false } : p)); return; }
+const el = laneMenuRef.current;
+if (!el) return;
+const place = () => {
+const gear = document.querySelector('[data-lane-gear="' + openLaneMenuId + '"]') as HTMLElement | null;
+if (!gear) { setOpenLaneMenuId(null); return; }
+const r = gear.getBoundingClientRect();
+const h = el.offsetHeight; const w = el.offsetWidth;
+const vw = window.innerWidth; const vh = window.innerHeight; const m = 8;
+let left = r.right + 6;
+if (left + w > vw - m) left = Math.max(m, r.left - w - 6);
+let top = r.top + r.height / 2 - h / 2;
+top = Math.min(top, vh - m - h);
+top = Math.max(m, top);
+setLaneMenuPos({ left, top, ready: true });
+};
+place();
+const onDocDown = (e: PointerEvent) => {
+const t = e.target as HTMLElement;
+if (t.closest('[data-lane-menu]') || t.closest('[data-lane-gear]')) return;
+setOpenLaneMenuId(null);
+};
+window.addEventListener('resize', place);
+window.addEventListener('scroll', place, true);
+document.addEventListener('pointerdown', onDocDown);
+return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); document.removeEventListener('pointerdown', onDocDown); };
+}, [openLaneMenuId]);
 function clearLongPress() {
   if (longPressTimerRef.current) {
     window.clearTimeout(longPressTimerRef.current);
@@ -2399,7 +2477,7 @@ layer.style.display = 'none';
 if (!sec.paused) sec.pause();
 if (mainVideo && mainVideo.dataset.clipId === bClip.id) {
 mainVideo.muted = bClip.muted;
-mainVideo.volume = bClip.muted ? 0 : 1;
+mainVideo.volume = bClip.muted ? 0 : clamp((bClip.volume ?? 1) * mainLaneVolume, 0, 1);
 if (playingRef.current && mainVideo.paused && !mainVideo.seeking) mainVideo.play().catch(() => {});
 }
 handoffClipRef.current = '';
@@ -2567,7 +2645,10 @@ if (isActive) {
 const targetTime = g.offset + localTime * g.speed;
 if (Math.abs(audio.currentTime - targetTime) > 0.5) audio.currentTime = targetTime;
 if (Math.abs(audio.playbackRate - g.speed) > 0.01) audio.playbackRate = g.speed;
-let volume = (track.muted || isLaneMuted(track.laneId)) ? 0 : track.volume;
+const linkedClipVol = track.sourceVideoId && !track.released
+  ? (clipsRef.current.find((c) => c.id === track.sourceVideoId)?.volume ?? 1) * mainLaneVolume
+  : 1;
+let volume = (track.muted || isLaneMuted(track.laneId)) ? 0 : track.volume * getLaneVolume(track.laneId) * linkedClipVol;
 if (track.fadeIn > 0 && localTime < track.fadeIn) volume *= localTime / track.fadeIn;
 if (track.fadeOut > 0 && localTime > g.duration - track.fadeOut) volume *= (g.duration - localTime) / track.fadeOut;
 // CROSSFADE DE TRANSICIÓN: las pistas vinculadas se entrelazan en el solape
@@ -2594,6 +2675,7 @@ if (active) {
 const target = vo.offset + (t - vo.start);
 if (Math.abs(el.currentTime - target) > 0.5) el.currentTime = target;
 el.muted = vo.muted || isLaneMuted(vo.laneId);
+el.volume = clamp((vo.volume ?? 1) * getLaneVolume(vo.laneId), 0, 1);
 if (isPlaying && el.paused) el.play().catch(() => {});
 else if (!isPlaying && !el.paused) el.pause();
 } else if (!el.paused) el.pause();
@@ -2743,6 +2825,7 @@ bindVideoToClip(clip);
 // Fin del pre-roll muteado: B recupera su audio real recién al destaparse
 // (bindVideoToClip no lo hace porque el src no cambió desde el pre-bind).
 v.muted = clip.muted;
+v.volume = clip.muted ? 0 : clamp((clip.volume ?? 1) * mainLaneVolume, 0, 1);
 
 // Sincronizar opacidad de fadeIn/fadeOut a 60fps en el DOM
 const len = effLen(clip);
@@ -3026,6 +3109,19 @@ function updateVideoOverlay(id: string, patch: Partial<VideoOverlay>) { setVideo
   }
   function isEventSelected(id: string) { return selectedEventIds.includes(id); }
   function isLaneMuted(laneId?: string) { return !!timelineLanes.find((lane) => lane.id === laneId)?.muted; }
+  function getLaneVolume(laneId?: string) {
+    if (laneId === 'main') return mainLaneVolume;
+    const lane = timelineLanes.find((l) => l.id === laneId);
+    return lane?.volume ?? 1;
+  }
+  function setTimelineLaneVolume(laneId: string, volume: number) {
+    const v = clamp(volume, 0, 1);
+    if (laneId === 'main') {
+      setMainLaneVolume(v);
+      return;
+    }
+    setTimelineLanes((prev) => prev.map((lane) => (lane.id === laneId ? { ...lane, volume: v } : lane)));
+  }
   function laneList(kind: TimelineLaneKind) { return timelineLanes.filter((lane) => lane.kind === kind); }
 // ===== Z-ORDER SEGÚN TIMELINE (regla Vegas: la fila de arriba = capa al frente) =====
 // Familias en el orden de filas de la timeline (V profundas → SUB al frente);
@@ -3130,196 +3226,25 @@ return FAMILY_RANK[family] * 100000 - lanePosOf(family, laneId) * 1000 + arrayId
   }
 
   function renderLaneControls(lane: TimelineLane) {
-    const siblings = laneList(lane.kind); const index = siblings.findIndex((x) => x.id === lane.id);
-    const count = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === lane.id).length : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === lane.id).length : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === lane.id).length : textOverlays.filter((x) => x.laneId === lane.id).length;
-    const active = focusedLaneId === lane.id;
-    const isOpen = openLaneMenuId === lane.id;
-    return (
-      <div
-        data-lane-controls="true"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={() => {
-          setFocusedLaneId(lane.id);
-          setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }));
-        }}
-        className={`sticky left-0 ${isOpen ? 'z-40' : 'z-30'} relative flex min-h-[48px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-l-lg border px-1 py-1 transition-all duration-150 ${
-          lane.muted
-            ? 'border-rose-500/60 bg-[#2a0e17] shadow-[6px_0_14px_rgba(2,6,23,0.85)]'
-            : active
-            ? 'border-cyan-400/90 border-l-[3px] border-l-cyan-300 bg-gradient-to-r from-[#144b6b] via-[#0e2f4f] to-[#0a2038] shadow-[0_0_16px_rgba(34,211,238,0.32),6px_0_14px_rgba(2,6,23,0.9)]'
-            : 'border-slate-800 bg-[#07111f] hover:border-slate-700 hover:bg-[#0b192c] shadow-[6px_0_14px_rgba(2,6,23,0.85)]'
-        }`}
-      >
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setFocusedLaneId(lane.id);
-            setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }));
-          }}
-          className="flex w-full items-center justify-center gap-1 rounded py-0.5 leading-none transition"
-          title={`Seleccionar ${lane.name} como pista activa (${count} clips)`}
-        >
-          <span className={`text-[11px] font-black tracking-wide transition-colors ${
-            lane.muted
-              ? 'text-rose-300 line-through'
-              : active
-              ? 'text-white drop-shadow-[0_0_8px_rgba(34,211,238,0.9)]'
-              : 'text-slate-400'
-          }`}>
-            {lane.name}
-          </span>
-          {lane.muted ? (
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.95)]" />
-          ) : active ? (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_8px_rgba(34,211,238,1)] ring-2 ring-cyan-400/40" />
-          ) : null}
-        </button>
-
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setFocusedLaneId(lane.id);
-            setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id }));
-            setOpenLaneMenuId((prev) => (prev === lane.id ? null : lane.id));
-          }}
-          className={`flex h-6 w-8 items-center justify-center rounded-md border transition ${
-            isOpen
-              ? 'border-cyan-400 bg-cyan-500/25 text-cyan-200 shadow-[0_0_10px_rgba(34,211,238,0.3)]'
-              : 'border-slate-700/80 bg-slate-800/70 text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200'
-          }`}
-          title={`Opciones de pista ${lane.name}`}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={`h-3.5 w-3.5 transition-transform duration-200 ${isOpen ? 'rotate-90 text-cyan-300' : ''}`}
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
-
-        {isOpen && (
-          <div
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              transformOrigin: 'left center',
-              animation: 'laneDrawerSlideIn 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards',
-            }}
-            className="absolute left-[54px] top-1/2 z-50 flex w-[206px] flex-col gap-1.5 rounded-xl border border-cyan-400/50 bg-slate-950/95 p-2 shadow-[0_10px_32px_rgba(0,0,0,0.9)] backdrop-blur-md"
-          >
-            {/* Cabecera del cajón */}
-            <div className="flex items-center justify-between border-b border-slate-800/90 pb-1">
-              <div className="flex items-center gap-1.5">
-                <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-black text-cyan-300">{lane.name}</span>
-                <span className="text-[10px] font-semibold text-slate-400">{count} {count === 1 ? 'clip' : 'clips'}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setOpenLaneMenuId(null)}
-                className="flex h-5 w-5 items-center justify-center rounded-md text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-white"
-                title="Cerrar menú"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Fila 1: Visibilidad/Sonido + Duplicar pista con su contenido */}
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                type="button"
-                onClick={() => toggleTimelineLaneMute(lane.id)}
-                className={`flex h-7 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-bold transition ${
-                  lane.muted
-                    ? 'border-rose-400/60 bg-rose-500/20 text-rose-200'
-                    : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200'
-                }`}
-                title={lane.kind === 'audio' ? (lane.muted ? 'Activar sonido' : 'Silenciar pista') : (lane.muted ? 'Mostrar pista' : 'Ocultar pista')}
-              >
-                {lane.kind === 'audio' ? (
-                  <>
-                    <span>{lane.muted ? '🔇' : '🔊'}</span>
-                    <span>{lane.muted ? 'Muda' : 'Sonando'}</span>
-                  </>
-                ) : (
-                  <>
-                    <span>{lane.muted ? '🙈' : '👁️'}</span>
-                    <span>{lane.muted ? 'Oculta' : 'Visible'}</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => duplicateTimelineLane(lane.id)}
-                className="flex h-7 items-center justify-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 text-[11px] font-bold text-violet-200 transition hover:border-violet-400 hover:bg-violet-500/25"
-                title={`Duplicar la pista ${lane.name} con todos sus clips`}
-              >
-                <span>📑</span>
-                <span>Duplicar</span>
-              </button>
-            </div>
-
-            {/* Fila 2: Subir + Bajar + Nueva vacía + Eliminar */}
-            <div className="grid grid-cols-4 gap-1.5">
-              <button
-                type="button"
-                onClick={() => moveTimelineLane(lane.id, -1)}
-                disabled={index <= 0}
-                className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30"
-                title="Subir pista"
-              >
-                ↑
-              </button>
-
-              <button
-                type="button"
-                onClick={() => moveTimelineLane(lane.id, 1)}
-                disabled={index >= siblings.length - 1}
-                className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30"
-                title="Bajar pista"
-              >
-                ↓
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  addTimelineLane(lane.kind);
-                  setOpenLaneMenuId(null);
-                }}
-                className="flex h-7 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/15 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/25"
-                title={`Crear nueva pista vacía de ${lane.kind}`}
-              >
-                ＋Pista
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  deleteTimelineLane(lane.id);
-                  setOpenLaneMenuId(null);
-                }}
-                className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs text-slate-400 transition hover:border-rose-500/60 hover:bg-rose-500/20 hover:text-rose-200"
-                title="Eliminar esta pista"
-              >
-                🗑️
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-  function executeDeleteTimelineLane(lane: TimelineLane, target: TimelineLane, deleteClips: boolean) {
+const siblings = laneList(lane.kind); const index = siblings.findIndex((x) => x.id === lane.id);
+const count = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === lane.id).length : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === lane.id).length : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === lane.id).length : textOverlays.filter((x) => x.laneId === lane.id).length;
+const active = focusedLaneId === lane.id;
+const isOpen = openLaneMenuId === lane.id;
+return (
+<div data-lane-controls="true" onPointerDown={(e) => e.stopPropagation()} onClick={() => { setFocusedLaneId(lane.id); setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id })); }}
+className={cx('sticky left-0 relative flex min-h-[48px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-l-lg border px-1 py-1 transition-all duration-150', isOpen ? 'z-40' : 'z-30', lane.muted ? 'border-rose-500/60 bg-[#2a0e17] shadow-[6px_0_14px_rgba(2,6,23,0.85)]' : active ? 'border-cyan-400/90 border-l-[3px] border-l-cyan-300 bg-gradient-to-r from-[#144b6b] via-[#0e2f4f] to-[#0a2038] shadow-[0_0_16px_rgba(34,211,238,0.32),6px_0_14px_rgba(2,6,23,0.9)]' : 'border-slate-800 bg-[#07111f] hover:border-slate-700 hover:bg-[#0b192c] shadow-[6px_0_14px_rgba(2,6,23,0.85)]')}>
+<button type="button" onClick={(e) => { e.stopPropagation(); setFocusedLaneId(lane.id); setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id })); }} className="flex w-full items-center justify-center gap-1 rounded py-0.5 leading-none transition" title={'Seleccionar ' + lane.name + ' como pista activa (' + count + ' clips)'}>
+<span className={cx('text-[11px] font-black tracking-wide transition-colors', lane.muted ? 'text-rose-300 line-through' : active ? 'text-white drop-shadow-[0_0_8px_rgba(34,211,238,0.9)]' : 'text-slate-400')}>{lane.name}</span>
+{lane.muted ? (<span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.95)]" />) : active ? (<span className="h-2 w-2 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_8px_rgba(34,211,238,1)] ring-2 ring-cyan-400/40" />) : null}
+</button>
+<button type="button" data-lane-gear={lane.id} onClick={(e) => { e.stopPropagation(); setFocusedLaneId(lane.id); setActiveLaneIds((prev) => ({ ...prev, [lane.kind]: lane.id })); setOpenLaneMenuId((prev) => (prev === lane.id ? null : lane.id)); }}
+className={cx('flex h-6 w-8 items-center justify-center rounded-md border transition', isOpen ? 'border-cyan-400 bg-cyan-500/25 text-cyan-200 shadow-[0_0_10px_rgba(34,211,238,0.3)]' : 'border-slate-700/80 bg-slate-800/70 text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200')} title={'Opciones de pista ' + lane.name}>
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={cx('h-3.5 w-3.5 transition-transform duration-200', isOpen && 'rotate-90 text-cyan-300')} aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+</button>
+</div>
+);
+}
+function executeDeleteTimelineLane(lane: TimelineLane, target: TimelineLane, deleteClips: boolean) {
     if (deleteClips) {
       if (lane.kind === 'audio') setAudioTracks((prev) => prev.filter((x) => x.laneId !== lane.id));
       else if (lane.kind === 'image') setImageOverlays((prev) => prev.filter((x) => x.laneId !== lane.id));
@@ -4485,7 +4410,235 @@ showToast(`✂️ Silencios recortados: ${segs.length} tramos de habla · ${sile
 setSilenceFor(null); setSilencePlan(null);
 }
 
-  function openExportModal() {
+  function setExportPausedBoth(v: boolean) { exportPausedRef.current = v; setExportPaused(v); }
+async function waitWhileExportPaused() {
+while (exportPausedRef.current && !exportCancelledRef.current) { await new Promise((r) => setTimeout(r, 150)); }
+if (exportCancelledRef.current) throw new Error("EXPORT_CANCELLED");
+}
+function cancelExport() {
+exportCancelledRef.current = true; exportPausedRef.current = false; setExportPaused(false);
+if (exportFFRef.current) { try { exportFFRef.current.terminate(); } catch (e) {} }
+}
+// ===== CAPTURA DEL PUNTO MEDIO: miniatura estática real del proyecto =====
+async function captureProjectFrame(atTime: number, token: { cancelled: boolean }): Promise<string | null> {
+const W = 480;
+const H = Math.max(2, Math.round((W * REF_HEIGHT) / REF_WIDTH));
+const k = W / REF_WIDTH;
+const canvas = document.createElement('canvas');
+canvas.width = W; canvas.height = H;
+const ctx = canvas.getContext('2d');
+if (!ctx) return null;
+ctx.fillStyle = '#000000';
+ctx.fillRect(0, 0, W, H);
+const opened: HTMLVideoElement[] = [];
+const grabFrame = async (url: string, t: number): Promise<HTMLVideoElement | null> => {
+const v = document.createElement('video');
+opened.push(v);
+v.muted = true; v.playsInline = true; v.preload = 'auto';
+v.src = url;
+await new Promise<void>((res) => { const done = () => res(); v.onloadedmetadata = done; v.onerror = done; window.setTimeout(done, 5000); });
+if (token.cancelled || !v.videoWidth) return null;
+await new Promise<void>((res) => { const done = () => res(); v.onseeked = done; v.onerror = done; try { v.currentTime = Math.min(Math.max(t, 0), Math.max(0, (v.duration || t) - 0.05)); } catch (e) { done(); } window.setTimeout(done, 5000); });
+if (token.cancelled || !v.videoWidth) return null;
+return v;
+};
+const fadeAlpha = (o: { start: number; end: number; fadeIn: number; fadeOut: number }) => {
+const wl = o.end - o.start; const liw = atTime - o.start;
+let a = 1;
+if (o.fadeIn > 0 && liw < o.fadeIn) a = Math.max(liw / o.fadeIn, 0);
+if (o.fadeOut > 0 && liw > wl - o.fadeOut) a = Math.max((wl - liw) / o.fadeOut, 0);
+return a;
+};
+try {
+const loc = locateVideo(atTime, clips, videoStarts);
+if (loc.index >= 0) {
+const clip = clips[loc.index];
+const len = effLen(clip);
+let alpha = 1;
+if (clip.fadeIn > 0 && loc.localProj < clip.fadeIn) alpha = Math.max(loc.localProj / clip.fadeIn, 0);
+if (clip.fadeOut > 0 && loc.localProj > len - clip.fadeOut) alpha = Math.max((len - loc.localProj) / clip.fadeOut, 0);
+const v = await grabFrame(previewSrc(clip), Math.min(loc.localFile, clip.trimEnd));
+if (v) {
+const rot = clip.rotate;
+const swap = rot === 90 || rot === 270;
+const ew = swap ? H : W;
+const eh = swap ? W : H;
+const s = exportSettings.fit === 'recortar' ? Math.max(ew / v.videoWidth, eh / v.videoHeight) : Math.min(ew / v.videoWidth, eh / v.videoHeight);
+const dw = v.videoWidth * s;
+const dh = v.videoHeight * s;
+const posX = rot === 90 ? clip.cropY : rot === 180 ? 1 - clip.cropX : rot === 270 ? 1 - clip.cropY : clip.cropX;
+const posY = rot === 90 ? 1 - clip.cropX : rot === 180 ? 1 - clip.cropY : rot === 270 ? clip.cropX : clip.cropY;
+const css = specToCss(effSpec(clip), k);
+ctx.save();
+ctx.globalAlpha = alpha;
+ctx.translate(W / 2, H / 2);
+ctx.rotate((rot * Math.PI) / 180);
+if (css !== 'none') ctx.filter = css;
+ctx.drawImage(v, -ew / 2 - (dw - ew) * posX, -eh / 2 - (dh - eh) * posY, dw, dh);
+ctx.restore();
+}
+}
+if (token.cancelled) return null;
+const shots: { key: number; run: () => Promise<void> }[] = [];
+imageOverlays.forEach((img, i) => {
+if (atTime < img.start || atTime > img.end || isLaneMuted(img.laneId)) return;
+shots.push({ key: paintKeyOf(img.laneId, 'image', i), run: async () => {
+const im = new Image();
+im.src = img.url;
+await new Promise<void>((res) => { im.onload = () => res(); im.onerror = () => res(); window.setTimeout(res, 4000); });
+if (token.cancelled || !im.naturalWidth) return;
+const an = animOffsets(img, atTime, REF_WIDTH, REF_HEIGHT);
+const dw = (img.size / 100) * REF_WIDTH * k;
+const dh = dw * (im.naturalHeight / im.naturalWidth);
+ctx.save();
+ctx.globalAlpha = fadeAlpha(img) * ((an as any).alphaMul ?? 1);
+ctx.translate(img.x * k + an.dx * k, img.y * k + an.dy * k);
+ctx.scale(an.f, an.f);
+ctx.rotate((img.rotate * Math.PI) / 180);
+ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
+ctx.restore();
+} });
+});
+textOverlays.forEach((txt, i) => {
+if (atTime < txt.start || atTime > txt.end || isLaneMuted(txt.laneId)) return;
+const fam: 'subtitle' | 'text' = txt.kind === 'subtitulo' ? 'subtitle' : 'text';
+shots.push({ key: paintKeyOf(txt.laneId, fam, i), run: async () => {
+const an = animOffsets(txt, atTime, REF_WIDTH, REF_HEIGHT);
+const mode = txt.subStyle || 'static';
+const words = mode === 'static' ? [] : getEffectiveWords(txt);
+const activeIdx = words.findIndex((w) => atTime >= w.start && atTime <= w.end);
+const hi = txt.highlightColor || '#facc15';
+let label = txt.text;
+let fs = txt.size;
+if (mode === 'single-word' && words.length) { label = words[activeIdx >= 0 ? activeIdx : 0].word; fs = Math.round(txt.size * 1.28); }
+if (mode === 'static' && txt.animIn === 'typewriter') {
+const liw = atTime - txt.start;
+const p = clamp(liw / Math.max(0.1, txt.animInDur ?? 0.6), 0, 1);
+label = txt.text.slice(0, Math.max(1, Math.ceil(p * txt.text.length)));
+}
+const fontPx = Math.max(4, fs * k);
+ctx.save();
+ctx.globalAlpha = fadeAlpha(txt) * ((an as any).alphaMul ?? 1);
+ctx.translate(txt.x * k + an.dx * k, txt.y * k + an.dy * k);
+ctx.scale(an.f, an.f);
+ctx.textAlign = 'center';
+ctx.textBaseline = 'middle';
+ctx.font = (txt.bold ? '700 ' : '400 ') + fontPx + 'px ' + FONT_STACKS[txt.font];
+const paint = (s: string, cx: number, color: string, boxed: boolean) => {
+if (boxed) {
+const bw = ctx.measureText(s).width;
+ctx.fillStyle = hi;
+ctx.fillRect(cx - bw / 2 - fontPx * 0.22, -fontPx * 0.62, bw + fontPx * 0.44, fontPx * 1.24);
+}
+if (txt.shadow) {
+ctx.shadowColor = txt.shadowColor || '#000000';
+ctx.shadowBlur = fontPx * 0.35;
+ctx.shadowOffsetX = (txt.shadowX ?? 4) * k;
+ctx.shadowOffsetY = (txt.shadowY ?? 4) * k;
+} else {
+ctx.shadowColor = 'rgba(0,0,0,0.85)';
+ctx.shadowBlur = fontPx * 0.2;
+ctx.shadowOffsetY = 2 * k;
+}
+if (txt.outline && !boxed) {
+ctx.lineWidth = Math.max(1, fontPx * 0.09);
+ctx.strokeStyle = '#000000';
+ctx.strokeText(s, cx, 0);
+}
+ctx.shadowColor = 'transparent';
+ctx.fillStyle = color;
+ctx.fillText(s, cx, 0);
+};
+if ((mode === 'karaoke-color' || mode === 'karaoke-box') && words.length) {
+const gap = fontPx * 0.28;
+const widths = words.map((w) => ctx.measureText(w.word).width);
+const total = widths.reduce((x, y) => x + y, 0) + gap * Math.max(0, words.length - 1);
+let cursor = -total / 2;
+words.forEach((w, wi) => {
+const act = wi === activeIdx;
+const col = mode === 'karaoke-box' ? (act ? '#0f1419' : txt.color) : (act ? hi : txt.color);
+paint(w.word, cursor + widths[wi] / 2, col, mode === 'karaoke-box' && act);
+cursor += widths[wi] + gap;
+});
+} else {
+paint(label, 0, mode === 'single-word' ? hi : txt.color, false);
+}
+ctx.restore();
+} });
+});
+videoOverlays.forEach((vo, i) => {
+if (atTime < vo.start || atTime > vo.end || isLaneMuted(vo.laneId)) return;
+shots.push({ key: paintKeyOf(vo.laneId, 'video', i), run: async () => {
+const v = await grabFrame(vo.url, vo.offset + (atTime - vo.start));
+if (!v || token.cancelled) return;
+const an = animOffsets(vo, atTime, REF_WIDTH, REF_HEIGHT);
+const dw = Math.max(2, (vo.size / 100) * REF_WIDTH * k);
+const dh = Math.max(2, dw * (v.videoHeight / v.videoWidth));
+const off = document.createElement('canvas');
+off.width = Math.round(dw); off.height = Math.round(dh);
+const octx = off.getContext('2d', { willReadFrequently: !!vo.chroma });
+if (!octx) return;
+octx.drawImage(v, 0, 0, off.width, off.height);
+if (vo.chroma) {
+const rgb = hexToRgb255(vo.chromaColor || '#00ff00');
+const maxDist = 441.67295593;
+const simDist = clamp(vo.chromaSimilarity ?? 0.16, 0.01, 0.6) * maxDist;
+const blendDist = clamp(vo.chromaBlend ?? 0.05, 0, 0.4) * maxDist;
+const simSq = simDist * simDist;
+const outerSq = (simDist + blendDist) * (simDist + blendDist);
+const fr = octx.getImageData(0, 0, off.width, off.height);
+const d = fr.data;
+for (let p = 0; p < d.length; p += 4) {
+const dr = d[p] - rgb[0], dg = d[p + 1] - rgb[1], db = d[p + 2] - rgb[2];
+const q = dr * dr + dg * dg + db * db;
+if (q <= simSq) d[p + 3] = 0;
+else if (blendDist > 0.5 && q < outerSq) d[p + 3] = Math.round(d[p + 3] * (Math.sqrt(q) - simDist) / blendDist);
+}
+octx.putImageData(fr, 0, 0);
+}
+ctx.save();
+ctx.globalAlpha = fadeAlpha(vo) * ((an as any).alphaMul ?? 1);
+ctx.translate(vo.x * k + an.dx * k, vo.y * k + an.dy * k);
+ctx.scale(an.f, an.f);
+ctx.rotate((vo.rotate * Math.PI) / 180);
+if (vo.shape === 'circle') {
+ctx.beginPath(); ctx.ellipse(0, 0, dw / 2, dh / 2, 0, 0, Math.PI * 2); ctx.clip();
+} else if (vo.shape === 'round') {
+const r = Math.min(dw, dh) * 0.1;
+ctx.beginPath();
+ctx.moveTo(-dw / 2 + r, -dh / 2);
+ctx.arcTo(dw / 2, -dh / 2, dw / 2, dh / 2, r);
+ctx.arcTo(dw / 2, dh / 2, -dw / 2, dh / 2, r);
+ctx.arcTo(-dw / 2, dh / 2, -dw / 2, -dh / 2, r);
+ctx.arcTo(-dw / 2, -dh / 2, dw / 2, -dh / 2, r);
+ctx.closePath(); ctx.clip();
+}
+ctx.drawImage(off, -dw / 2, -dh / 2, dw, dh);
+ctx.restore();
+} });
+});
+shots.sort((a, b) => a.key - b.key);
+for (const s of shots) { if (token.cancelled) return null; await s.run(); }
+if (token.cancelled) return null;
+return canvas.toDataURL('image/jpeg', 0.85);
+} finally {
+for (const v of opened) { try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {} }
+}
+}
+useEffect(() => {
+if (!showExportModal || exporting) return;
+const token = { cancelled: false };
+setExportThumbBusy(true);
+const timer = window.setTimeout(() => {
+captureProjectFrame(projectDuration / 2, token)
+.then((url) => { if (!token.cancelled && url) setExportThumb(url); })
+.catch((e) => { console.warn('[ExportShot] No se pudo generar la captura:', e); })
+.finally(() => { if (!token.cancelled) setExportThumbBusy(false); });
+}, 240);
+return () => { token.cancelled = true; window.clearTimeout(timer); };
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [showExportModal, exporting, projectDuration, clips, imageOverlays, textOverlays, videoOverlays, exportSettings.ratio, exportSettings.fit, proxyVersion]);
+function openExportModal() {
     if (projectDuration === 0) { showToast('⚠️ No hay nada en la timeline para exportar', 'warn'); return; }
     setShowExportModal(true);
   }
@@ -4495,6 +4648,7 @@ setSilenceFor(null); setSilencePlan(null);
 // encode, overlays por chunk restando chunkStart. Validado en /lab-pipeline
 // (tests 8-13) sobre Blade Runner 3.48GB: deriva ≤1 frame, 5.1 intacto.
 async function runExportChunked() {
+exportCancelledRef.current = false; exportPausedRef.current = false; setExportPaused(false);
 // FASE 6.11: las capas de superposición (VO) ya son bienvenidas en el export chunked.
 const heavyIdx = clips.map((c, i) => ({ c, i })).filter(({ c }) => (c.bytes ?? 0) > EXTRACT_THRESHOLD);
 const tooLong = heavyIdx.find(({ c }) => effLen(c) > CHUNKED_AUDIO_MAX_SECS);
@@ -4513,6 +4667,7 @@ try {
 const { FFmpeg } = await loadFFmpegLib();
 ff = new FFmpeg();
 ff.on('log', ({ message }: any) => { console.log('[FFmpeg Chunked]', message); ffLogs.push(String(message)); if (ffLogs.length > 300) ffLogs.shift(); });
+exportFFRef.current = ff;
 const coreURL = await toBlobURL('/ffmpeg-core.js', 'text/javascript');
 const wasmURL = await toBlobURL('/ffmpeg-core.wasm', 'application/wasm');
 await ff.load({ coreURL, wasmURL });
@@ -4593,6 +4748,7 @@ let totalFetched = 0;
 renderStartRef.current = performance.now();
 // ===== FASE 1: VIDEO POR CHUNKS =====
 for (const chk of chunks) {
+await waitWhileExportPaused();
 const cs = chk.start; const ce = chk.end;
 setExportProgress({ phase: 'rendering', percent: Math.round((chk.index / chunks.length) * 85), speed: 0 });
 showToast(`🧩 Chunk ${chk.index + 1}/${chunks.length} · ${cs.toFixed(0)}s–${ce.toFixed(0)}s`, 'info', 2000);
@@ -4757,6 +4913,7 @@ chunkBlobs.push(data as Uint8Array);
 for (const tf of tempFiles) { try { await ff.deleteFile(tf); } catch (e) {} }
 try { await ff.deleteFile(`chunk${chk.index}.mp4`); } catch (e) {}
 }
+await waitWhileExportPaused();
 // ===== FASE 2: CONCAT DE VIDEO =====
 setExportProgress({ phase: 'rendering', percent: 88, speed: 0 });
 for (let k = 0; k < chunkBlobs.length; k++) await ff.writeFile(`chunk${k}.mp4`, chunkBlobs[k]);
@@ -4765,6 +4922,7 @@ const concatCode = await ff.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt'
 if (concatCode !== 0) throw new Error(`Concat falló (código ${concatCode}) · ${ffLogs.slice(-3).join(' | ')}`);
 for (let k = 0; k < chunkBlobs.length; k++) { try { await ff.deleteFile(`chunk${k}.mp4`); } catch (e) {} }
 try { await ff.deleteFile('list.txt'); } catch (e) {}
+await waitWhileExportPaused();
 // ===== FASE 3: AUDIO CONTINUO (un solo encode = cero saltos) =====
 setExportProgress({ phase: 'rendering', percent: 91, speed: 0 });
 const audioFiles: string[] = [];
@@ -4792,7 +4950,7 @@ if (aud.muted || isLaneMuted(aud.laneId)) continue;
 const srcIdx = aud.sourceVideoId ? clips.findIndex((c) => c.id === aud.sourceVideoId) : -1;
 if (srcIdx >= 0 && wholeFileFor.has(srcIdx)) {
 trackInputIdx[j] = audioFiles.length; audioFiles.push(wholeFileFor.get(srcIdx)!);
-} else if (srcIdx >= 0 && willExtract.has(srcIdx) && !aud.released) {
+} else if (srcIdx >= 0 && willExtract.has(srcIdx)) {
 const g = trackGeom(aud);
 const blob = await getClipSourceBlob(clips[srcIdx]);
 const audioExtractMessages: string[] = [];
@@ -4812,10 +4970,28 @@ trackInputIdx[j] = audioFiles.length - 1;
 trackRoll[j] = Math.max(0, g.offset - segA.firstTs);
 trackWasExtracted[j] = true;
 } else {
-const fname = `a${j}.${aud.url.includes('blob') ? 'mp4' : 'mp3'}`;
-await ff.writeFile(fname, new Uint8Array(await (await fetch(aud.url)).arrayBuffer()));
+// Fuente independiente o liberada: recuperar el Blob desde IndexedDB (inmune a
+// blob: URLs revocados) y, si es pesado, alimentarlo por byte-ranges en vez de
+// leer los GB enteros a RAM (el viejo "Failed to fetch" / OOM de Fase 6).
+let srcBlob: Blob | null = aud.assetId ? await getAsset(aud.assetId).catch(() => null) : null;
+if (!srcBlob) { try { srcBlob = await (await fetch(aud.url)).blob(); } catch { srcBlob = null; } }
+if (!srcBlob) throw new Error(`No se pudo recuperar el audio "${aud.name}": el asset local no está disponible.`);
+if (srcBlob.size > EXTRACT_THRESHOLD) {
+const g2 = trackGeom(aud);
+const segI = await extractAudioSegment(srcBlob, g2.offset, g2.offset + g2.duration * g2.speed, () => {});
+if (!segI) throw new Error(`El audio pesado "${aud.name}" no es compatible con byte-ranges (AAC).`);
+totalFetched += segI.fetchedBytes;
+await ff.writeFile(`sax${j}.m4a`, segI.mp4);
+audioFiles.push(`sax${j}.m4a`);
+trackInputIdx[j] = audioFiles.length - 1;
+trackRoll[j] = Math.max(0, g2.offset - segI.firstTs);
+trackWasExtracted[j] = true;
+} else {
+const fname = `a${j}.mp4`;
+await ff.writeFile(fname, new Uint8Array(await srcBlob.arrayBuffer()));
 audioFiles.push(fname);
 trackInputIdx[j] = audioFiles.length - 1;
+}
 }
 }
 // Audio de capas de video (ya residentes en MEMFS) entra a la mezcla continua
@@ -4837,7 +5013,8 @@ const sp = clip.speed;
 const pts = sp === 1 ? 'asetpts=PTS-STARTPTS' : `asetpts=(PTS-STARTPTS)/${sp}`;
 const tempo = sp === 1 ? '' : `,atempo=${sp}`;
 const roll = clipAudioRoll[i];
-afc += `[${clipInputIdx[i]}:a]atrim=${roll.toFixed(6)}:${(roll + (clip.trimEnd - clip.trimStart)).toFixed(6)},${pts}${tempo},volume=1.0[ca${i}];`;
+const clipVol = clamp((clip.volume ?? 1) * mainLaneVolume, 0, 1);
+afc += `[${clipInputIdx[i]}:a]atrim=${roll.toFixed(6)}:${(roll + (clip.trimEnd - clip.trimStart)).toFixed(6)},${pts}${tempo},volume=${clipVol.toFixed(3)}[ca${i}];`;
 } else {
 afc += `anullsrc=r=44100:cl=stereo:d=${effLen(clip)}[ca${i}];`;
 }
@@ -4874,12 +5051,17 @@ const audioTrimStart = trackWasExtracted[j] ? roll : g.offset;
 const audioTrimEnd = trackWasExtracted[j]
   ? roll + g.duration * g.speed
   : g.offset + g.duration * g.speed;
-afc += `[${trackInputIdx[j]}:a]atrim=${audioTrimStart.toFixed(6)}:${audioTrimEnd.toFixed(6)},${pts}${tempo},adelay=${delay}|${delay},volume=${aud.volume}${afades}[sa${j}];`;
+const linkedMulC = aud.sourceVideoId && !aud.released
+  ? (clips.find((c) => c.id === aud.sourceVideoId)?.volume ?? 1) * mainLaneVolume
+  : 1;
+const effAudVolC = clamp(aud.volume * getLaneVolume(aud.laneId) * linkedMulC, 0, 1);
+afc += `[${trackInputIdx[j]}:a]atrim=${audioTrimStart.toFixed(6)}:${audioTrimEnd.toFixed(6)},${pts}${tempo},adelay=${delay}|${delay},volume=${effAudVolC.toFixed(3)}${afades}[sa${j}];`;
 audioLabels.push(`sa${j}`);
 });
 videoOverlays.forEach((vo, i) => {
 if (voAudioIdx[i] < 0) return;
-afc += `[${voAudioIdx[i]}:a]atrim=${vo.offset.toFixed(6)}:${(vo.offset + (vo.end - vo.start)).toFixed(6)},asetpts=PTS-STARTPTS,adelay=${Math.round(vo.start * 1000)}|${Math.round(vo.start * 1000)},volume=1.0[va${i}];`;
+const effVoVolC = clamp((vo.volume ?? 1) * getLaneVolume(vo.laneId), 0, 1);
+afc += `[${voAudioIdx[i]}:a]atrim=${vo.offset.toFixed(6)}:${(vo.offset + (vo.end - vo.start)).toFixed(6)},asetpts=PTS-STARTPTS,adelay=${Math.round(vo.start * 1000)}|${Math.round(vo.start * 1000)},volume=${effVoVolC.toFixed(3)}[va${i}];`;
 audioLabels.push(`va${i}`);
 });
 let finalAudioLabel = 'outa';
@@ -4893,6 +5075,7 @@ if (audioCode !== 0) throw new Error(`Audio falló (código ${audioCode}) · ${f
 for (const f of Array.from(new Set(audioFiles))) { try { await ff.deleteFile(f); } catch (e) {} }
 for (let i = 0; i < imageOverlays.length; i++) { try { await ff.deleteFile(`img${i}.png`); } catch (e) {} }
 for (let i = 0; i < videoOverlays.length; i++) { try { await ff.deleteFile(`vomask${i}.png`); } catch (e) {} }
+await waitWhileExportPaused();
 // ===== FASE 4: MERGE FINAL =====
 setExportProgress({ phase: 'packaging', percent: 97, speed: 0 });
 const outputFileName = `${exportSettings.filename || 'clipedia_export'}.${fmtInfo.ext}`;
@@ -4916,6 +5099,7 @@ const elapsed = Math.round((performance.now() - renderStartRef.current) / 1000);
 showToast(`✅ ¡Exportado: ${outputFileName}! (${(totalFetched / 1048576).toFixed(0)}MB leídos del disco · ${elapsed}s)`, 'info', 8000);
 setTimeout(() => { setShowExportModal(false); setExportProgress(null); }, 1500);
 } catch (error: any) {
+if (exportCancelledRef.current || String(error?.message || "").includes("EXPORT_CANCELLED")) { showToast("⊘ Exportación cancelada", "info"); setExportProgress(null); return; }
 console.error('[ExportChunked] ERROR FATAL:', error);
 console.error('[ExportChunked] Últimas líneas FFmpeg:\n' + ffLogs.slice(-10).join('\n'));
 showToast(`❌ Error: ${error.message || 'Revisá la consola'}`, 'warn');
@@ -4923,6 +5107,7 @@ setExportProgress(null);
 } finally {
 setExporting(false);
 if (ff) { try { await ff.terminate(); } catch (e) {} }
+exportFFRef.current = null;
 }
 }
 
@@ -4933,6 +5118,7 @@ if (resInfo.plus && !isPlus) { showToast('🔒 Esta resolución requiere Clipedi
 // El fusible de 1.5GB se jubiló con honores. 🫡
 const needsChunked = clips.some((c) => (c.bytes ?? 0) > SAFE_PROC_BYTES);
 if (needsChunked) { await runExportChunked(); return; }
+exportCancelledRef.current = false; exportPausedRef.current = false; setExportPaused(false);
     setExporting(true);
     previewQueueRef.current = [];
     if (previewFFRef.current) { try { await previewFFRef.current.terminate(); } catch (e) {} previewFFRef.current = null; }
@@ -4944,6 +5130,7 @@ if (needsChunked) { await runExportChunked(); return; }
       const { FFmpeg } = await loadFFmpegLib();
       ff = new FFmpeg();
       ff.on('log', ({ message }: any) => { console.log('[FFmpeg Log]', message); ffLogs.push(message); });
+exportFFRef.current = ff;
       ff.on('progress', ({ progress, time }: any) => {
         const pct = clamp(Math.round((progress || 0) * 100), 0, 100);
         const processedSec = (time || 0) / 1_000_000;
@@ -5149,7 +5336,8 @@ filterComplex += `[${finalVideoLabel}]scale=${targetW}:${targetH}:force_original
           const sp = c.speed;
           const pts = sp === 1 ? 'asetpts=PTS-STARTPTS' : `asetpts=(PTS-STARTPTS)/${sp}`;
           const tempo = sp === 1 ? '' : `,atempo=${sp}`;
-          filterComplex += `[${i}:a]atrim=${c.trimStart}:${c.trimEnd},${pts}${tempo},volume=1.0[ca${i}];`;
+          const clipVolN = clamp((c.volume ?? 1) * mainLaneVolume, 0, 1);
+          filterComplex += `[${i}:a]atrim=${c.trimStart}:${c.trimEnd},${pts}${tempo},volume=${clipVolN.toFixed(3)}[ca${i}];`;
         } else {
           filterComplex += `anullsrc=r=44100:cl=stereo:d=${effLen(c)}[ca${i}];`;
         }
@@ -5182,7 +5370,11 @@ if (aud.fadeIn > 0) afades += `,afade=t=in:st=0:d=${aud.fadeIn}`;
 if (aud.fadeOut > 0) afades += `,afade=t=out:st=${Math.max(g.duration - aud.fadeOut, 0)}:d=${aud.fadeOut}`;
 if (cf.dIn > 0) afades += `,afade=t=in:st=0:d=${cf.dIn}`;
 if (cf.dOut > 0) afades += `,afade=t=out:st=${Math.max(g.duration - cf.dOut, 0)}:d=${cf.dOut}`;
-filterComplex += `[${audInputIdx}:a]atrim=${g.offset}:${g.offset + g.duration},${pts}${tempo},adelay=${delay}|${delay},volume=${aud.volume}${afades}[sa${i}];`;
+const linkedMulN = aud.sourceVideoId && !aud.released
+  ? (clips.find((c) => c.id === aud.sourceVideoId)?.volume ?? 1) * mainLaneVolume
+  : 1;
+const effAudVolN = clamp(aud.volume * getLaneVolume(aud.laneId) * linkedMulN, 0, 1);
+filterComplex += `[${audInputIdx}:a]atrim=${g.offset}:${g.offset + g.duration},${pts}${tempo},adelay=${delay}|${delay},volume=${effAudVolN.toFixed(3)}${afades}[sa${i}];`;
 audioLabels.push(`sa${i}`);
 }
 });
@@ -5191,7 +5383,8 @@ videoOverlays.forEach((vo, i) => {
 if (!vo.muted && vo.hasAudio !== false && !isLaneMuted(vo.laneId)) {
 const voIdx = clips.length + imageOverlays.length + i;
 const delay = vo.start * 1000;
-filterComplex += `[${voIdx}:a]atrim=${vo.offset}:${vo.offset + (vo.end - vo.start)},asetpts=PTS-STARTPTS,adelay=${delay}|${delay},volume=1.0[va${i}];`;
+const effVoVolN = clamp((vo.volume ?? 1) * getLaneVolume(vo.laneId), 0, 1);
+filterComplex += `[${voIdx}:a]atrim=${vo.offset}:${vo.offset + (vo.end - vo.start)},asetpts=PTS-STARTPTS,adelay=${delay}|${delay},volume=${effVoVolN.toFixed(3)}[va${i}];`;
 audioLabels.push(`va${i}`);
 }
 });
@@ -5220,7 +5413,8 @@ audioLabels.push(`va${i}`);
       ];
       setExportProgress({ phase: 'rendering', percent: 0, speed: 0 });
       renderStartRef.current = performance.now();
-      let execError = null;
+      await waitWhileExportPaused();
+let execError = null;
       let exitCode = 0;
       try { exitCode = await ff.exec(args); }
       catch (e: any) { console.warn('[Export] FFmpeg exec error:', e.message); execError = e; }
@@ -5245,7 +5439,8 @@ audioLabels.push(`va${i}`);
       showToast(`✅ ¡Exportado: ${outputFileName}!`, 'info');
       setTimeout(() => { setShowExportModal(false); setExportProgress(null); }, 1500);
     } catch (error: any) {
-      console.error('[Export] ERROR FATAL:', error);
+      if (exportCancelledRef.current || String(error?.message || "").includes("EXPORT_CANCELLED")) { showToast("⊘ Exportación cancelada", "info"); setExportProgress(null); return; }
+console.error('[Export] ERROR FATAL:', error);
 console.error('[Export] filterComplex completo:\n' + filterComplex);
       console.error('[Export] Últimas líneas FFmpeg:\n' + ffLogs.slice(-10).join('\n'));
       showToast(`❌ Error: ${error.message || 'Revisá la consola'}`, 'warn');
@@ -5253,6 +5448,7 @@ console.error('[Export] filterComplex completo:\n' + filterComplex);
     } finally {
       setExporting(false);
       if (ff) { try { await ff.terminate(); } catch (e) {} }
+exportFFRef.current = null;
     }
   }
 
@@ -5303,113 +5499,114 @@ const importProgressUI = importProgress && typeof document !== 'undefined' ? cre
 document.body
 ) : null;
 
-  const exportModal = showExportModal && typeof document !== 'undefined' ? createPortal(
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-2xl rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 shadow-2xl shadow-cyan-500/10 overflow-hidden max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
-          <div>
-            <h2 className="text-xl font-black text-white">Exportar video</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Configurá la salida antes de renderizar</p>
-          </div>
-          <button onClick={() => !exporting && setShowExportModal(false)} disabled={exporting} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white transition disabled:opacity-40">✕</button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-          <div>
-            <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-400">🎯 Resolución</label>
-            <div className="grid grid-cols-4 gap-2">
-              {(Object.keys(RESOLUTION_PRESETS) as Resolution[]).map((r) => {
-                const info = RESOLUTION_PRESETS[r];
-                const locked = info.plus && !isPlus;
-                return (
-                  <button key={r}
-                    onClick={() => { if (locked) { showToast('🔒 Resolución Plus. Próximamente en Clipedia Plus.', 'warn'); return; } if (!exporting) { setExportSettings((s) => ({ ...s, resolution: r })); if (r === '4K') showToast('🎥 Export 4K: el render en el navegador puede tardar varios minutos y exigir mucha RAM. Paciencia, artista.', 'warn', 8000); } }}
-                    disabled={exporting}
-                    className={`relative rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${exportSettings.resolution === r ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200' : locked ? 'border-slate-800 bg-slate-900/30 text-slate-500 cursor-not-allowed' : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:border-slate-600'} disabled:opacity-60`}>
-                    {locked && <span className="absolute -top-1.5 -right-1.5 text-xs">🔒</span>}
-                    <div className="text-base font-black">{r}</div>
-                    <div className="mt-0.5 text-[10px] font-normal text-slate-400">{locked ? 'Plus' : info.label}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div>
-            <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-400">📦 Formato</label>
-            <div className="grid grid-cols-3 gap-2">
-              {(Object.keys(FORMAT_PRESETS) as ExportFormat[]).map((f) => (
-                <button key={f} onClick={() => !exporting && setExportSettings((s) => ({ ...s, format: f }))} disabled={exporting}
-                  className={`rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${exportSettings.format === f ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200' : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:border-slate-600'} disabled:opacity-60`}>
-                  <div className="text-base font-black uppercase">{f}</div>
-                  <div className="mt-0.5 text-[10px] font-normal text-slate-400">{FORMAT_PRESETS[f].label}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-400">⚡ Calidad</label>
-            <div className="grid grid-cols-3 gap-2">
-              {(Object.keys(QUALITY_PRESETS) as Quality[]).map((q) => (
-                <button key={q} onClick={() => !exporting && setExportSettings((s) => ({ ...s, quality: q }))} disabled={exporting}
-                  className={`rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${exportSettings.quality === q ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200' : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:border-slate-600'} disabled:opacity-60`}>
-                  <div className="text-base font-black">{QUALITY_PRESETS[q].label}</div>
-                  <div className="mt-0.5 text-[10px] font-normal text-slate-400">{QUALITY_PRESETS[q].desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-400">✍️ Nombre del archivo</label>
-            <div className="flex items-center rounded-lg border border-slate-700 bg-slate-900/50">
-              <input type="text" value={exportSettings.filename} onChange={(e) => setExportSettings((s) => ({ ...s, filename: e.target.value }))} disabled={exporting}
-                className="flex-1 bg-transparent px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" placeholder="mi_video" />
-              <span className="border-l border-slate-700 px-3 py-2.5 text-sm font-mono text-slate-400">.{FORMAT_PRESETS[exportSettings.format].ext}</span>
-            </div>
-          </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
-            <p className="font-semibold text-slate-300 mb-1">📊 Resumen del render</p>
-            <div className="grid grid-cols-2 gap-1">
-              <span>Canvas: <span className="text-slate-200">{REF_WIDTH}×{REF_HEIGHT} ({exportSettings.ratio})</span></span>
-              <span>Salida: <span className="text-slate-200">{Math.round(REF_WIDTH * resInfo.factor)}×{Math.round(REF_HEIGHT * resInfo.factor)}</span></span>
-              <span>Encuadre: <span className="text-slate-200">{exportSettings.fit === 'recortar' ? 'Recortar (cover)' : 'Adaptar (letterbox)'}</span></span>
-              <span>Códec: <span className="text-slate-200">{fmtInfo.video} + {fmtInfo.audio}</span></span>
-              <span>Duración: <span className="text-slate-200">{formatTime(projectDuration)}</span></span>
-              <span>Calidad: <span className="text-slate-200">CRF {qualInfo.crf264}</span></span>
-            </div>
-          </div>
-          {BETA_PLUS_UNLOCK && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-              🎁 <strong>Beta privada:</strong> todas las resoluciones están desbloqueadas temporalmente.
-            </div>
-          )}
-          {exportProgress && (
-            <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-4">
-              <div className="flex items-center justify-between mb-2 text-xs">
-                <span className="font-semibold text-cyan-200">
-                  {exportProgress.phase === 'preparing' && '⏳ Preparando...'}
-                  {exportProgress.phase === 'rendering' && `🎬 Renderizando... ${exportProgress.percent}%`}
-                  {exportProgress.phase === 'packaging' && '📦 Empaquetando...'}
-                  {exportProgress.phase === 'done' && '✅ ¡Listo!'}
-                </span>
-                <span className="text-cyan-300 font-mono">{exportProgress.speed > 0 ? `⚡ ${exportProgress.speed}x` : ''}</span>
-              </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
-                <div className="h-full bg-gradient-to-r from-cyan-400 to-violet-400 transition-all duration-300" style={{ width: `${exportProgress.percent}%` }} />
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="border-t border-slate-800 px-6 py-4 flex items-center gap-3">
-          <button onClick={() => setShowExportModal(false)} disabled={exporting} className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-slate-600 disabled:opacity-40">Cancelar</button>
-          <button onClick={runExport} disabled={exporting} className="flex-1 rounded-lg bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2.5 text-sm font-black text-black transition-transform hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100">
-            {exporting ? `⏳ Exportando... ${exportProgress?.percent ?? 0}%` : `⬇️ Exportar ${exportSettings.resolution} ${exportSettings.format.toUpperCase()}`}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  ) : null;
-
-  // Picker showroom de transiciones (mockup de la fundadora, 28/10)
+  const expDurLabel = (() => { const t = projectDuration; const h = Math.floor(t / 3600); const m = Math.floor((t % 3600) / 60); const s = Math.floor(t % 60); const cs = Math.floor((t % 1) * 100); const p = (n: number) => String(n).padStart(2, '0'); return p(h) + ':' + p(m) + ':' + p(s) + '.' + p(cs); })();
+const expBitrate = (() => { const base: Record<string, number> = { '480p': 2.5, '720p': 5, '1080p': 12, '4K': 40 }; const q: Record<string, number> = { fast: 0.7, balanced: 1, high: 1.4 }; return ((base[exportSettings.resolution] || 12) * (q[exportSettings.quality] || 1)).toFixed(1); })();
+const expClock = (sec: number) => { const m = Math.floor(sec / 60); const s = Math.floor(sec % 60); const p = (n: number) => String(n).padStart(2, '0'); return p(m) + ':' + p(s); };
+const exportModal = showExportModal && typeof document !== 'undefined' ? createPortal(
+<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-4">
+<style>{'.export-scroll::-webkit-scrollbar{width:8px}.export-scroll::-webkit-scrollbar-track{background:#0a0e27;border-radius:8px}.export-scroll::-webkit-scrollbar-thumb{background:linear-gradient(#22d3ee,#8b5cf6);border-radius:8px}.export-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(#67e8f9,#a78bfa)}'}</style>
+<div className="relative flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border-2 border-transparent shadow-2xl shadow-cyan-500/20" style={{ background: 'linear-gradient(#0a0e27,#0a0e27) padding-box, linear-gradient(135deg,#22d3ee,#8b5cf6,#d946ef) border-box' }}>
+<div className="flex shrink-0 items-center justify-between border-b border-cyan-500/20 px-5 py-4">
+<div className="flex items-center gap-3">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-7 w-7 text-cyan-400" aria-hidden="true"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><path d="M16 6l-4-4-4 4" /><path d="M12 2v14" /></svg>
+<h2 className="text-2xl font-black tracking-tight"><span className="bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">Exportar</span> <span className="bg-gradient-to-r from-violet-400 to-fuchsia-500 bg-clip-text text-transparent">Video</span></h2>
+</div>
+<button onClick={() => { if (exporting) cancelExport(); setShowExportModal(false); }} className="rounded-lg p-1.5 text-slate-300 transition hover:bg-white/10 hover:text-white" title="Cerrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="h-6 w-6"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
+</div>
+<div className="export-scroll flex-1 overflow-y-auto px-5 py-4">
+<div className="flex items-center gap-4">
+<div className="w-36 shrink-0 sm:w-56">
+<img src="/claqueta-export.svg" alt="" aria-hidden="true" draggable={false} className="h-auto w-full select-none drop-shadow-[0_0_30px_rgba(99,102,241,0.55)]" />
+</div>
+<p className="text-sm leading-relaxed text-slate-300 sm:text-base">Elige las opciones y exporta tu video en el formato deseado.</p>
+</div>
+<div className="my-4 h-px bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent" />
+<div className="space-y-3">
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div className="flex items-center gap-2 sm:w-36"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5 text-cyan-400"><rect x="2" y="4" width="20" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></svg><span className="text-sm font-bold text-slate-100">Resolución:</span></div>
+<div className="flex flex-1 gap-2">
+{(Object.keys(RESOLUTION_PRESETS) as Resolution[]).map((r) => (
+<button key={r} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, resolution: r }))} className={cx('flex-1 rounded-lg border px-2 py-2 text-sm font-bold transition disabled:opacity-50', exportSettings.resolution === r ? 'border-cyan-400 bg-gradient-to-b from-blue-600/60 to-blue-900/40 text-white shadow-[0_0_12px_rgba(34,211,238,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>{r}</button>
+))}
+</div>
+</div>
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div className="flex items-center gap-2 sm:w-36"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5 text-cyan-400"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg><span className="text-sm font-bold text-slate-100">Formato:</span></div>
+<div className="flex flex-1 gap-2">
+{(Object.keys(FORMAT_PRESETS) as ExportFormat[]).map((f) => (
+<button key={f} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, format: f }))} className={cx('flex-1 rounded-lg border px-2 py-2 text-sm font-bold uppercase transition disabled:opacity-50', exportSettings.format === f ? 'border-cyan-400 bg-gradient-to-b from-blue-600/70 to-blue-900/40 text-white shadow-[0_0_12px_rgba(34,211,238,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>{f}</button>
+))}
+</div>
+</div>
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div className="flex items-center gap-2 sm:w-36"><svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 text-cyan-400"><path d="M13 2 3 14h7l-1 8 10-12h-7z" /></svg><span className="text-sm font-bold text-slate-100">Calidad:</span></div>
+<div className="flex flex-1 gap-2">
+{(Object.keys(QUALITY_PRESETS) as Quality[]).map((q) => (
+<button key={q} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, quality: q }))} className={cx('flex flex-1 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-sm font-bold transition disabled:opacity-50', exportSettings.quality === q ? 'border-cyan-400 bg-gradient-to-r from-violet-600/70 to-fuchsia-600/50 text-white shadow-[0_0_12px_rgba(168,85,247,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>
+<span>{q === 'fast' ? '⚡' : q === 'balanced' ? '⚖️' : '💎'}</span><span className="truncate">{QUALITY_PRESETS[q].label}</span>
+</button>
+))}
+</div>
+</div>
+</div>
+<div className="my-4 h-px bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent" />
+<div className="mb-2 flex items-center gap-2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 text-cyan-400"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" /></svg><span className="text-sm font-bold text-slate-100">Nombre de Archivo:</span></div>
+<div className="flex items-center gap-2">
+<input ref={exportNameRef} type="text" value={exportSettings.filename} disabled={exporting} onChange={(e) => setExportSettings((s) => ({ ...s, filename: e.target.value }))} className="flex-1 rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400 disabled:opacity-50" placeholder="Mi Video Editado" />
+<button onClick={() => { exportNameRef.current?.focus(); exportNameRef.current?.select(); showToast('📁 El archivo se guarda en tu carpeta de Descargas', 'info'); }} disabled={exporting} className="rounded-lg border border-violet-500/50 bg-violet-500/15 p-2.5 text-violet-300 transition hover:bg-violet-500/25 disabled:opacity-50" title="Carpeta de destino"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" /></svg></button>
+</div>
+<div className="mt-4 rounded-xl border border-transparent p-3" style={{ background: 'linear-gradient(#141b3d,#141b3d) padding-box, linear-gradient(135deg,#22d3ee,#8b5cf6) border-box' }}>
+<div className="flex gap-3">
+<div className="relative h-24 w-36 shrink-0 overflow-hidden rounded-lg border border-cyan-500/40 bg-black shadow-[0_0_18px_rgba(34,211,238,0.12)] sm:h-28 sm:w-44">
+{exportThumb ? <img src={exportThumb} alt="Captura del punto medio del proyecto" className="h-full w-full object-cover" /> : <div className="h-full w-full bg-gradient-to-br from-slate-800 via-slate-900 to-black" />}
+{exportThumbBusy && (
+<div className="absolute inset-0 flex items-center justify-center bg-slate-950/65">
+<span className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+</div>
+)}
+<div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-black/90 via-black/55 to-transparent px-1.5 pb-1 pt-4">
+<span className="font-mono text-[8px] font-black tracking-wide text-cyan-200">{'📸 ' + formatTime(projectDuration / 2)}</span>
+</div>
+</div>
+<div className="min-w-0 flex-1 text-xs sm:text-sm">
+<div className="mb-1 flex items-center gap-1.5 font-bold text-cyan-400"><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2zm0-8h-2V7h2z" /></svg>Resumen del Render:</div>
+<div className="space-y-0.5 text-slate-300">
+<p>Canvas: <span className="text-slate-100">{REF_WIDTH + ' × ' + REF_HEIGHT + ' (' + exportSettings.ratio + ')'}</span></p>
+<p>Encuadre: <span className="text-slate-100">{exportSettings.fit === 'recortar' ? 'Recortar' : 'Completo'}</span></p>
+<p>Duración: <span className="text-slate-100">{expDurLabel + ' (' + projectDuration.toFixed(2) + ' s)'}</span></p>
+<p>Velocidad de bits: <span className="text-slate-100">{'~' + expBitrate + ' Mbps (estimado)'}</span></p>
+</div>
+</div>
+</div>
+</div>
+{exportProgress && (
+<div className="mt-4">
+<div className="mb-2 flex items-center justify-between">
+<div className="flex items-center gap-2 text-sm text-slate-200"><span className={cx('inline-block h-4 w-4 rounded-full border-2 border-cyan-400 border-t-transparent', !exportPaused && 'animate-spin')} />{exportPaused ? 'En pausa' : exportProgress.phase === 'packaging' ? 'Empaquetando…' : exportProgress.phase === 'done' ? '¡Listo!' : 'Renderizando video…'}</div>
+<span className="text-lg font-black text-cyan-400">{exportProgress.percent + '%'}</span>
+</div>
+<div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500 transition-all duration-300" style={{ width: exportProgress.percent + '%' }} /></div>
+<div className="mt-2 flex items-center gap-3 text-xs text-slate-400"><span>{'Tiempo estimado: ' + expClock(Math.max(0, ((performance.now() - renderStartRef.current) / 1000) * (100 - exportProgress.percent) / Math.max(exportProgress.percent, 1)))}</span><span className="text-slate-600">|</span><span>{'Velocidad: ' + (exportProgress.speed > 0 ? exportProgress.speed + 'x' : '—')}</span></div>
+</div>
+)}
+</div>
+<div className="flex shrink-0 items-center justify-end gap-3 border-t border-cyan-500/20 px-5 py-4">
+{exporting ? (
+<>
+<button onClick={() => setExportPausedBoth(!exportPaused)} className="flex items-center gap-2 rounded-xl border-2 border-cyan-400 bg-cyan-500/10 px-5 py-2.5 text-sm font-black text-cyan-300 transition hover:bg-cyan-500/20">{exportPaused ? <><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M8 5v14l11-7z" /></svg>Reanudar</> : <><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>Pausar</>}</button>
+<button onClick={cancelExport} className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:scale-[1.02]"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="h-4 w-4"><path d="M18 6 6 18M6 6l12 12" /></svg>Cancelar</button>
+</>
+) : (
+<>
+<button onClick={() => setShowExportModal(false)} className="rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-bold text-slate-300 transition hover:border-slate-500">Cancelar</button>
+<button onClick={runExport} className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-6 py-2.5 text-sm font-black text-black shadow-lg shadow-cyan-500/25 transition hover:scale-[1.02]"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>{'Exportar ' + exportSettings.resolution + ' ' + exportSettings.format.toUpperCase()}</button>
+</>
+)}
+</div>
+</div>
+</div>,
+document.body
+) : null;
 const commentStudioUI = commentStudioOpen && typeof document !== 'undefined' ? createPortal(
 <CommentStudioModal
 onCancel={() => setCommentStudioOpen(false)}
@@ -5520,7 +5717,7 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
   return (
         <div ref={shellRef} style={{ '--shelloff': shellOffset + 'px' } as React.CSSProperties} className="flex h-[calc(100vh-var(--shelloff,0px))] flex-col gap-2 overflow-hidden p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] supports-[height:100dvh]:h-[calc(100dvh-var(--shelloff,0px))] lg:h-[calc(100dvh-57px)] lg:min-h-[620px] lg:gap-4 lg:p-4 lg:pb-4" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <style>{FONT_FACE_CSS + `
-@keyframes laneDrawerSlideIn {
+@keyframes laneMenuPop { 0% { opacity: 0; transform: translateX(-10px) scale(0.95); } 100% { opacity: 1; transform: translateX(0) scale(1); } } @keyframes laneDrawerSlideIn {
   0% { opacity: 0; transform: translateY(-50%) translateX(-14px) scaleX(0.92); }
   100% { opacity: 1; transform: translateY(-50%) translateX(0) scaleX(1); }
 }
@@ -5610,6 +5807,48 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
   </div>,
   document.body
 )}
+{openLaneMenuId && typeof document !== 'undefined' && createPortal(
+(() => {
+const lane = timelineLanes.find((l) => l.id === openLaneMenuId);
+if (!lane) return null;
+const siblings = laneList(lane.kind);
+const index = siblings.findIndex((x) => x.id === lane.id);
+const count = lane.kind === 'audio' ? audioTracks.filter((x) => x.laneId === lane.id).length : lane.kind === 'image' ? imageOverlays.filter((x) => x.laneId === lane.id).length : lane.kind === 'video' ? videoOverlays.filter((x) => x.laneId === lane.id).length : textOverlays.filter((x) => x.laneId === lane.id).length;
+return (
+<div ref={laneMenuRef} data-lane-menu="true" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+style={{ left: laneMenuPos.left, top: laneMenuPos.top, visibility: laneMenuPos.ready ? 'visible' : 'hidden', transformOrigin: 'left center', animation: 'laneMenuPop 160ms cubic-bezier(0.16, 1, 0.3, 1)' }}
+className="fixed z-[260] flex max-h-[calc(100vh-16px)] w-[206px] flex-col gap-1.5 overflow-y-auto rounded-xl border border-cyan-400/50 bg-slate-950/95 p-2 shadow-[0_10px_32px_rgba(0,0,0,0.9)] backdrop-blur-md">
+<div className="flex items-center justify-between border-b border-slate-800/90 pb-1">
+<div className="flex items-center gap-1.5">
+<span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-black text-cyan-300">{lane.name}</span>
+<span className="text-[10px] font-semibold text-slate-400">{count} {count === 1 ? 'clip' : 'clips'}</span>
+</div>
+<button type="button" onClick={() => setOpenLaneMenuId(null)} className="flex h-5 w-5 items-center justify-center rounded-md text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-white" title="Cerrar menú">✕</button>
+</div>
+<div className="grid grid-cols-2 gap-1.5">
+<button type="button" onClick={() => toggleTimelineLaneMute(lane.id)} className={cx('flex h-7 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-bold transition', lane.muted ? 'border-rose-400/60 bg-rose-500/20 text-rose-200' : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200')} title={lane.kind === 'audio' ? (lane.muted ? 'Activar sonido' : 'Silenciar pista') : (lane.muted ? 'Mostrar pista' : 'Ocultar pista')}>
+{lane.kind === 'audio' ? (<><span>{lane.muted ? '🔇' : '🔊'}</span><span>{lane.muted ? 'Muda' : 'Sonando'}</span></>) : (<><span>{lane.muted ? '🙈' : '👁️'}</span><span>{lane.muted ? 'Oculta' : 'Visible'}</span></>)}
+</button>
+<button type="button" onClick={() => duplicateTimelineLane(lane.id)} className="flex h-7 items-center justify-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 text-[11px] font-bold text-violet-200 transition hover:border-violet-400 hover:bg-violet-500/25" title={'Duplicar la pista ' + lane.name + ' con todos sus clips'}><span>📑</span><span>Duplicar</span></button>
+</div>
+<div className="grid grid-cols-4 gap-1.5">
+<button type="button" onClick={() => moveTimelineLane(lane.id, -1)} disabled={index <= 0} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30" title="Subir pista">↑</button>
+<button type="button" onClick={() => moveTimelineLane(lane.id, 1)} disabled={index >= siblings.length - 1} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-black text-slate-200 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-30" title="Bajar pista">↓</button>
+<button type="button" onClick={() => { addTimelineLane(lane.kind); setOpenLaneMenuId(null); }} className="flex h-7 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/15 text-[11px] font-bold text-cyan-200 transition hover:bg-cyan-500/25" title={'Crear nueva pista vacía de ' + lane.kind}>＋Pista</button>
+<button type="button" onClick={() => { deleteTimelineLane(lane.id); setOpenLaneMenuId(null); }} className="flex h-7 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs text-slate-400 transition hover:border-rose-500/60 hover:bg-rose-500/20 hover:text-rose-200" title="Eliminar esta pista">🗑️</button>
+</div>
+{(lane.kind === 'audio' || lane.kind === 'video') && (
+<div onPointerDown={(e) => e.stopPropagation()} className="mt-0.5 flex items-center gap-1.5 rounded-lg border border-slate-800/90 bg-slate-900/80 px-2 py-1.5" title="Volumen de la pista">
+<span className="shrink-0 text-xs">{(lane.volume ?? 1) === 0 ? '🔇' : '🔊'}</span>
+<input type="range" min={0} max={1} step={0.01} value={lane.volume ?? 1} onChange={(e) => setTimelineLaneVolume(lane.id, Number(e.target.value))} className="h-1.5 min-w-0 flex-1 cursor-pointer accent-cyan-400" />
+<span className="w-8 shrink-0 text-right font-mono text-[10px] font-black text-cyan-300">{Math.round((lane.volume ?? 1) * 100)}%</span>
+</div>
+)}
+</div>
+);
+})(),
+document.body
+)}
 {ctxMenu && typeof document !== 'undefined' && createPortal(
   <div
     className="fixed inset-0 z-[260]"
@@ -5675,6 +5914,59 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
             <span>✂️ Dividir aquí</span>
             <span className="font-mono text-[10px] text-slate-500">{formatTime(ctxMenu.timeAtCursor)}</span>
           </button>
+
+          {(ctxMenu.itemType === 'audio' || ctxMenu.itemType === 'clip' || ctxMenu.itemType === 'video') && (() => {
+            const curVol =
+              ctxMenu.itemType === 'audio'
+                ? (audioTracks.find((a) => a.id === ctxMenu.itemId)?.volume ?? 1)
+                : ctxMenu.itemType === 'clip'
+                ? (clips.find((c) => c.id === ctxMenu.itemId)?.volume ?? 1)
+                : (videoOverlays.find((v) => v.id === ctxMenu.itemId)?.volume ?? 1);
+            const isMutedItem =
+              ctxMenu.itemType === 'audio'
+                ? !!audioTracks.find((a) => a.id === ctxMenu.itemId)?.muted
+                : ctxMenu.itemType === 'clip'
+                ? !!clips.find((c) => c.id === ctxMenu.itemId)?.muted
+                : !!videoOverlays.find((v) => v.id === ctxMenu.itemId)?.muted;
+
+            const handleItemVol = (val: number) => {
+              if (!ctxMenu.itemId) return;
+              if (ctxMenu.itemType === 'audio') {
+                updateAudioTrack(ctxMenu.itemId, { volume: val, muted: val === 0 ? true : false });
+              } else if (ctxMenu.itemType === 'clip') {
+                updateClip(ctxMenu.itemId, { volume: val });
+                const linked = audioTracksRef.current.find((t) => t.sourceVideoId === ctxMenu.itemId && !t.released);
+                if (linked) updateAudioTrack(linked.id, { volume: val, muted: val === 0 ? true : false });
+              } else if (ctxMenu.itemType === 'video') {
+                updateVideoOverlay(ctxMenu.itemId, { volume: val, muted: val === 0 ? true : false });
+              }
+            };
+
+            return (
+              <>
+                <div className="my-1 h-px bg-slate-800/80" />
+                <div
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/70 px-2.5 py-1.5"
+                  title="Volumen del clip"
+                >
+                  <span className="shrink-0 text-xs">{isMutedItem || curVol === 0 ? '🔇' : '🔊'}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={isMutedItem ? 0 : curVol}
+                    onChange={(e) => handleItemVol(Number(e.target.value))}
+                    className="h-1.5 min-w-0 flex-1 cursor-pointer accent-emerald-400"
+                  />
+                  <span className="w-8 shrink-0 text-right font-mono text-[11px] font-black text-emerald-300">
+                    {isMutedItem ? '0%' : `${Math.round(curVol * 100)}%`}
+                  </span>
+                </div>
+              </>
+            );
+          })()}
 
           <div className="my-1 h-px bg-slate-800/80" />
 
@@ -5796,7 +6088,7 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
       <input ref={audioInputRef} type="file" accept="audio/*" multiple className="hidden" onChange={handleAudioUpload} />
 <input ref={voInputRef} type="file" accept="video/*" multiple className="hidden" onChange={handleVoUpload} />
       {audioTracks.map((track) => (<AudioElement key={track.id} track={track} onReady={registerAudio} onCleanup={unregisterAudio} />))}
-            <div className={cx('flex min-h-0 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_clamp(300px,26vw,380px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4', propsOpen && 'flex-1 [@media(orientation:landscape)_and_(max-width:1023px)]:flex-none')}>
+            <div className={cx('flex min-h-0 flex-1 flex-col gap-2 lg:grid lg:flex-1 lg:grid-cols-[116px_1fr_clamp(300px,26vw,380px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-4', propsOpen && 'flex-1 [@media(orientation:landscape)_and_(max-width:1023px)]:flex-none')}>
         {/* ===== RAIL LATERAL (solo desktop) ===== */}
 <aside className="hidden shrink-0 flex-row gap-2 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 p-2 lg:flex lg:min-h-0 lg:flex-col lg:gap-1 lg:order-1">
 <button onClick={() => fileInputRef.current?.click()} title="Agregar video"
@@ -5825,7 +6117,7 @@ className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounde
 <span className="w-full truncate whitespace-nowrap px-1 text-center text-[clamp(8px,1.3vh,11px)] font-semibold leading-tight">+ Superponer</span>
 </button>
 </aside>
-                       <div ref={previewBoxRef} className={fsMode !== 'none' ? 'fixed inset-0 z-[400] h-full w-full overflow-hidden bg-black' : 'relative h-[clamp(110px,20dvh,220px)] shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-black sm:h-[clamp(160px,26dvh,300px)] [@media(orientation:landscape)_and_(max-width:1023px)]:h-[42dvh] lg:h-auto lg:min-h-0 lg:order-2'}>
+                       <div ref={previewBoxRef} className={fsMode !== 'none' ? 'fixed inset-0 z-[400] h-full w-full overflow-hidden bg-black' : 'relative min-h-[150px] flex-1 overflow-hidden rounded-xl border border-slate-800 bg-black sm:min-h-[180px] [@media(orientation:landscape)_and_(max-width:1023px)]:h-[42dvh] [@media(orientation:landscape)_and_(max-width:1023px)]:flex-none lg:h-auto lg:min-h-0 lg:flex-none lg:order-2'}>
           <div ref={wrapperRef} className="relative h-full w-full">
             {stage && stage.width > 0 && (
               <div ref={stageRef} className="absolute overflow-hidden bg-black" style={{ left: stage.left, top: stage.top, width: stage.width, height: stage.height }}>
@@ -6655,7 +6947,7 @@ Recordar mi elección
         </div>
       </div>
       {/* ===== TIMELINE CON ZOOM ===== */}
-      <div className={cx('relative min-h-[110px] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/60 [@media(orientation:landscape)_and_(max-width:1023px)]:min-h-[70px] lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0', propsOpen ? 'hidden lg:flex [@media(orientation:landscape)_and_(max-width:1023px)]:flex' : 'flex')} style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
+      <div className={cx('relative flex-none h-[32dvh] min-h-[120px] max-h-[280px] flex-col rounded-xl border border-slate-800 bg-slate-900/60 [@media(orientation:landscape)_and_(max-width:1023px)]:h-[38dvh] [@media(orientation:landscape)_and_(max-width:1023px)]:min-h-[70px] [@media(orientation:landscape)_and_(max-width:1023px)]:max-h-none lg:h-[34vh] lg:min-h-[260px] lg:max-h-[420px] lg:flex-none lg:shrink-0', propsOpen ? 'hidden lg:flex [@media(orientation:landscape)_and_(max-width:1023px)]:flex' : 'flex')} style={{ '--tz': String(clamp(pps / DEFAULT_PPS, 1, 1.5)) } as React.CSSProperties}>
                 <div className="absolute right-1 top-1 z-50 flex items-center gap-0.5 rounded-md border border-slate-700 bg-slate-950/95 p-0.5 shadow-lg shadow-black/40 backdrop-blur lg:right-3 lg:top-3 lg:gap-1 lg:rounded-lg lg:p-1">
           <button onClick={() => zoomBy(1 / 1.25)} className="rounded px-1.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-800 lg:px-2 lg:py-0.5" title="Alejar">−</button>
           <span className="w-8 text-center font-mono text-[9px] text-cyan-300 lg:w-12 lg:text-[10px]">{Math.round((pps / DEFAULT_PPS) * 100)}%</span>
@@ -6781,7 +7073,13 @@ Recordar mi elección
       const isSelected = isEventSelected(vo.id); const width = (vo.end - vo.start) * pps; const left = vo.start * pps;
       const isDraggingThis = dropPreview !== null && isSelected;
       return <div key={vo.id} data-timeline-event="true" data-clip-item={`video:${vo.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, vo.id, 'video', 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`absolute bottom-1 top-1 select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-amber-300 bg-amber-500/35 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : isSelected ? 'z-20 cursor-grab border-amber-400 bg-amber-500/20 ring-1 ring-amber-400' : 'z-10 cursor-grab border-amber-400/60 bg-amber-500/10'}`} title="Shift + clic para selección múltiple · arrastrá para mover o cambiar de pista">
-        <div className="relative z-10 flex h-full items-center justify-between gap-1">
+        {/* gain-line-vo */}
+{(() => { const muted = vo.muted || isLaneMuted(vo.laneId); const vol = muted ? 0 : clamp((vo.volume ?? 1) * getLaneVolume(vo.laneId), 0, 1); const gainTop = (1 - vol) * 100; return (
+<div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: `calc(${gainTop}% - ${(1 - vol) * 2}px)` }}>
+<div className={cx('h-[2px] w-full', muted ? 'bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.8)]' : 'bg-green-400 shadow-[0_0_7px_rgba(74,222,128,0.9)]')} />
+</div>
+); })()}
+<div className="relative z-10 flex h-full items-center justify-between gap-1">
           <p className="truncate text-[10px] font-semibold text-amber-100 drop-shadow"><IconVideo className="mr-1 inline h-3 w-3" />{vo.name}{vo.muted ? ' 🔇' : ''}</p>
           {isDraggingThis && (
             <span className="shrink-0 rounded bg-slate-950/90 px-1 py-0.5 font-mono text-[9px] font-black text-cyan-300">
@@ -6881,6 +7179,12 @@ title={hasTransition ? `${TRANSITION_TYPES.find((t) => t.id === c.transition?.ty
                   return <div key={track.id} className="pointer-events-none absolute inset-0">
                     <div data-timeline-event="true" data-clip-item={`audio:${track.id}`} onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', linked ? 'lane' : 'move')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} style={{ left, width }} className={`pointer-events-auto bottom-1 top-1 ` +`absolute select-none touch-none overflow-hidden rounded-md border px-2 transition-transform ${isDraggingThis ? 'z-40 scale-[1.02] cursor-grabbing border-green-300 bg-green-500/30 ring-2 ring-cyan-300 shadow-[0_8px_24px_rgba(0,0,0,0.75)]' : linked ? 'z-10 cursor-grab border-green-400/40 bg-green-500/5' : isSelected ? 'z-20 cursor-grab border-green-400 bg-green-500/20 ring-1 ring-green-400' : 'z-10 cursor-grab border-green-400/60 bg-green-500/10'}`} title={linked ? '🔗 Vinculado: sigue al video · arrastrá vertical para cambiar de pista' : 'Shift + clic para selección múltiple · arrastrá para mover'}>
                       <WaveformCanvas id={track.id} offset={g.offset} duration={g.duration} sourceDuration={track.duration} assetKey={track.assetId} peaks={track.peaks} width={width} selected={isSelected} speed={g.speed || 1} trackStart={g.start} scrollRef={timelineScrollRef} />
+{(() => { const vol = track.muted ? 0 : clamp(track.volume ?? 1, 0, 1); const gainTop = (1 - vol) * 100; return (
+<div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: `calc(${gainTop}% - ${(1 - vol) * 2}px)` }}>
+<div className={cx('h-[2px] w-full', track.muted ? 'bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.8)]' : 'bg-green-400 shadow-[0_0_7px_rgba(74,222,128,0.9)]')} />
+</div>
+); })()}
+
                       {track.sourceVideoId && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleRelease(track.id); }} className="absolute right-1 top-0.5 z-20 rounded px-1 text-[11px] transition-colors hover:bg-slate-800" title={linked ? 'Liberar audio (edición independiente)' : 'Re-vincular al video'}>{linked ? '🔒' : '🔓'}</button>}
                       <p className="relative z-10 truncate pr-5 text-[10px] font-semibold text-green-200 drop-shadow">🎵 {track.name}{linked ? ' 🔗' : track.sourceVideoId ? ' (video)' : ''}</p>
                       {!linked && <div onPointerDown={(e) => startOverlayTimeDrag(e, track.id, 'audio', 'start')} onPointerMove={moveOverlayTimeDrag} onPointerUp={endOverlayTimeDrag} onPointerCancel={endOverlayTimeDrag} className="absolute bottom-0 left-0 top-0 w-1.5 cursor-ew-resize touch-none bg-green-400/50 hover:bg-green-400" />}

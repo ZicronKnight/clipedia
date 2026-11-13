@@ -1,0 +1,157 @@
+// aplicar-export-modal-pro.mjs — modal de exportación rediseñado (desktop + móvil) + pausa/cancel reales
+import fs from 'node:fs';
+const PATH = 'components/studio/Studio.tsx';
+let src = fs.readFileSync(PATH, 'utf8');
+fs.writeFileSync(PATH + '.bak-exportpro', src);
+const ops = [];
+function rep(name, search, replace) {
+  const c = src.split(search).length - 1;
+  if (c !== 1) { console.error('❌ [' + name + '] ancla ' + c + ' veces (esperaba 1). NO se tocó nada.'); process.exit(1); }
+  src = src.replace(search, replace); ops.push(name);
+}
+function repAll(name, search, replace, expect) {
+  const c = src.split(search).length - 1;
+  if (c !== expect) { console.error('❌ [' + name + '] ancla ' + c + ' veces (esperaba ' + expect + '). NO se tocó nada.'); process.exit(1); }
+  src = src.split(search).join(replace); ops.push(name);
+}
+function span(name, start, end, content) {
+  const s = src.indexOf(start); const e = src.indexOf(end);
+  if (s === -1 || e === -1 || e <= s) { console.error('❌ [' + name + '] span no encontrado. NO se tocó nada.'); process.exit(1); }
+  src = src.slice(0, s) + content + src.slice(e); ops.push(name);
+}
+
+// 1) Estado + refs de pausa/cancel
+rep('state', 'const [exportProgress, setExportProgress] = useState<ExportProgress>(null);',
+'const [exportProgress, setExportProgress] = useState<ExportProgress>(null);\nconst [exportPaused, setExportPaused] = useState(false);\nconst exportPausedRef = useRef(false);\nconst exportCancelledRef = useRef(false);\nconst exportFFRef = useRef<any>(null);\nconst exportNameRef = useRef<HTMLInputElement>(null);');
+
+// 2) Helpers de pausa/cancel
+rep('helpers', 'function openExportModal() {',
+'function setExportPausedBoth(v: boolean) { exportPausedRef.current = v; setExportPaused(v); }\nasync function waitWhileExportPaused() {\nwhile (exportPausedRef.current && !exportCancelledRef.current) { await new Promise((r) => setTimeout(r, 150)); }\nif (exportCancelledRef.current) throw new Error("EXPORT_CANCELLED");\n}\nfunction cancelExport() {\nexportCancelledRef.current = true; exportPausedRef.current = false; setExportPaused(false);\nif (exportFFRef.current) { try { exportFFRef.current.terminate(); } catch (e) {} }\n}\nfunction openExportModal() {');
+
+// 3) Chunked: reset + ff ref + checkpoints + cancel
+rep('chunk-reset', 'async function runExportChunked() {', 'async function runExportChunked() {\nexportCancelledRef.current = false; exportPausedRef.current = false; setExportPaused(false);');
+rep('chunk-ff', "ff.on('log', ({ message }: any) => { console.log('[FFmpeg Chunked]', message); ffLogs.push(String(message)); if (ffLogs.length > 300) ffLogs.shift(); });", "ff.on('log', ({ message }: any) => { console.log('[FFmpeg Chunked]', message); ffLogs.push(String(message)); if (ffLogs.length > 300) ffLogs.shift(); });\nexportFFRef.current = ff;");
+rep('chunk-loop', 'for (const chk of chunks) {', 'for (const chk of chunks) {\nawait waitWhileExportPaused();');
+rep('chunk-concat', '// ===== FASE 2: CONCAT DE VIDEO =====', 'await waitWhileExportPaused();\n// ===== FASE 2: CONCAT DE VIDEO =====');
+rep('chunk-audio', '// ===== FASE 3: AUDIO CONTINUO (un solo encode = cero saltos) =====', 'await waitWhileExportPaused();\n// ===== FASE 3: AUDIO CONTINUO (un solo encode = cero saltos) =====');
+rep('chunk-merge', '// ===== FASE 4: MERGE FINAL =====', 'await waitWhileExportPaused();\n// ===== FASE 4: MERGE FINAL =====');
+rep('chunk-cancel', "console.error('[ExportChunked] ERROR FATAL:', error);", 'if (exportCancelledRef.current || String(error?.message || "").includes("EXPORT_CANCELLED")) { showToast("⊘ Exportación cancelada", "info"); setExportProgress(null); return; }\nconsole.error(\'[ExportChunked] ERROR FATAL:\', error);');
+
+// 4) Classic: reset + ff ref + checkpoint + cancel
+rep('classic-reset', 'if (needsChunked) { await runExportChunked(); return; }\nsetExporting(true);', 'if (needsChunked) { await runExportChunked(); return; }\nsetExporting(true);\nexportCancelledRef.current = false; exportPausedRef.current = false; setExportPaused(false);');
+rep('classic-ff', "ff.on('log', ({ message }: any) => { console.log('[FFmpeg Log]', message); ffLogs.push(message); });", "ff.on('log', ({ message }: any) => { console.log('[FFmpeg Log]', message); ffLogs.push(message); });\nexportFFRef.current = ff;");
+rep('classic-pause', 'let execError = null;', 'await waitWhileExportPaused();\nlet execError = null;');
+rep('classic-cancel', "console.error('[Export] ERROR FATAL:', error);", 'if (exportCancelledRef.current || String(error?.message || "").includes("EXPORT_CANCELLED")) { showToast("⊘ Exportación cancelada", "info"); setExportProgress(null); return; }\nconsole.error(\'[Export] ERROR FATAL:\', error);');
+
+// 5) finally: limpiar ff ref (ambos caminos)
+repAll('finally-reset', 'if (ff) { try { await ff.terminate(); } catch (e) {} }', 'if (ff) { try { await ff.terminate(); } catch (e) {} }\nexportFFRef.current = null;', 2);
+
+// 6) Reemplazo completo del modal
+span('modal', 'const exportModal = showExportModal', 'const commentStudioUI = commentStudioOpen',
+`const expDurLabel = (() => { const t = projectDuration; const h = Math.floor(t / 3600); const m = Math.floor((t % 3600) / 60); const s = Math.floor(t % 60); const cs = Math.floor((t % 1) * 100); const p = (n: number) => String(n).padStart(2, '0'); return p(h) + ':' + p(m) + ':' + p(s) + '.' + p(cs); })();
+const expBitrate = (() => { const base: Record<string, number> = { '480p': 2.5, '720p': 5, '1080p': 12, '4K': 40 }; const q: Record<string, number> = { fast: 0.7, balanced: 1, high: 1.4 }; return ((base[exportSettings.resolution] || 12) * (q[exportSettings.quality] || 1)).toFixed(1); })();
+const expThumb = clips.length ? (filmstripCache.get(clips[0].assetId) || [])[0] : undefined;
+const expClock = (sec: number) => { const m = Math.floor(sec / 60); const s = Math.floor(sec % 60); const p = (n: number) => String(n).padStart(2, '0'); return p(m) + ':' + p(s); };
+const exportModal = showExportModal && typeof document !== 'undefined' ? createPortal(
+<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-4">
+<style>{'.export-scroll::-webkit-scrollbar{width:8px}.export-scroll::-webkit-scrollbar-track{background:#0a0e27;border-radius:8px}.export-scroll::-webkit-scrollbar-thumb{background:linear-gradient(#22d3ee,#8b5cf6);border-radius:8px}.export-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(#67e8f9,#a78bfa)}'}</style>
+<div className="relative flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border-2 border-transparent shadow-2xl shadow-cyan-500/20" style={{ background: 'linear-gradient(#0a0e27,#0a0e27) padding-box, linear-gradient(135deg,#22d3ee,#8b5cf6,#d946ef) border-box' }}>
+<div className="flex shrink-0 items-center justify-between border-b border-cyan-500/20 px-5 py-4">
+<div className="flex items-center gap-3">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-7 w-7 text-cyan-400" aria-hidden="true"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><path d="M16 6l-4-4-4 4" /><path d="M12 2v14" /></svg>
+<h2 className="text-2xl font-black tracking-tight"><span className="bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">Exportar</span> <span className="bg-gradient-to-r from-violet-400 to-fuchsia-500 bg-clip-text text-transparent">Video</span></h2>
+</div>
+<button onClick={() => { if (exporting) cancelExport(); setShowExportModal(false); }} className="rounded-lg p-1.5 text-slate-300 transition hover:bg-white/10 hover:text-white" title="Cerrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="h-6 w-6"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
+</div>
+<div className="export-scroll flex-1 overflow-y-auto px-5 py-4">
+<div className="flex items-center gap-4">
+<div className="w-36 shrink-0 sm:w-44">
+<svg viewBox="0 0 220 170" className="h-auto w-full drop-shadow-[0_0_24px_rgba(99,102,241,0.45)]" aria-hidden="true"><defs><linearGradient id="expClapBody" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#22d3ee" /><stop offset="0.5" stopColor="#6366f1" /><stop offset="1" stopColor="#a855f7" /></linearGradient><linearGradient id="expClapTop" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#67e8f9" /><stop offset="1" stopColor="#818cf8" /></linearGradient><linearGradient id="expRing" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#22d3ee" /><stop offset="1" stopColor="#a855f7" /></linearGradient></defs><ellipse cx="110" cy="122" rx="96" ry="26" fill="none" stroke="url(#expRing)" strokeWidth="5" opacity="0.7" transform="rotate(-10 110 122)" /><g transform="rotate(-14 110 88)"><rect x="42" y="26" width="136" height="26" rx="7" fill="url(#expClapTop)" /><path d="M52 26 l14 0 -10 26 -14 0 Z" fill="#0a0e27" opacity="0.55" /><path d="M84 26 l14 0 -10 26 -14 0 Z" fill="#0a0e27" opacity="0.55" /><path d="M116 26 l14 0 -10 26 -14 0 Z" fill="#0a0e27" opacity="0.55" /><path d="M148 26 l14 0 -10 26 -14 0 Z" fill="#0a0e27" opacity="0.55" /><rect x="42" y="52" width="136" height="86" rx="12" fill="url(#expClapBody)" /><rect x="42" y="52" width="136" height="86" rx="12" fill="#ffffff" opacity="0.06" /><path d="M96 76 L96 116 L130 96 Z" fill="#0a0e27" opacity="0.8" /></g><path d="M20 60 l4 10 10 4 -10 4 -4 10 -4 -10 -10 -4 10 -4 Z" fill="#67e8f9" /><path d="M196 40 l3 8 8 3 -8 3 -3 8 -3 -8 -8 -3 8 -3 Z" fill="#a78bfa" /><path d="M186 128 l3 7 7 3 -7 3 -3 7 -3 -7 -7 -3 7 -3 Z" fill="#22d3ee" /></svg>
+</div>
+<p className="text-sm leading-relaxed text-slate-300 sm:text-base">Elige las opciones y exporta tu video en el formato deseado.</p>
+</div>
+<div className="my-4 h-px bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent" />
+<div className="space-y-3">
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div className="flex items-center gap-2 sm:w-36"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5 text-cyan-400"><rect x="2" y="4" width="20" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></svg><span className="text-sm font-bold text-slate-100">Resolución:</span></div>
+<div className="flex flex-1 gap-2">
+{(Object.keys(RESOLUTION_PRESETS) as Resolution[]).map((r) => (
+<button key={r} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, resolution: r }))} className={cx('flex-1 rounded-lg border px-2 py-2 text-sm font-bold transition disabled:opacity-50', exportSettings.resolution === r ? 'border-cyan-400 bg-gradient-to-b from-blue-600/60 to-blue-900/40 text-white shadow-[0_0_12px_rgba(34,211,238,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>{r}</button>
+))}
+</div>
+</div>
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div className="flex items-center gap-2 sm:w-36"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5 text-cyan-400"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg><span className="text-sm font-bold text-slate-100">Formato:</span></div>
+<div className="flex flex-1 gap-2">
+{(Object.keys(FORMAT_PRESETS) as ExportFormat[]).map((f) => (
+<button key={f} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, format: f }))} className={cx('flex-1 rounded-lg border px-2 py-2 text-sm font-bold uppercase transition disabled:opacity-50', exportSettings.format === f ? 'border-cyan-400 bg-gradient-to-b from-blue-600/70 to-blue-900/40 text-white shadow-[0_0_12px_rgba(34,211,238,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>{f}</button>
+))}
+</div>
+</div>
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div className="flex items-center gap-2 sm:w-36"><svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 text-cyan-400"><path d="M13 2 3 14h7l-1 8 10-12h-7z" /></svg><span className="text-sm font-bold text-slate-100">Calidad:</span></div>
+<div className="flex flex-1 gap-2">
+{(Object.keys(QUALITY_PRESETS) as Quality[]).map((q) => (
+<button key={q} disabled={exporting} onClick={() => setExportSettings((s) => ({ ...s, quality: q }))} className={cx('flex flex-1 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-sm font-bold transition disabled:opacity-50', exportSettings.quality === q ? 'border-cyan-400 bg-gradient-to-r from-violet-600/70 to-fuchsia-600/50 text-white shadow-[0_0_12px_rgba(168,85,247,0.5)]' : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500')}>
+<span>{q === 'fast' ? '⚡' : q === 'balanced' ? '⚖️' : '💎'}</span><span className="truncate">{QUALITY_PRESETS[q].label}</span>
+</button>
+))}
+</div>
+</div>
+</div>
+<div className="my-4 h-px bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent" />
+<div className="mb-2 flex items-center gap-2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 text-cyan-400"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" /></svg><span className="text-sm font-bold text-slate-100">Nombre de Archivo:</span></div>
+<div className="flex items-center gap-2">
+<input ref={exportNameRef} type="text" value={exportSettings.filename} disabled={exporting} onChange={(e) => setExportSettings((s) => ({ ...s, filename: e.target.value }))} className="flex-1 rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400 disabled:opacity-50" placeholder="Mi Video Editado" />
+<button onClick={() => { exportNameRef.current?.focus(); exportNameRef.current?.select(); showToast('📁 El archivo se guarda en tu carpeta de Descargas', 'info'); }} disabled={exporting} className="rounded-lg border border-violet-500/50 bg-violet-500/15 p-2.5 text-violet-300 transition hover:bg-violet-500/25 disabled:opacity-50" title="Carpeta de destino"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" /></svg></button>
+</div>
+<div className="mt-4 rounded-xl border border-transparent p-3" style={{ background: 'linear-gradient(#141b3d,#141b3d) padding-box, linear-gradient(135deg,#22d3ee,#8b5cf6) border-box' }}>
+<div className="flex gap-3">
+<div className="relative h-24 w-36 shrink-0 overflow-hidden rounded-lg border border-cyan-500/30 sm:h-28 sm:w-44">
+{expThumb ? <img src={expThumb} alt="Preview" className="h-full w-full object-cover" /> : <div className="h-full w-full bg-gradient-to-br from-fuchsia-600 via-violet-700 to-blue-800" />}
+<div className="absolute inset-0 flex items-center justify-center"><span className="flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white"><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M8 5v14l11-7z" /></svg></span></div>
+</div>
+<div className="min-w-0 flex-1 text-xs sm:text-sm">
+<div className="mb-1 flex items-center gap-1.5 font-bold text-cyan-400"><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2zm0-8h-2V7h2z" /></svg>Resumen del Render:</div>
+<div className="space-y-0.5 text-slate-300">
+<p>Canvas: <span className="text-slate-100">{REF_WIDTH + ' × ' + REF_HEIGHT + ' (' + exportSettings.ratio + ')'}</span></p>
+<p>Encuadre: <span className="text-slate-100">{exportSettings.fit === 'recortar' ? 'Recortar' : 'Completo'}</span></p>
+<p>Duración: <span className="text-slate-100">{expDurLabel + ' (' + projectDuration.toFixed(2) + ' s)'}</span></p>
+<p>Velocidad de bits: <span className="text-slate-100">{'~' + expBitrate + ' Mbps (estimado)'}</span></p>
+</div>
+</div>
+</div>
+</div>
+{exportProgress && (
+<div className="mt-4">
+<div className="mb-2 flex items-center justify-between">
+<div className="flex items-center gap-2 text-sm text-slate-200"><span className={cx('inline-block h-4 w-4 rounded-full border-2 border-cyan-400 border-t-transparent', !exportPaused && 'animate-spin')} />{exportPaused ? 'En pausa' : exportProgress.phase === 'packaging' ? 'Empaquetando…' : exportProgress.phase === 'done' ? '¡Listo!' : 'Renderizando video…'}</div>
+<span className="text-lg font-black text-cyan-400">{exportProgress.percent + '%'}</span>
+</div>
+<div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500 transition-all duration-300" style={{ width: exportProgress.percent + '%' }} /></div>
+<div className="mt-2 flex items-center gap-3 text-xs text-slate-400"><span>{'Tiempo estimado: ' + expClock(Math.max(0, ((performance.now() - renderStartRef.current) / 1000) * (100 - exportProgress.percent) / Math.max(exportProgress.percent, 1)))}</span><span className="text-slate-600">|</span><span>{'Velocidad: ' + (exportProgress.speed > 0 ? exportProgress.speed + 'x' : '—')}</span></div>
+</div>
+)}
+</div>
+<div className="flex shrink-0 items-center justify-end gap-3 border-t border-cyan-500/20 px-5 py-4">
+{exporting ? (
+<>
+<button onClick={() => setExportPausedBoth(!exportPaused)} className="flex items-center gap-2 rounded-xl border-2 border-cyan-400 bg-cyan-500/10 px-5 py-2.5 text-sm font-black text-cyan-300 transition hover:bg-cyan-500/20">{exportPaused ? <><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M8 5v14l11-7z" /></svg>Reanudar</> : <><svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>Pausar</>}</button>
+<button onClick={cancelExport} className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:scale-[1.02]"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="h-4 w-4"><path d="M18 6 6 18M6 6l12 12" /></svg>Cancelar</button>
+</>
+) : (
+<>
+<button onClick={() => setShowExportModal(false)} className="rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-bold text-slate-300 transition hover:border-slate-500">Cancelar</button>
+<button onClick={runExport} className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-6 py-2.5 text-sm font-black text-black shadow-lg shadow-cyan-500/25 transition hover:scale-[1.02]"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>{'Exportar ' + exportSettings.resolution + ' ' + exportSettings.format.toUpperCase()}</button>
+</>
+)}
+</div>
+</div>
+</div>,
+document.body
+) : null;
+`);
+
+fs.writeFileSync(PATH, src);
+console.log('✅ Export modal PRO aplicado:', ops.join(', '));
+console.log('📦 Backup en:', PATH + '.bak-exportpro');
