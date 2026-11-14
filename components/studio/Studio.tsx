@@ -8,6 +8,7 @@ import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, as
 import { extractSegment, extractAudioSegment } from './segmentExtractor';
 import { computeChunkBoundaries } from './chunkedExport';
 import { CommentStudioModal } from './commentStudio';
+import { AnimPicker } from './AnimPicker';
 
 
 type TransitionType =
@@ -6590,7 +6591,7 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
       const cur = selectedText.subStyle || 'static';
       return (
         <button key={st.id} onClick={() => updateTextOverlay(selectedText.id, { subStyle: st.id, highlightColor: selectedText.highlightColor || '#facc15' })}
-          className={cx('rounded-lg border px-2 py-1.5 text-[11px] font-bold transition', cur === st.id ? 'border-fuchsia-400 bg-fuchsia-500/20 text-fuchsia-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
+          className={cx('rounded-lg border px-1 py-1.5 text-[11px] font-bold transition', cur === st.id ? 'border-fuchsia-400 bg-fuchsia-500/20 text-fuchsia-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600')}>
           {st.label}
         </button>
       );
@@ -6709,24 +6710,20 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <div data-anim-inout="text" className="space-y-2 border-t border-slate-800 pt-3">
   <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
-    <select value={selectedText.animIn || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-      {TEXT_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
-    </select>
+    <AnimPicker value={selectedText.animIn || 'none'} options={TEXT_ANIM_IN_KEYS} labels={ANIM_IN_LABELS} direction="in" accent="fuchsia" onChange={(v) => updateTextOverlay(selectedText.id, { animIn: v as OverlayAnim })} />
   </label>
   {selectedText.animIn && selectedText.animIn !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedText.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animInDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
-    <select value={selectedText.animOut || 'none'} onChange={(e) => updateTextOverlay(selectedText.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-fuchsia-400">
-      {TEXT_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
-    </select>
+    <AnimPicker value={selectedText.animOut || 'none'} options={TEXT_ANIM_OUT_KEYS} labels={ANIM_OUT_LABELS} direction="out" accent="fuchsia" onChange={(v) => updateTextOverlay(selectedText.id, { animOut: v as OverlayAnimOut })} />
   </label>
   {selectedText.animOut && selectedText.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedText.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedText.animOutDur ?? 0.5} onChange={(e) => updateTextOverlay(selectedText.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-fuchsia-400" /></label>
   )}
   {selectedText.kind === 'subtitulo' && (
     <button onClick={() => applyStyleToAllSubtitles(selectedText)} className="mt-2 w-full rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 py-2 text-xs font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Aplica las animaciones, fades y estilo de este subtítulo a toda la pista SUB">
-      📑 Aplicar animaciones y estilo a todos los subtítulos
+      📑 Aplicar animaciones y estilo <br /> a todos los subtítulos
     </button>
   )}
   <p className="text-[10px] leading-relaxed text-slate-500">Paridad 1:1 entre el preview y el exportador de FFmpeg.</p>
@@ -6738,17 +6735,13 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <div data-anim-inout="image" className="space-y-2 border-t border-slate-800 pt-3">
   <p className="text-[10px] font-black uppercase tracking-wider text-pink-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
-    <select value={selectedImage.animIn || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
-      {MEDIA_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
-    </select>
+    <AnimPicker value={selectedImage.animIn || 'none'} options={MEDIA_ANIM_IN_KEYS} labels={ANIM_IN_LABELS} direction="in" accent="pink" onChange={(v) => updateImageOverlay(selectedImage.id, { animIn: v as OverlayAnim })} />
   </label>
   {selectedImage.animIn && selectedImage.animIn !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedImage.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animInDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
-    <select value={selectedImage.animOut || 'none'} onChange={(e) => updateImageOverlay(selectedImage.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-pink-400">
-      {MEDIA_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
-    </select>
+    <AnimPicker value={selectedImage.animOut || 'none'} options={MEDIA_ANIM_OUT_KEYS} labels={ANIM_OUT_LABELS} direction="out" accent="pink" onChange={(v) => updateImageOverlay(selectedImage.id, { animOut: v as OverlayAnimOut })} />
   </label>
   {selectedImage.animOut && selectedImage.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedImage.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedImage.animOutDur ?? 0.5} onChange={(e) => updateImageOverlay(selectedImage.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-pink-400" /></label>
@@ -6762,17 +6755,13 @@ title={sh === 'none' ? 'Rectangular' : sh === 'round' ? 'Bordes redondeados' : '
 <div data-anim-inout="vo" className="space-y-2 border-t border-slate-800 pt-3">
   <p className="text-[10px] font-black uppercase tracking-wider text-amber-300">🎬 Movimiento · entrada / salida</p>
   <label className="block text-xs font-semibold text-slate-300">Animación de entrada
-    <select value={selectedVo.animIn || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animIn: e.target.value as OverlayAnim })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-      {MEDIA_ANIM_IN_KEYS.map((a) => (<option key={a} value={a}>{ANIM_IN_LABELS[a]}</option>))}
-    </select>
+    <AnimPicker value={selectedVo.animIn || 'none'} options={MEDIA_ANIM_IN_KEYS} labels={ANIM_IN_LABELS} direction="in" accent="amber" onChange={(v) => updateVideoOverlay(selectedVo.id, { animIn: v as OverlayAnim })} />
   </label>
   {selectedVo.animIn && selectedVo.animIn !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración entrada: {(selectedVo.animInDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animInDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animInDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
   )}
   <label className="block text-xs font-semibold text-slate-300">Animación de salida
-    <select value={selectedVo.animOut || 'none'} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOut: e.target.value as OverlayAnimOut })} className="mt-1 w-full rounded-lg bg-slate-800 px-2 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-400">
-      {MEDIA_ANIM_OUT_KEYS.map((a) => (<option key={a} value={a}>{ANIM_OUT_LABELS[a]}</option>))}
-    </select>
+    <AnimPicker value={selectedVo.animOut || 'none'} options={MEDIA_ANIM_OUT_KEYS} labels={ANIM_OUT_LABELS} direction="out" accent="amber" onChange={(v) => updateVideoOverlay(selectedVo.id, { animOut: v as OverlayAnimOut })} />
   </label>
   {selectedVo.animOut && selectedVo.animOut !== 'none' && (
     <label className="block select-none text-xs text-slate-400">Duración salida: {(selectedVo.animOutDur ?? 0.5).toFixed(1)}s <input type="range" min={0.1} max={3} step={0.1} value={selectedVo.animOutDur ?? 0.5} onChange={(e) => updateVideoOverlay(selectedVo.id, { animOutDur: Number(e.target.value) })} className="mt-1 w-full accent-amber-400" /></label>
