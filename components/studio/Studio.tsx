@@ -8,6 +8,7 @@ import { ASR_MODELS, ASR_LANGS, AsrModelId, AsrLanguage, asrDownloadedModels, as
 import { extractSegment, extractAudioSegment } from './segmentExtractor';
 import { computeChunkBoundaries } from './chunkedExport';
 import { CommentStudioModal } from './commentStudio';
+import { MediaLibraryModal, SfxResult, StickerResult } from './mediaLibrary';
 import { AnimPicker } from './AnimPicker';
 
 
@@ -36,6 +37,8 @@ adjust?: FilterSpec;
   transition?: { type: TransitionType; duration: number };
 };
 type ImageOverlay = {
+chroma?: boolean; chromaColor?: string; chromaSimilarity?: number; chromaBlend?: number;
+sticker?: { frames: number; fps: number; fw: number; fh: number; loop: boolean };
   id: string; assetId: string; name: string; url: string; start: number; end: number;
   x: number; y: number; size: number; rotate: 0 | 90 | 180 | 270; fadeIn: number; fadeOut: number;
 animIn?: OverlayAnim; animInDur?: number; animOut?: OverlayAnimOut; animOutDur?: number;
@@ -458,7 +461,7 @@ function hexToRgb255(hex: string): [number, number, number] {
   if (Number.isNaN(n)) return [0, 255, 0];
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-function chromaFilterFF(vo: VideoOverlay): string {
+function chromaFilterFF(vo: { chroma?: boolean; chromaColor?: string; chromaSimilarity?: number; chromaBlend?: number }): string {
   if (!vo.chroma) return '';
   const col = (vo.chromaColor || '#00ff00').replace('#', '0x');
   // colorkey trabaja en espacio RGB directo (igual que nuestro Canvas 2D del preview),
@@ -467,16 +470,24 @@ function chromaFilterFF(vo: VideoOverlay): string {
   const blend = clamp(vo.chromaBlend ?? 0.05, 0.005, 0.4).toFixed(3);
   return `colorkey=${col}:${sim}:${blend},`;
 }
-function sampleCornerHex(videoEl: HTMLVideoElement | undefined): string | null {
-  if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return null;
+function sampleCornerHex(
+  el: HTMLVideoElement | HTMLImageElement | undefined | null,
+  rect?: { x: number; y: number; w: number; h: number }
+): string | null {
+  if (!el) return null;
+  const isVid = typeof HTMLVideoElement !== 'undefined' && el instanceof HTMLVideoElement;
+  const sw = isVid ? (el as HTMLVideoElement).videoWidth : (el as HTMLImageElement).naturalWidth;
+  const sh = isVid ? (el as HTMLVideoElement).videoHeight : (el as HTMLImageElement).naturalHeight;
+  if (!sw || !sh) return null;
   try {
     const c = document.createElement('canvas');
     c.width = 16;
     c.height = 16;
     const ctx = c.getContext('2d');
     if (!ctx) return null;
-    ctx.drawImage(videoEl, 0, 0, 16, 16);
-    // Promediamos un bloque de 4x4 en la esquina superior izquierda (lejos del personaje central)
+    if (rect && rect.w > 0 && rect.h > 0) ctx.drawImage(el, rect.x, rect.y, rect.w, rect.h, 0, 0, 16, 16);
+    else ctx.drawImage(el, 0, 0, 16, 16);
+    // Promediamos un bloque 4x4 de la esquina superior izquierda (lejos del sujeto central)
     const data = ctx.getImageData(1, 1, 4, 4).data;
     let r = 0, g = 0, b = 0, count = 0;
     for (let i = 0; i < data.length; i += 4) {
@@ -488,6 +499,7 @@ function sampleCornerHex(videoEl: HTMLVideoElement | undefined): string | null {
     return null;
   }
 }
+
 function ChromaVideoCanvas({
   vo,
   videoEl,
@@ -551,6 +563,63 @@ function ChromaVideoCanvas({
   }, [vo.chroma, vo.chromaColor, vo.chromaSimilarity, vo.chromaBlend, active, videoEl]);
 
   if (!vo.chroma) return null;
+  return <canvas ref={canvasRef} className="pointer-events-none block h-auto w-full" />;
+}
+function ChromaImageCanvas({ src, color, similarity, blend, frame }: {
+  src: string;
+  color: string;
+  similarity: number;
+  blend: number;
+  frame?: { frames: number; fw: number; fh: number; index: number };
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    setReady(false);
+    const im = new Image();
+    im.onload = () => { if (!dead) { imgRef.current = im; setReady(true); } };
+    im.onerror = () => { if (!dead) { imgRef.current = null; setReady(false); } };
+    im.src = src;
+    return () => { dead = true; };
+  }, [src]);
+  useEffect(() => {
+    const cv = canvasRef.current;
+    const im = imgRef.current;
+    if (!cv || !im || !ready) return;
+    const sx = frame ? frame.index * frame.fw : 0;
+    const sw = frame ? frame.fw : im.naturalWidth;
+    const sh = frame ? frame.fh : im.naturalHeight;
+    if (!sw || !sh) return;
+    const w = Math.max(2, Math.min(768, sw));
+    const h = Math.max(2, Math.round((w * sh) / sw));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(im, sx, 0, sw, sh, 0, 0, w, h);
+    const [kr, kg, kb] = hexToRgb255(color);
+    const maxDist = 441.67295593;
+    const simDist = clamp(similarity, 0.01, 0.6) * maxDist;
+    const blendDist = clamp(blend, 0, 0.4) * maxDist;
+    const simSq = simDist * simDist;
+    const outerSq = (simDist + blendDist) * (simDist + blendDist);
+    const fr = ctx.getImageData(0, 0, w, h);
+    const d = fr.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const dr = d[i] - kr;
+      const dg = d[i + 1] - kg;
+      const db = d[i + 2] - kb;
+      const distSq = dr * dr + dg * dg + db * db;
+      if (distSq <= simSq) {
+        d[i + 3] = 0;
+      } else if (blendDist > 0.5 && distSq < outerSq) {
+        d[i + 3] = Math.round(d[i + 3] * (Math.sqrt(distSq) - simDist) / blendDist);
+      }
+    }
+    ctx.putImageData(fr, 0, 0);
+  }, [ready, src, color, similarity, blend, frame?.index, frame?.fw, frame?.fh, frame?.frames]);
   return <canvas ref={canvasRef} className="pointer-events-none block h-auto w-full" />;
 }
 function getEffectiveWords(txt: TextOverlay): WordTiming[] {
@@ -1495,6 +1564,7 @@ const [proxiesOn, setProxiesOn] = useState(false);
 const [fsMode, setFsMode] = useState<'none' | 'native' | 'css'>('none');
 const [propsTab, setPropsTab] = useState('inspector');
 const [commentStudioOpen, setCommentStudioOpen] = useState(false);
+const [mediaLibOpen, setMediaLibOpen] = useState(false);
 const [asrModelPick, setAsrModelPick] = useState<AsrModelId>(() => { const pref = readAsrPref(); const wanted = pref?.model ?? (IS_MOBILE ? 'tiny' : 'base'); return (ASR_MODELS.some((m) => m.id === wanted) ? wanted : 'base') as AsrModelId; });
 const [asrLangPick, setAsrLangPick] = useState<AsrLanguage>(() => (readAsrPref()?.lang ?? 'es') as AsrLanguage);
 const [asrRemember, setAsrRemember] = useState(true);
@@ -4257,6 +4327,34 @@ e.target.value = '';
     showToast('✏️ Texto agregado — editálo en el panel de propiedades', 'info');
   }
 
+async function addSfxResult(r: SfxResult) {
+const assetId = uid();
+try { await putAsset(assetId, r.blob); } catch (e) { console.error('[MediaLib] asset sfx:', e); }
+const url = URL.createObjectURL(r.blob);
+const id = uid();
+const dec = await decodeAudioBlob(r.blob);
+if (dec) audioDataMap.set(id, { channelData: dec.channelData, sampleRate: dec.sampleRate });
+const dur = dec?.duration || r.duration;
+const sibs = getSiblingsIntervals('audio', activeLaneIds.audio, new Set());
+const { start: s0 } = resolveMagneticSlot(playheadRef.current, dur, sibs, [playheadRef.current], 0.05);
+const t: AudioTrack = { id, assetId, name: r.name, url, duration: dur, offset: 0, start: s0, volume: clamp(r.volume, 0, 1), fadeIn: r.fadeIn, fadeOut: r.fadeOut, muted: false, peaks: dec ? getPeaksForSegment(id, 0, dur) : [], released: true, laneId: activeLaneIds.audio };
+setAudioTracks((prev) => [...prev, t]);
+selectOnly(id, 'audio');
+setMediaLibOpen(false);
+showToast('🔊 "' + r.name + '" agregado a la pista de audio', 'info');
+}
+async function addStickerResult(r: StickerResult) {
+const assetId = uid();
+try { await putAsset(assetId, r.blob); } catch (e) { console.error('[MediaLib] asset sticker:', e); }
+const url = URL.createObjectURL(r.blob);
+const sibs = getSiblingsIntervals('image', activeLaneIds.image, new Set());
+const { start: s0 } = resolveMagneticSlot(playheadRef.current, r.duration, sibs, [playheadRef.current], 0.05);
+const ov: ImageOverlay = { id: uid(), assetId, name: r.name, url, start: s0, end: s0 + r.duration, x: REF_WIDTH * r.x, y: REF_HEIGHT * r.y, size: r.size, rotate: 0, fadeIn: r.fadeIn, fadeOut: r.fadeOut, laneId: activeLaneIds.image, sticker: { frames: r.frames, fps: r.fps, fw: r.fw, fh: r.fh, loop: r.loop } };
+setImageOverlays((prev) => [...prev, ov]);
+selectOnly(ov.id, 'image');
+setMediaLibOpen(false);
+showToast('✨ Sticker "' + r.name + '" agregado (' + r.frames + ' frames con alpha)', 'info');
+}
 async function addCommentResult(blob: Blob) {
 const assetId = uid();
 try { await putAsset(assetId, blob); } catch (e) { console.error('[CommentStudio] No se pudo guardar el asset:', e); }
@@ -4489,14 +4587,46 @@ im.src = img.url;
 await new Promise<void>((res) => { im.onload = () => res(); im.onerror = () => res(); window.setTimeout(res, 4000); });
 if (token.cancelled || !im.naturalWidth) return;
 const an = animOffsets(img, atTime, REF_WIDTH, REF_HEIGHT);
+const ist = img.sticker;
+const ilw = atTime - img.start;
+const ifi = ist ? (ist.loop ? ((Math.floor(ilw * ist.fps) % ist.frames) + ist.frames) % ist.frames : Math.min(ist.frames - 1, Math.max(0, Math.floor(ilw * ist.fps)))) : 0;
+const isx = ist ? ifi * ist.fw : 0;
+const isw = ist ? ist.fw : im.naturalWidth;
+const ish = ist ? ist.fh : im.naturalHeight;
 const dw = (img.size / 100) * REF_WIDTH * k;
-const dh = dw * (im.naturalHeight / im.naturalWidth);
+const dh = dw * (ish / Math.max(1, isw));
+let isrc: CanvasImageSource = im;
+let irx = isx; let irw = isw; let irh = ish;
+if (img.chroma) {
+const ioff = document.createElement('canvas');
+ioff.width = Math.max(2, Math.round(dw)); ioff.height = Math.max(2, Math.round(dh));
+const ioctx = ioff.getContext('2d', { willReadFrequently: true });
+if (ioctx) {
+ioctx.drawImage(im, isx, 0, isw, ish, 0, 0, ioff.width, ioff.height);
+const irgb = hexToRgb255(img.chromaColor || '#00ff00');
+const iMax = 441.67295593;
+const iSim = clamp(img.chromaSimilarity ?? 0.16, 0.01, 0.6) * iMax;
+const iBl = clamp(img.chromaBlend ?? 0.05, 0, 0.4) * iMax;
+const iSimSq = iSim * iSim;
+const iOutSq = (iSim + iBl) * (iSim + iBl);
+const ifr = ioctx.getImageData(0, 0, ioff.width, ioff.height);
+const idd = ifr.data;
+for (let p = 0; p < idd.length; p += 4) {
+const dr = idd[p] - irgb[0], dg = idd[p + 1] - irgb[1], db = idd[p + 2] - irgb[2];
+const q = dr * dr + dg * dg + db * db;
+if (q <= iSimSq) idd[p + 3] = 0;
+else if (iBl > 0.5 && q < iOutSq) idd[p + 3] = Math.round(idd[p + 3] * (Math.sqrt(q) - iSim) / iBl);
+}
+ioctx.putImageData(ifr, 0, 0);
+isrc = ioff; irx = 0; irw = ioff.width; irh = ioff.height;
+}
+}
 ctx.save();
 ctx.globalAlpha = fadeAlpha(img) * ((an as any).alphaMul ?? 1);
 ctx.translate(img.x * k + an.dx * k, img.y * k + an.dy * k);
 ctx.scale(an.f, an.f);
 ctx.rotate((img.rotate * Math.PI) / 180);
-ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
+ctx.drawImage(isrc, irx, 0, irw, irh, -dw / 2, -dh / 2, dw, dh);
 ctx.restore();
 } });
 });
@@ -4673,8 +4803,8 @@ const coreURL = await toBlobURL('/ffmpeg-core.js', 'text/javascript');
 const wasmURL = await toBlobURL('/ffmpeg-core.wasm', 'application/wasm');
 await ff.load({ coreURL, wasmURL });
 const FPS = 30; const CHUNK_TARGET = 60; const LOOKAHEAD = 0.25;
-const targetW = Math.round(REF_WIDTH * resInfo.factor);
-const targetH = Math.round(REF_HEIGHT * resInfo.factor);
+const targetW = Math.max(2, Math.round((REF_WIDTH * resInfo.factor) / 2) * 2);
+const targetH = Math.max(2, Math.round((REF_HEIGHT * resInfo.factor) / 2) * 2);
 const videoCodecArgs: string[] = ['-c:v', 'libx264', '-preset', qualInfo.preset, '-crf', String(qualInfo.crf264), '-pix_fmt', 'yuv420p'];
 const starts = videoStarts;
 const total = projectDuration;
@@ -4829,6 +4959,26 @@ const overlayOrderC: { family: 'image' | 'text' | 'subtitle' | 'video'; idx: num
 ].sort((a, b) => a.key - b.key);
 for (const ov of overlayOrderC) {
 if (ov.family === 'image') {
+const cimg = imageOverlays[ov.idx];
+if (cimg.sticker && !isLaneMuted(cimg.laneId)) {
+const st = cimg.sticker;
+const cS = Math.max(cimg.start, cs); const cE = Math.min(cimg.end, ce);
+if (cE > cS) {
+const ci = nextInput++;
+inputArgs.push('-loop', '1', '-i', 'img' + ov.idx + '.png');
+const shift = cS - cimg.start; const ovDur = cE - cS; const locS = cS - cs;
+const cW = Math.round((cimg.size / 100) * REF_WIDTH);
+const cD = cimg.end - cimg.start;
+const fx = st.loop ? 'mod(floor(t*' + st.fps + '),' + st.frames + ')' : 'min(' + (st.frames - 1) + ',max(0,floor(t*' + st.fps + ')))';
+let cf = '';
+if (cimg.fadeIn > 0) cf += 'fade=t=in:st=0:d=' + cimg.fadeIn + ':alpha=1,';
+if (cimg.fadeOut > 0) cf += 'fade=t=out:st=' + Math.max(cD - cimg.fadeOut, 0) + ':d=' + cimg.fadeOut + ':alpha=1,';
+fc += '[' + ci + ':v]format=rgba,crop=w=' + st.fw + ':h=' + st.fh + ":x='" + fx + '*' + st.fw + "':y=0,scale=" + cW + ':-2,' + chromaFilterFF(cimg) + cf + rotOf(cimg.rotate) + 'trim=' + shift.toFixed(6) + ':' + (shift + ovDur).toFixed(6) + ',setpts=PTS-STARTPTS,setpts=PTS+' + locS.toFixed(6) + '/TB[imgc' + ov.idx + '];';
+fc += '[' + currentVideoLabel + '][imgc' + ov.idx + ']overlay=x=' + "'" + cimg.x + '-overlay_w/2' + "'" + ':y=' + "'" + cimg.y + '-overlay_h/2' + "'" + ":eof_action=pass:enable='between(t," + locS.toFixed(6) + ',' + (locS + ovDur).toFixed(6) + ")'[imgo" + ov.idx + '];';
+currentVideoLabel = 'imgo' + ov.idx;
+}
+continue;
+}
 const img = imageOverlays[ov.idx];
 if (isLaneMuted(img.laneId)) continue;
 const oS = Math.max(img.start, cs); const oE = Math.min(img.end, ce);
@@ -4844,7 +4994,7 @@ if (img.fadeIn > 0) fades += `fade=t=in:st=0:d=${img.fadeIn}:alpha=1,`;
 if (img.fadeOut > 0) fades += `fade=t=out:st=${Math.max(durImg - img.fadeOut, 0)}:d=${img.fadeOut}:alpha=1,`;
 const anC = animExprFF(img, img.start - cs, img.end - cs, REF_WIDTH, REF_HEIGHT);
 const zoomPartC = anC.f ? `,scale=w='max(2,trunc(iw*(${anC.f})))':h='max(2,trunc(ih*(${anC.f})))':eval=frame` : '';
-fc += `[${idx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${rotOf(img.rotate)}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartC}[imgc${ov.idx}];`;
+fc += `[${idx}:v]scale=${imgWidth}:-2,format=rgba,${chromaFilterFF(img)}${fades}${rotOf(img.rotate)}trim=${imgStartInWindow.toFixed(6)}:${(imgStartInWindow + overlapDur).toFixed(6)},setpts=PTS-STARTPTS,setpts=PTS+${localStart.toFixed(6)}/TB${zoomPartC}[imgc${ov.idx}];`;
 fc += `[${currentVideoLabel}][imgc${ov.idx}]overlay=x='${img.x}-overlay_w/2+(${anC.dx})':y='${img.y}-overlay_h/2+(${anC.dy})':eof_action=pass:enable='between(t,${localStart.toFixed(6)},${(localStart + overlapDur).toFixed(6)})'[imgo${ov.idx}];`;
 currentVideoLabel = `imgo${ov.idx}`;
 } else if (ov.family === 'video') {
@@ -5197,8 +5347,8 @@ const maskCount = voMaskIdx.filter((x) => x !== null).length;
         inputFiles.push(await writeFsFile(`a${i}.${ext}`, audioTracks[i].url));
       }
 
-      const targetW = Math.round(REF_WIDTH * resInfo.factor);
-      const targetH = Math.round(REF_HEIGHT * resInfo.factor);
+      const targetW = Math.max(2, Math.round((REF_WIDTH * resInfo.factor) / 2) * 2);
+      const targetH = Math.max(2, Math.round((REF_HEIGHT * resInfo.factor) / 2) * 2);
       let filterComplex = '';
       const inputs: string[] = [];
       inputFiles.forEach((f) => {
@@ -5254,6 +5404,21 @@ filterComplex += `[${i}:v]trim=${t0}:${t1},${pts},${rot}fps=30,${fitChain}${fFF 
       }
 
       const appendImage = (i: number, cur: string): string => {
+const simg = imageOverlays[i];
+if (simg.sticker) {
+const st = simg.sticker;
+const sIdx = clips.length + i;
+const sW = Math.round((simg.size / 100) * REF_WIDTH);
+const sD = simg.end - simg.start;
+const fx = st.loop ? 'mod(floor(t*' + st.fps + '),' + st.frames + ')' : 'min(' + (st.frames - 1) + ',max(0,floor(t*' + st.fps + ')))';
+let sf = '';
+if (simg.fadeIn > 0) sf += 'fade=t=in:st=0:d=' + simg.fadeIn + ':alpha=1,';
+if (simg.fadeOut > 0) sf += 'fade=t=out:st=' + Math.max(sD - simg.fadeOut, 0) + ':d=' + simg.fadeOut + ':alpha=1,';
+filterComplex += '[' + sIdx + ':v]format=rgba,crop=w=' + st.fw + ':h=' + st.fh + ":x='" + fx + '*' + st.fw + "':y=0,scale=" + sW + ':-2,' + chromaFilterFF(simg) + sf + 'trim=0:' + sD + ',setpts=PTS+' + simg.start + '/TB[img' + i + '_f];';
+filterComplex += '[' + cur + '][img' + i + '_f]overlay=x=' + "'" + simg.x + '-overlay_w/2' + "'" + ':y=' + "'" + simg.y + '-overlay_h/2' + "'" + ":eof_action=pass:enable='between(t," + simg.start + ',' + simg.end + ")'[img" + i + '_out];';
+return 'img' + i + '_out';
+}
+
 const img = imageOverlays[i];
 const imgInputIdx = clips.length + i;
 const imgWidth = Math.round((img.size / 100) * REF_WIDTH);
@@ -5267,7 +5432,7 @@ else if (img.rotate === 180) irot = 'hflip,vflip,';
 else if (img.rotate === 270) irot = 'transpose=2,';
 const an = animExprFF(img, img.start, img.end, REF_WIDTH, REF_HEIGHT);
 const zoomPart = an.f ? `,scale=w='max(2,trunc(iw*(${an.f})))':h='max(2,trunc(ih*(${an.f})))':eval=frame` : '';
-filterComplex += `[${imgInputIdx}:v]scale=${imgWidth}:-2,format=rgba,${fades}${irot}trim=0:${dur},setpts=PTS+${img.start}/TB${zoomPart}[img${i}_f];`;
+filterComplex += `[${imgInputIdx}:v]scale=${imgWidth}:-2,format=rgba,${chromaFilterFF(img)}${fades}${irot}trim=0:${dur},setpts=PTS+${img.start}/TB${zoomPart}[img${i}_f];`;
 filterComplex += `[${cur}][img${i}_f]overlay=x='${img.x}-overlay_w/2+(${an.dx})':y='${img.y}-overlay_h/2+(${an.dy})':eof_action=pass:enable='between(t,${img.start},${img.end})'[img${i}_out];`;
 return `img${i}_out`;
 };
@@ -5608,6 +5773,10 @@ const exportModal = showExportModal && typeof document !== 'undefined' ? createP
 </div>,
 document.body
 ) : null;
+const mediaLibUI = mediaLibOpen && typeof document !== 'undefined' ? createPortal(
+<MediaLibraryModal onClose={() => setMediaLibOpen(false)} onSfx={(r) => addSfxResult(r)} onSticker={(r) => addStickerResult(r)} refW={REF_WIDTH} refH={REF_HEIGHT} />,
+document.body
+) : null;
 const commentStudioUI = commentStudioOpen && typeof document !== 'undefined' ? createPortal(
 <CommentStudioModal
 onCancel={() => setCommentStudioOpen(false)}
@@ -5703,7 +5872,7 @@ herramientas: { t: 'Herramientas', d: 'Acciones: ruteo de audio, dividir, elimin
 };
 const propsTabs = (() => {
 const tabs: { id: string; label: string; icon: React.ReactNode }[] = [{ id: 'inspector', label: 'Inspector', icon: <IconPropsInspector className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> }];
-if (selectedClip || selectedText || selectedVo) tabs.push({ id: 'estilo', label: 'Estilo', icon: <IconPropsPalette className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
+if (selectedClip || selectedText || selectedVo || selectedImage) tabs.push({ id: 'estilo', label: 'Estilo', icon: <IconPropsPalette className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
 tabs.push({ id: 'animacion', label: 'Animación', icon: <IconPropsWand className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
 if (selectedClip) tabs.push({ id: 'subtitulos', label: 'Subtítulos', icon: <IconPropsCaptions className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
 tabs.push({ id: 'herramientas', label: 'Herramientas', icon: <IconPropsWrench className="h-[clamp(14px,2.4vh,24px)] w-[clamp(14px,2.4vh,24px)]" /> });
@@ -5754,7 +5923,8 @@ const timelineGutterWidth = TIMELINE_GUTTER_WIDTH;
 {subtitleUI}
 {silenceUI}
 {asrProgressUI}
-      {commentStudioUI}
+      {mediaLibUI}
+{commentStudioUI}
 {transitionPickerUI}
 {confirmDialog && typeof document !== 'undefined' && createPortal(
   <div
@@ -6152,7 +6322,29 @@ const an = animOffsets(activeImage, playhead, REF_WIDTH, REF_HEIGHT);
                         className="pointer-events-auto absolute cursor-move touch-none select-none"
                         style={{ left: activeImage.x, top: activeImage.y, width: (activeImage.size / 100) * REF_WIDTH, transform: `translate(-50%, -50%) translate(${an.dx}px, ${an.dy}px) scale(${an.f}) rotate(${activeImage.rotate}deg)`, opacity: alpha, zIndex: paintKeyOf(activeImage.laneId, 'image', ai) }}
                         title="Arrastrá para mover la imagen">
-                        <img src={activeImage.url} alt="Overlay" className="pointer-events-none h-auto w-full" draggable={false} />
+                        {(() => {
+const st = activeImage.sticker;
+const liw = playhead - activeImage.start;
+const fi = st ? (st.loop ? ((Math.floor(liw * st.fps) % st.frames) + st.frames) % st.frames : Math.min(st.frames - 1, Math.max(0, Math.floor(liw * st.fps)))) : 0;
+if (activeImage.chroma) {
+return (
+<ChromaImageCanvas
+src={activeImage.url}
+color={activeImage.chromaColor || '#00ff00'}
+similarity={activeImage.chromaSimilarity ?? 0.16}
+blend={activeImage.chromaBlend ?? 0.05}
+frame={st ? { frames: st.frames, fw: st.fw, fh: st.fh, index: fi } : undefined}
+/>
+);
+}
+if (st) {
+const pct = st.frames > 1 ? (fi / (st.frames - 1)) * 100 : 0;
+return (
+<div className="pointer-events-none w-full" style={{ paddingTop: (st.fh / st.fw) * 100 + '%', backgroundImage: 'url(' + activeImage.url + ')', backgroundSize: (st.frames * 100) + '% 100%', backgroundPosition: pct + '% 0%', backgroundRepeat: 'no-repeat' }} />
+);
+}
+return <img src={activeImage.url} alt="Overlay" className="pointer-events-none h-auto w-full" draggable={false} />;
+})()}
                       </div>
                     );
                   })}
@@ -6616,6 +6808,93 @@ className={cx('flex min-h-0 flex-1 flex-col items-center justify-center gap-[cla
   )}
 </div>
 </>)}
+{propsTab === 'estilo' && selectedImage && (<>
+<p className="text-[11px] font-semibold text-pink-200">🖼️ Imagen: <span className="normal-case text-pink-300">{selectedImage.name}</span></p>
+<div className="space-y-2.5 border-t border-slate-800 pt-3">
+<div className="flex items-center justify-between gap-2">
+<p className="truncate text-[10px] font-black uppercase tracking-wider text-emerald-300">🟩 Chroma Key</p>
+<button onClick={async () => {
+const nextOn = !selectedImage.chroma;
+let autoHex: string | null = null;
+if (nextOn && !selectedImage.chromaColor) {
+const im = new Image();
+im.src = selectedImage.url;
+await new Promise<void>((res) => { im.onload = () => res(); im.onerror = () => res(); });
+const stk = selectedImage.sticker;
+autoHex = sampleCornerHex(im, stk ? { x: 0, y: 0, w: stk.fw, h: stk.fh } : undefined);
+}
+updateImageOverlay(selectedImage.id, {
+chroma: nextOn,
+chromaColor: selectedImage.chromaColor || autoHex || '#00ff00',
+chromaSimilarity: selectedImage.chromaSimilarity ?? 0.16,
+chromaBlend: selectedImage.chromaBlend ?? 0.05,
+});
+}}
+className={cx('shrink-0 rounded-lg border px-2.5 py-1 text-[10px] font-bold transition', selectedImage.chroma ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200')}>
+{selectedImage.chroma ? 'Activo ✓' : 'Desactivado'}
+</button>
+</div>
+{selectedImage.chroma && (
+<div className="space-y-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5">
+<div className="space-y-1.5">
+<div className="flex items-center justify-between">
+<span className="text-[11px] font-semibold text-slate-300">Color de fondo:</span>
+<button
+type="button"
+onClick={async () => {
+const im = new Image();
+im.src = selectedImage.url;
+await new Promise<void>((res) => { im.onload = () => res(); im.onerror = () => res(); });
+const stk = selectedImage.sticker;
+const detected = sampleCornerHex(im, stk ? { x: 0, y: 0, w: stk.fw, h: stk.fh } : undefined);
+if (detected) {
+updateImageOverlay(selectedImage.id, { chromaColor: detected });
+showToast('💧 Color de fondo detectado: ' + detected, 'info');
+} else {
+showToast('⚠️ No se pudo leer la imagen para detectar el color', 'warn');
+}
+}}
+className="rounded border border-emerald-400/50 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 transition hover:bg-emerald-500/25"
+title="Detecta automáticamente el color de la esquina de la imagen">
+💧 Auto-detectar
+</button>
+</div>
+<div className="grid grid-cols-4 gap-1.5">
+{[
+{ hex: '#00ff00', label: 'Verde' },
+{ hex: '#0055ff', label: 'Azul' },
+{ hex: '#000000', label: 'Negro' },
+{ hex: '#ffffff', label: 'Blanco' },
+].map((p) => (
+<button key={p.hex} type="button" onClick={() => updateImageOverlay(selectedImage.id, { chromaColor: p.hex })}
+className={cx('truncate rounded-md border py-1 text-center text-[10px] font-bold transition', (selectedImage.chromaColor || '#00ff00').toLowerCase() === p.hex ? 'border-emerald-300 bg-emerald-500/25 text-emerald-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500')}>
+{p.label}
+</button>
+))}
+</div>
+<label className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 transition hover:border-emerald-400" title="Elegir color libre">
+<input type="color" value={selectedImage.chromaColor || '#00ff00'} onChange={(e) => updateImageOverlay(selectedImage.id, { chromaColor: e.target.value })}
+className="h-5 w-8 cursor-pointer border-0 bg-transparent p-0" />
+<span className="font-mono text-[10px] font-bold text-emerald-200">{(selectedImage.chromaColor || '#00ff00').toUpperCase()}</span>
+</label>
+</div>
+<label className="block select-none text-xs text-slate-400">
+Tolerancia (Similitud): <span className="font-mono text-emerald-300">{Math.round((selectedImage.chromaSimilarity ?? 0.16) * 100)}%</span>
+<input type="range" min={0.02} max={0.5} step={0.01} value={selectedImage.chromaSimilarity ?? 0.16}
+onChange={(e) => updateImageOverlay(selectedImage.id, { chromaSimilarity: Number(e.target.value) })}
+className="mt-1 w-full accent-emerald-400" />
+</label>
+<label className="block select-none text-xs text-slate-400">
+Suavizado de bordes: <span className="font-mono text-emerald-300">{Math.round((selectedImage.chromaBlend ?? 0.05) * 100)}%</span>
+<input type="range" min={0} max={0.3} step={0.01} value={selectedImage.chromaBlend ?? 0.05}
+onChange={(e) => updateImageOverlay(selectedImage.id, { chromaBlend: Number(e.target.value) })}
+className="mt-1 w-full accent-emerald-400" />
+</label>
+<p className="text-[10px] leading-relaxed text-slate-500">Quita el fondo liso en el preview y aplica colorkey de FFmpeg al exportar (mismo espacio RGB: paridad 1:1).</p>
+</div>
+)}
+</div>
+</>)}
 {propsTab === 'estilo' && selectedVo && (<>
 <p className="text-[11px] font-semibold text-amber-200">Marco (efecto de forma)</p>
 <div className="grid grid-cols-3 gap-1">
@@ -6830,6 +7109,7 @@ Recordar mi elección
 <div className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-2">
 <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">🧰 Herramientas globales</p>
 <button onClick={() => setCommentStudioOpen(true)} className="w-full rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 py-2 text-sm font-semibold text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20" title="Creá comentarios estilo TikTok/Instagram/YouTube/Twitter y agregalos como imagen">💬 Generador de comentarios</button>
+<button onClick={() => setMediaLibOpen(true)} className="w-full rounded-lg border border-cyan-500/40 bg-cyan-500/10 py-2 text-sm font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/20" title="Sonidos y stickers animados listos para usar, generados en tu navegador">🎬 Generador de Medios</button>
 <div className="grid grid-cols-3 gap-1.5 pt-1">
   <button
     type="button"
