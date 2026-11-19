@@ -7,6 +7,14 @@ const FPS = 25;
 const HD_SCALE = 2.5; // Exporta los spritesheets a 2.5x para nitidez total en 1080p/4K
 const FAV_STORAGE_KEY = 'clipedia_medialib_favs_v1';
 const REC_STORAGE_KEY = 'clipedia_medialib_recents_v1';
+// Fades por defecto. Stickers: entrada suave y salida sin "pop".
+// SFX: los samples ya vienen masterizados con su envolvente; sólo un
+// micro-declick al final para que no corten en seco.
+const DEFAULT_FADE_IN = 0;
+const DEFAULT_FADE_OUT = 0;
+const DEFAULT_SFX_FADE_IN = 0;
+const DEFAULT_SFX_FADE_OUT = 0;
+const SFX_FADE_MAX_SHARE = 0.3;
 
 const clamp = (v: number, a: number, b: number) => Math.min(Math.max(v, a), b);
 const cx = (...p: (string | false | null | undefined)[]) => p.filter(Boolean).join(' ');
@@ -1318,8 +1326,8 @@ useEffect(() => { setSfxLimit(60); }, [catS, query, sortBy, tab]);
   const [size, setSize] = useState(32);
   const [dur, setDur] = useState(2.2);
   const [loop, setLoop] = useState(false);
-  const [fadeIn, setFadeIn] = useState(0.15);
-  const [fadeOut, setFadeOut] = useState(0.2);
+  const [fadeIn, setFadeIn] = useState(0);
+  const [fadeOut, setFadeOut] = useState(0);
   const [posId, setPosId] = useState<PosId>('mc');
 
   // Estado de reproducción / scrubber de vista previa
@@ -1542,7 +1550,8 @@ setPlayingAudioId((p) => (p === def.id ? null : p));
     try {
       markRecent(sfx.id);
       const { blob, duration } = await renderSfxFile(sfx, tune, 1);
-      onSfx({ blob, name: sfx.name, duration, volume: vol, fadeIn, fadeOut });
+      const fadeCap = Math.max(0, duration) * SFX_FADE_MAX_SHARE;
+onSfx({ blob, name: sfx.name, duration, volume: vol, fadeIn: Math.min(fadeIn, fadeCap), fadeOut: Math.min(fadeOut, fadeCap) });
     } finally {
       setBusy(false);
     }
@@ -1600,8 +1609,8 @@ const p = sfxLib[Math.floor(Math.random() * sfxLib.length)];
     setSize(32);
     setDur(2.2);
     setLoop(false);
-    setFadeIn(0.15);
-    setFadeOut(0.2);
+    setFadeIn(tab === 'sfx' ? DEFAULT_SFX_FADE_IN : DEFAULT_FADE_IN);
+    setFadeOut(tab === 'sfx' ? DEFAULT_SFX_FADE_OUT : DEFAULT_FADE_OUT);
     setPosId('mc');
     setAccent(ACCENTS[0]);
     setCustomText(stk.defaultText ?? '');
@@ -1723,7 +1732,9 @@ return q ? all.filter((c) => c.toLowerCase().includes(q)) : all;
                 key={t}
                 onClick={() => {
                   setTab(t);
-                  setQuery('');
+               setQuery('');
+               setFadeIn(t === 'sfx' ? DEFAULT_SFX_FADE_IN : DEFAULT_FADE_IN);
+               setFadeOut(t === 'sfx' ? DEFAULT_SFX_FADE_OUT : DEFAULT_FADE_OUT);
                 }}
                 className={cx(
                   'min-h-[32px] rounded-lg px-4 py-1 text-[12px] font-black transition sm:min-h-[34px]',
@@ -2102,13 +2113,13 @@ return q ? all.filter((c) => c.toLowerCase().includes(q)) : all;
                       <div className="min-w-[140px] flex-1 space-y-2">
                         <label className="block">
                           <span className="mb-0.5 flex justify-between text-[9px] font-bold uppercase text-slate-400">
-                            Fade in<span className="font-mono text-cyan-300">{fadeIn.toFixed(1)}s</span>
+                            Fade in<span className="font-mono text-cyan-300">{fadeIn > 0 ? fadeIn.toFixed(1) + 's' : 'Off'}</span>
                           </span>
                           <input type="range" min={0} max={1.5} step={0.1} value={fadeIn} onChange={(e) => setFadeIn(+e.target.value)} className={sl} />
                         </label>
                         <label className="block">
                           <span className="mb-0.5 flex justify-between text-[9px] font-bold uppercase text-slate-400">
-                            Fade out<span className="font-mono text-cyan-300">{fadeOut.toFixed(1)}s</span>
+                            Fade out<span className="font-mono text-cyan-300">{fadeOut > 0 ? fadeOut.toFixed(1) + 's' : 'Off'}</span>
                           </span>
                           <input type="range" min={0} max={1.5} step={0.1} value={fadeOut} onChange={(e) => setFadeOut(+e.target.value)} className={sl} />
                         </label>
@@ -2121,13 +2132,13 @@ return q ? all.filter((c) => c.toLowerCase().includes(q)) : all;
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
                       <span className="mb-1 flex justify-between text-[9px] font-bold uppercase text-slate-400">
-                        Fade in<span className="font-mono text-cyan-300">{fadeIn.toFixed(1)}s</span>
+                        Fade in<span className="font-mono text-cyan-300">{fadeIn > 0 ? fadeIn.toFixed(1) + 's' : 'Off'}</span>
                       </span>
                       <input type="range" min={0} max={1.5} step={0.1} value={fadeIn} onChange={(e) => setFadeIn(+e.target.value)} className={sl} />
                     </label>
                     <label className="block">
                       <span className="mb-1 flex justify-between text-[9px] font-bold uppercase text-slate-400">
-                        Fade out<span className="font-mono text-cyan-300">{fadeOut.toFixed(1)}s</span>
+                        Fade out<span className="font-mono text-cyan-300">{fadeOut > 0 ? fadeOut.toFixed(1) + 's' : 'Off'}</span>
                       </span>
                       <input type="range" min={0} max={1.5} step={0.1} value={fadeOut} onChange={(e) => setFadeOut(+e.target.value)} className={sl} />
                     </label>

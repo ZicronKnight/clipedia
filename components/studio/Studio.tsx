@@ -4396,11 +4396,11 @@ try { await putAsset(assetId, blob); } catch (e) { console.error('[CommentStudio
 const url = URL.createObjectURL(blob);
 const sibs = getSiblingsIntervals('image', activeLaneIds.image, new Set());
 const { start: s0 } = resolveMagneticSlot(playheadRef.current, 5, sibs, [playheadRef.current], 0);
-const ov: ImageOverlay = { id: uid(), assetId, name: 'Comentario', url, start: s0, end: s0 + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 46, rotate: 0, fadeIn: 0.3, fadeOut: 0.3, laneId: activeLaneIds.image };
+const ov: ImageOverlay = { id: uid(), assetId, name: 'Comentario', url, start: s0, end: s0 + 5, x: REF_WIDTH * 0.5, y: REF_HEIGHT * 0.5, size: 46, rotate: 0, fadeIn: 0, fadeOut: 0, laneId: activeLaneIds.image };
 setImageOverlays((prev) => [...prev, ov]);
 setSelectedImageId(ov.id);
 setCommentStudioOpen(false);
-showToast('💬 Comentario agregado a la pista de imágenes (5s, con fades)', 'info');
+showToast('💬 Comentario agregado a la pista de imágenes (5s)', 'info');
 }
 async function generateSubtitles(clip: Clip, model: (typeof ASR_MODELS)[number], lang: AsrLanguage, remember: boolean) {
 setSubtitleFor(null);
