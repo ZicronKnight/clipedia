@@ -1698,6 +1698,7 @@ function clearLongPress() {
   const transitionVideoRef = useRef<HTMLVideoElement>(null);
   const transitionLayerRef = useRef<HTMLDivElement>(null);
   const videoStartsRef = useRef<number[]>([]);
+const videoTotalRef = useRef(0);
   const previewTransitionsRef = useRef(false);
   const previewFFRef = useRef<any>(null);
   const previewCacheRef = useRef<Map<string, string>>(new Map());
@@ -1765,6 +1766,7 @@ if (i < 0 || i >= clips.length - 1) return 0;
   for (let i = 0; i < clips.length; i++) { videoStarts.push(accStart); accStart += effLen(clips[i]) - dAfter(i); }
   const videoTotal = clips.length ? videoStarts[clips.length - 1] + effLen(clips[clips.length - 1]) : 0;
   videoStartsRef.current = videoStarts;
+videoTotalRef.current = videoTotal;
 
 // ===== AUDIO VINCULADO (imantado al clip): geometría derivada =====
 const linkedInfo = (track: AudioTrack): { idx: number; start: number; duration: number; offset: number; speed: number } | null => {
@@ -2598,6 +2600,7 @@ v.removeEventListener('loadeddata', onMainReady);
   const { index: activeIndex, localProj: activeLocalProj, localFile: activeLocalFile } = locateVideo(playhead, clips, videoStarts);
   const activeClip = activeIndex >= 0 ? clips[activeIndex] : null;
 const activeUsesProxy = activeClip ? previewSrc(activeClip) !== activeClip.url : false;
+const pastVideoEnd = clips.length > 0 && playhead >= videoTotal - 0.0005;
     const pendingWork = previewQueueRef.current.length + (previewInFlightRef.current !== null ? 1 : 0);
   const totalNow = Math.max(totalRef.current, doneRef.current + pendingWork);
   const previewPercent = totalNow > 0 ? Math.min(100, Math.round(((doneRef.current + clamp(snippetProgressRef.current, 0, 1)) / totalNow) * 100)) : 0;
@@ -2755,6 +2758,20 @@ else if (!isPlaying && !el.paused) el.pause();
 
  const proxyToastRef = useRef(false);
 
+// ===== COLA NEGRA: pasado el final de V1 el lienzo es negro, no el último frame =====
+function isPastVideoEnd(t: number) {
+return clipsRef.current.length > 0 && t >= videoTotalRef.current - 0.0005;
+}
+function blankVideoIfPastEnd(t: number): boolean {
+const past = isPastVideoEnd(t);
+const v = videoRef.current;
+if (past && v) {
+if (!v.paused) v.pause();
+v.muted = true;
+v.style.opacity = '0';
+}
+return past;
+}
 function applyClipVisualsToDom(clip: Clip) {
 const v = videoRef.current;
 if (!v) return;
@@ -2882,7 +2899,7 @@ showToast('⚡ Preview usando proxy 480p', 'info');
     if (tcDesktopRef.current) tcDesktopRef.current.textContent = tc;
 
     // Manejo del video principal a 60fps (evita frames fantasma de filtro/opacidad)
-if (v && list.length > 0) {
+if (v && list.length > 0 && !blankVideoIfPastEnd(t)) {
 const { localFile, index } = locateVideo(t, list, starts);
 const d = index >= 0 && previewTransitionsRef.current ? dAfter(index) : 0;
 const winStart = index >= 0 && index < list.length - 1 ? starts[index + 1] : 0;
@@ -2944,7 +2961,24 @@ v.play().catch(() => {});
     return () => cancelAnimationFrame(rafRef.current);
   }, [playing, tick]);
 
-  // Con reproducción pausada (scrub, zoom, edits), el DOM se sincroniza desde el state
+  // ===== COLA NEGRA EN PREVIEW (pausa / scrub): negro y vuelta limpia al video =====
+useEffect(() => {
+const v = videoRef.current;
+if (!v || clips.length === 0) return;
+if (playingRef.current) return;
+if (isPastVideoEnd(playhead)) { blankVideoIfPastEnd(playhead); return; }
+const { index, localProj } = locateVideo(playhead, clips, videoStarts);
+if (index < 0) return;
+const c = clips[index];
+const len = effLen(c);
+let a = 1;
+if (c.fadeIn > 0 && localProj < c.fadeIn) a = Math.max(localProj / c.fadeIn, 0);
+if (c.fadeOut > 0 && localProj > len - c.fadeOut) a = Math.max((len - localProj) / c.fadeOut, 0);
+v.style.opacity = String(a);
+v.muted = c.muted;
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [playhead, clips, videoTotal, playing]);
+// Con reproducción pausada (scrub, zoom, edits), el DOM se sincroniza desde el state
   useEffect(() => {
     if (playingRef.current) return;
     const line = playheadLineRef.current;
@@ -2959,6 +2993,7 @@ v.play().catch(() => {});
   const seek = useCallback((t: number) => {
     const total = projectDurationRef.current;
     const clamped = Math.min(Math.max(t, 0), total);
+blankVideoIfPastEnd(clamped);
     playheadRef.current = clamped;
     setPlayhead(clamped);
     const v = videoRef.current;
@@ -4550,7 +4585,7 @@ return a;
 };
 try {
 const loc = locateVideo(atTime, clips, videoStarts);
-if (loc.index >= 0) {
+if (loc.index >= 0 && atTime < videoTotal - 0.0005) {
 const clip = clips[loc.index];
 const len = effLen(clip);
 let alpha = 1;
@@ -4929,7 +4964,10 @@ const fFF = specToFF(effSpec(clip));
 fc += `[${k}:v]trim=${trimA.toFixed(6)}:${trimB.toFixed(6)},${pts},${rotOf(clip.rotate)}fps=${FPS},${fitChainFor(clip)}${fFF ? ',' + fFF : ''}${vfades}[cv${k}];`;
 }
 let currentVideoLabel: string;
-if (inChunk.length === 1) currentVideoLabel = 'cv0';
+if (inChunk.length === 0) {
+fc += `color=c=black:s=${REF_WIDTH}x${REF_HEIGHT}:d=${(ce - cs).toFixed(6)}:r=${FPS}[cvblack];`;
+currentVideoLabel = 'cvblack';
+} else if (inChunk.length === 1) currentVideoLabel = 'cv0';
 else {
 let prevLabel = 'cv0';
 let cumulative = inChunk[0].len;
@@ -4949,6 +4987,14 @@ cumulative += inChunk[k].len;
 }
 }
 currentVideoLabel = prevLabel;
+}
+// Fondo de duración fija para TODO el chunk. V1 nunca debe decidir
+// cuánto dura la composición: si sus clips terminan antes que el chunk,
+// el fondo negro sigue avanzando y las capas superiores pueden continuar.
+if (inChunk.length > 0) {
+fc += `color=c=black:s=${REF_WIDTH}x${REF_HEIGHT}:d=${(ce - cs).toFixed(6)}:r=${FPS}[cvbg];`;
+fc += `[cvbg][${currentVideoLabel}]overlay=shortest=0:eof_action=pass:repeatlast=0[cvfull];`;
+currentVideoLabel = 'cvfull';
 }
 // Overlays EN ORDEN DE TIMELINE (fila de arriba = al frente = se encadena último)
 let nextInput = inChunk.length;
@@ -5486,7 +5532,16 @@ const overlayOrder: { family: 'image' | 'text' | 'subtitle' | 'video'; idx: numb
 ...textOverlays.map((t, i) => ({ family: (t.kind === 'subtitulo' ? 'subtitle' : 'text') as 'subtitle' | 'text', idx: i, key: paintKeyOf(t.laneId, t.kind === 'subtitulo' ? 'subtitle' : 'text', i) })),
 ...videoOverlays.map((v, i) => ({ family: 'video' as const, idx: i, key: paintKeyOf(v.laneId, 'video', i) })),
 ].sort((a, b) => a.key - b.key);
+// La composición usa un lienzo de duración total del proyecto, no la
+// duración de V1. El video principal se superpone sobre ese lienzo; cuando
+// V1 termina, eof_action=pass deja continuar el fondo negro para que imágenes,
+// textos y videos de otras pistas sigan exportándose hasta su propio final.
 let currentVideoLabel = 'basev';
+if (videoLabels.length > 0) {
+filterComplex += `color=c=black:s=${REF_WIDTH}x${REF_HEIGHT}:d=${projectDuration.toFixed(6)}:r=30[projectbg];`;
+filterComplex += `[projectbg][basev]overlay=shortest=0:eof_action=pass:repeatlast=0[projectbase];`;
+currentVideoLabel = 'projectbase';
+}
 for (const ov of overlayOrder) {
 if (ov.family === 'image') { if (isLaneMuted(imageOverlays[ov.idx].laneId)) continue; currentVideoLabel = appendImage(ov.idx, currentVideoLabel); }
 else if (ov.family === 'video') { if (isLaneMuted(videoOverlays[ov.idx].laneId)) continue; currentVideoLabel = appendVo(ov.idx, currentVideoLabel); }
@@ -6446,7 +6501,7 @@ src={vo.url} playsInline muted={vo.muted} preload="auto" className={cx('pointer-
               </div>
             )}
           </div>
-          {activeUsesProxy && (
+          {activeUsesProxy && !pastVideoEnd && (
             <div className="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-black/60 px-2 py-0.5 text-[10px] font-bold text-green-300 backdrop-blur-sm">⚡ PROXY 480p</div>
           )}
           {previewRenderStatus.rendering && (
