@@ -1,8 +1,8 @@
 'use client';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { SfxDef, EMPTY_SFX, useSfxLibrary, SfxWaveform, playSfxFile, renderSfxFile, sfxDuration } from './sfxLibrary';
 
-const SR = 44100;
 const FPS = 25;
 const HD_SCALE = 2.5; // Exporta los spritesheets a 2.5x para nitidez total en 1080p/4K
 const FAV_STORAGE_KEY = 'clipedia_medialib_favs_v1';
@@ -75,540 +75,13 @@ function writeStoredIds(key: string, ids: string[]) {
    MOTOR DE AUDIO DSP (COMPRESIÓN, REVERB ESTÉREO, PANEO Y SÍNTESIS MULTI-CAPA)
 ============================================================================ */
 
-function encodeWav(buf: AudioBuffer): Blob {
-  const ch = buf.numberOfChannels;
-  const len = buf.length;
-  const ab = new ArrayBuffer(44 + len * ch * 2);
-  const dv = new DataView(ab);
-  const s = (o: number, t: string) => {
-    for (let i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i));
-  };
-  s(0, 'RIFF');
-  dv.setUint32(4, 36 + len * ch * 2, true);
-  s(8, 'WAVE');
-  s(12, 'fmt ');
-  dv.setUint32(16, 16, true);
-  dv.setUint16(20, 1, true);
-  dv.setUint16(22, ch, true);
-  dv.setUint32(24, buf.sampleRate, true);
-  dv.setUint32(28, buf.sampleRate * ch * 2, true);
-  dv.setUint16(32, ch * 2, true);
-  dv.setUint16(34, 16, true);
-  s(36, 'data');
-  dv.setUint32(40, len * ch * 2, true);
-  const cs: Float32Array[] = [];
-  for (let c = 0; c < ch; c++) cs.push(buf.getChannelData(c));
-  let o = 44;
-  for (let i = 0; i < len; i++) {
-    for (let c = 0; c < ch; c++) {
-      const v = clamp(cs[c][i], -1, 1);
-      dv.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true);
-      o += 2;
-    }
-  }
-  return new Blob([ab], { type: 'audio/wav' });
-}
-
-function createImpulse(ctx: BaseAudioContext, dur = 0.24, decay = 3.0): AudioBuffer {
-  const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
-  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
-  for (let ch = 0; ch < 2; ch++) {
-    const data = buf.getChannelData(ch);
-    let seed = 1337 + ch * 7919;
-    for (let i = 0; i < len; i++) {
-      seed = (seed * 16807) % 2147483647;
-      const white = seed / 1073741823 - 1;
-      data[i] = white * Math.pow(1 - i / len, decay);
-    }
-  }
-  return buf;
-}
-
-function connectMaster(ctx: BaseAudioContext, input: AudioNode, dest: AudioNode, wet = 0.16) {
-  const comp = ctx.createDynamicsCompressor();
-  comp.threshold.value = -13;
-  comp.knee.value = 10;
-  comp.ratio.value = 4;
-  comp.attack.value = 0.003;
-  comp.release.value = 0.12;
-
-  if (wet <= 0.001) {
-    input.connect(comp).connect(dest);
-    return;
-  }
-
-  const dryGain = ctx.createGain();
-  dryGain.gain.value = 1 - wet * 0.45;
-  const wetGain = ctx.createGain();
-  wetGain.gain.value = wet;
-  const conv = ctx.createConvolver();
-  conv.buffer = createImpulse(ctx, 0.25, 3.1);
-
-  input.connect(dryGain).connect(comp);
-  input.connect(conv).connect(wetGain).connect(comp);
-  comp.connect(dest);
-}
-
-function panSweep(ctx: BaseAudioContext, dest: AudioNode, pan0: number, pan1: number, dur: number): AudioNode {
-  if (typeof ctx.createStereoPanner !== 'function') return dest;
-  const p = ctx.createStereoPanner();
-  p.pan.setValueAtTime(clamp(pan0, -1, 1), 0);
-  p.pan.linearRampToValueAtTime(clamp(pan1, -1, 1), dur);
-  p.connect(dest);
-  return p;
-}
-
-function noise(ctx: BaseAudioContext, d: number, seed = 7) {
-  const b = ctx.createBuffer(1, Math.max(1, Math.ceil(ctx.sampleRate * d)), ctx.sampleRate);
-  const a = b.getChannelData(0);
-  let s = seed;
-  for (let i = 0; i < a.length; i++) {
-    s = (s * 16807) % 2147483647;
-    a[i] = s / 1073741823 - 1;
-  }
-  const src = ctx.createBufferSource();
-  src.buffer = b;
-  return src;
-}
-
-function tone(
-  ctx: BaseAudioContext,
-  dest: AudioNode,
-  t: number,
-  f0: number,
-  f1: number,
-  d: number,
-  g0: number,
-  type: OscillatorType = 'sine',
-  pm = 1
-) {
-  const o = ctx.createOscillator();
-  const g = ctx.createGain();
-  o.type = type;
-  o.frequency.setValueAtTime(Math.max(20, f0 * pm), t);
-  if (f1 !== f0) {
-    o.frequency.exponentialRampToValueAtTime(Math.max(20, f1 * pm), t + d * 0.92);
-  }
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(g0, t + Math.min(0.01, d * 0.14));
-  g.gain.exponentialRampToValueAtTime(0.0005, t + d);
-  o.connect(g).connect(dest);
-  o.start(t);
-  o.stop(t + d + 0.02);
-}
-
-export type SfxDef = {
-  id: string;
-  name: string;
-  cat: string;
-  dur: number;
-  wet?: number;
-  build: (oc: OfflineAudioContext, d: AudioNode, pm?: number) => void;
-};
-
-export const SFX: SfxDef[] = [
-  /* --- TIKTOK & VIRAL --- */
-  {
-    id: 'tt-pop',
-    name: 'Pop Burbuja (Tap)',
-    cat: 'TikTok & Viral',
-    dur: 0.22,
-    wet: 0.14,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 520, 1480, 0.11, 0.48, 'sine', pm);
-      tone(o, d, 0.02, 1040, 2100, 0.08, 0.22, 'triangle', pm);
-      const n = noise(o, 0.025, 19);
-      const bp = o.createBiquadFilter();
-      const g = o.createGain();
-      bp.type = 'bandpass';
-      bp.frequency.value = 3200 * pm;
-      g.gain.setValueAtTime(0.25, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.024);
-      n.connect(bp).connect(g).connect(d);
-      n.start(0);
-      n.stop(0.025);
-    },
-  },
-  {
-    id: 'tt-doubletap',
-    name: 'Doble Tap Like',
-    cat: 'TikTok & Viral',
-    dur: 0.36,
-    wet: 0.2,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 740, 1480, 0.12, 0.4, 'sine', pm);
-      tone(o, d, 0.09, 987, 1975, 0.22, 0.44, 'sine', pm);
-      tone(o, d, 0.09, 1480, 2960, 0.18, 0.16, 'triangle', pm);
-    },
-  },
-  {
-    id: 'tt-sparkle',
-    name: 'Brillo / Magia',
-    cat: 'TikTok & Viral',
-    dur: 0.95,
-    wet: 0.34,
-    build: (o, d, pm = 1) => {
-      const notes = [1318, 1568, 1975, 2349, 2637, 3136, 3951];
-      notes.forEach((f, i) => {
-        const pan = panSweep(o, d, -0.5 + i / notes.length, 0.5 - i / notes.length, 0.9);
-        tone(o, pan, i * 0.055, f, f * 1.015, 0.45, 0.22 - i * 0.015, 'sine', pm);
-      });
-    },
-  },
-  {
-    id: 'tt-camera',
-    name: 'Flash Cámara',
-    cat: 'TikTok & Viral',
-    dur: 0.32,
-    wet: 0.18,
-    build: (o, d, pm = 1) => {
-      const n1 = noise(o, 0.04, 101);
-      const hp = o.createBiquadFilter();
-      const g1 = o.createGain();
-      hp.type = 'highpass';
-      hp.frequency.value = 2400;
-      g1.gain.setValueAtTime(0.55, 0);
-      g1.gain.exponentialRampToValueAtTime(0.001, 0.038);
-      n1.connect(hp).connect(g1).connect(d);
-      n1.start(0);
-      n1.stop(0.04);
-
-      const n2 = noise(o, 0.05, 202);
-      const bp = o.createBiquadFilter();
-      const g2 = o.createGain();
-      bp.type = 'bandpass';
-      bp.frequency.value = 4200;
-      g2.gain.setValueAtTime(0.45, 0.055);
-      g2.gain.exponentialRampToValueAtTime(0.001, 0.1);
-      n2.connect(bp).connect(g2).connect(d);
-      n2.start(0.055);
-      n2.stop(0.105);
-
-      tone(o, d, 0.06, 3600, 3200, 0.24, 0.12, 'sine', pm);
-    },
-  },
-  {
-    id: 'tt-ding-hook',
-    name: 'Gancho Atención',
-    cat: 'TikTok & Viral',
-    dur: 0.72,
-    wet: 0.25,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 1568, 1568, 0.65, 0.36, 'sine', pm);
-      tone(o, d, 0, 3136, 3136, 0.38, 0.15, 'sine', pm);
-      tone(o, d, 0.03, 2349, 2349, 0.5, 0.14, 'triangle', pm);
-    },
-  },
-
-  /* --- TRANSICIONES --- */
-  {
-    id: 'whoosh',
-    name: 'Whoosh Aéreo',
-    cat: 'Transiciones',
-    dur: 0.75,
-    wet: 0.22,
-    build: (o, d, pm = 1) => {
-      const pan = panSweep(o, d, -0.7, 0.7, 0.75);
-      const n = noise(o, 0.75, 11);
-      const bp = o.createBiquadFilter();
-      const g = o.createGain();
-      bp.type = 'bandpass';
-      bp.Q.value = 1.6;
-      bp.frequency.setValueAtTime(280 * pm, 0);
-      bp.frequency.exponentialRampToValueAtTime(4800 * pm, 0.38);
-      bp.frequency.exponentialRampToValueAtTime(360 * pm, 0.74);
-      g.gain.setValueAtTime(0.001, 0);
-      g.gain.linearRampToValueAtTime(0.58, 0.32);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.74);
-      n.connect(bp).connect(g).connect(pan);
-      n.start(0);
-      n.stop(0.75);
-      tone(o, pan, 0.12, 110, 48, 0.45, 0.22, 'sine', pm);
-    },
-  },
-  {
-    id: 'swipe',
-    name: 'Swipe Rápido',
-    cat: 'Transiciones',
-    dur: 0.38,
-    wet: 0.15,
-    build: (o, d, pm = 1) => {
-      const pan = panSweep(o, d, 0.65, -0.65, 0.38);
-      const n = noise(o, 0.38, 23);
-      const hp = o.createBiquadFilter();
-      const g = o.createGain();
-      hp.type = 'highpass';
-      hp.frequency.setValueAtTime(850 * pm, 0);
-      hp.frequency.exponentialRampToValueAtTime(6800 * pm, 0.36);
-      g.gain.setValueAtTime(0.48, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.37);
-      n.connect(hp).connect(g).connect(pan);
-      n.start(0);
-      n.stop(0.38);
-    },
-  },
-  {
-    id: 'sweep',
-    name: 'Sweep Cinemático',
-    cat: 'Transiciones',
-    dur: 1.4,
-    wet: 0.28,
-    build: (o, d, pm = 1) => {
-      const n = noise(o, 1.4, 31);
-      const bp = o.createBiquadFilter();
-      const g = o.createGain();
-      bp.type = 'bandpass';
-      bp.Q.value = 3.8;
-      bp.frequency.setValueAtTime(6500 * pm, 0);
-      bp.frequency.exponentialRampToValueAtTime(160 * pm, 1.32);
-      g.gain.setValueAtTime(0.45, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 1.38);
-      n.connect(bp).connect(g).connect(d);
-      n.start(0);
-      n.stop(1.4);
-      tone(o, d, 0, 140, 38, 1.35, 0.28, 'sine', pm);
-    },
-  },
-  {
-    id: 'riser',
-    name: 'Riser Tensión',
-    cat: 'Transiciones',
-    dur: 2.1,
-    wet: 0.25,
-    build: (o, d, pm = 1) => {
-      const n = noise(o, 2.1, 41);
-      const bp = o.createBiquadFilter();
-      const g = o.createGain();
-      bp.type = 'bandpass';
-      bp.Q.value = 3.2;
-      bp.frequency.setValueAtTime(220 * pm, 0);
-      bp.frequency.exponentialRampToValueAtTime(9200 * pm, 1.98);
-      g.gain.setValueAtTime(0.02, 0);
-      g.gain.linearRampToValueAtTime(0.5, 1.95);
-      g.gain.exponentialRampToValueAtTime(0.001, 2.08);
-      n.connect(bp).connect(g).connect(d);
-      n.start(0);
-      n.stop(2.1);
-      tone(o, d, 0, 110, 440, 2.0, 0.18, 'sawtooth', pm);
-    },
-  },
-
-  /* --- INTERFAZ --- */
-  {
-    id: 'ping',
-    name: 'Ping Cristal',
-    cat: 'Interfaz',
-    dur: 0.6,
-    wet: 0.24,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 1760, 1760, 0.56, 0.36, 'sine', pm);
-      tone(o, d, 0, 2640, 2640, 0.34, 0.15, 'sine', pm);
-    },
-  },
-  {
-    id: 'click',
-    name: 'Click Mecánico',
-    cat: 'Interfaz',
-    dur: 0.1,
-    wet: 0.08,
-    build: (o, d, pm = 1) => {
-      const n = noise(o, 0.04, 61);
-      const hp = o.createBiquadFilter();
-      const g = o.createGain();
-      hp.type = 'highpass';
-      hp.frequency.value = 2500;
-      g.gain.setValueAtTime(0.46, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.04);
-      n.connect(hp).connect(g).connect(d);
-      n.start(0);
-      n.stop(0.045);
-      tone(o, d, 0, 1500, 820, 0.055, 0.2, 'triangle', pm);
-    },
-  },
-  {
-    id: 'tick',
-    name: 'Tick Reloj',
-    cat: 'Interfaz',
-    dur: 0.08,
-    wet: 0.06,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 2500, 1750, 0.048, 0.34, 'triangle', pm);
-    },
-  },
-
-  /* --- NOTIFICACIONES --- */
-  {
-    id: 'ding',
-    name: 'Ding Campana',
-    cat: 'Notificaciones',
-    dur: 1.45,
-    wet: 0.28,
-    build: (o, d, pm = 1) => {
-      [1046.5, 1568, 2093, 3136].forEach((f, i) =>
-        tone(o, d, 0, f, f, 1.4 - i * 0.28, 0.28 - i * 0.055, 'sine', pm)
-      );
-    },
-  },
-  {
-    id: 'notify',
-    name: 'Notificación App',
-    cat: 'Notificaciones',
-    dur: 0.68,
-    wet: 0.2,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 880, 880, 0.22, 0.34, 'sine', pm);
-      tone(o, d, 0.12, 1318.5, 1318.5, 0.46, 0.32, 'sine', pm);
-    },
-  },
-  {
-    id: 'success',
-    name: 'Éxito / Nivel',
-    cat: 'Notificaciones',
-    dur: 0.95,
-    wet: 0.24,
-    build: (o, d, pm = 1) => {
-      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
-        tone(o, d, i * 0.08, f, f, 0.58, 0.26, 'triangle', pm)
-      );
-    },
-  },
-  {
-    id: 'coin',
-    name: 'Moneda Retro',
-    cat: 'Notificaciones',
-    dur: 0.55,
-    wet: 0.12,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 987.77, 987.77, 0.085, 0.28, 'square', pm);
-      tone(o, d, 0.08, 1318.5, 1318.5, 0.44, 0.26, 'square', pm);
-    },
-  },
-
-  /* --- IMPACTOS --- */
-  {
-    id: 'boom',
-    name: 'Impacto Sub 808',
-    cat: 'Impactos',
-    dur: 1.75,
-    wet: 0.24,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 165, 34, 1.55, 0.85, 'sine', pm);
-      tone(o, d, 0, 95, 28, 1.1, 0.35, 'triangle', pm);
-      const n = noise(o, 0.85, 71);
-      const lp = o.createBiquadFilter();
-      const g = o.createGain();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(2600, 0);
-      lp.frequency.exponentialRampToValueAtTime(160, 0.8);
-      g.gain.setValueAtTime(0.45, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.84);
-      n.connect(lp).connect(g).connect(d);
-      n.start(0);
-      n.stop(0.85);
-    },
-  },
-  {
-    id: 'hit',
-    name: 'Golpe Punch',
-    cat: 'Impactos',
-    dur: 0.48,
-    wet: 0.16,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 280, 62, 0.34, 0.68, 'sine', pm);
-      const n = noise(o, 0.14, 83);
-      const bp = o.createBiquadFilter();
-      const g = o.createGain();
-      bp.type = 'bandpass';
-      bp.frequency.value = 1750;
-      g.gain.setValueAtTime(0.4, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.13);
-      n.connect(bp).connect(g).connect(d);
-      n.start(0);
-      n.stop(0.14);
-    },
-  },
-  {
-    id: 'glitch',
-    name: 'Glitch Digital',
-    cat: 'Impactos',
-    dur: 0.65,
-    wet: 0.14,
-    build: (o, d, pm = 1) => {
-      for (let i = 0; i < 11; i++) {
-        const t = i * 0.055;
-        const n = noise(o, 0.05, 97 + i * 13);
-        const bp = o.createBiquadFilter();
-        const g = o.createGain();
-        bp.type = 'bandpass';
-        bp.frequency.value = (420 + ((i * 911) % 5600)) * pm;
-        bp.Q.value = 8;
-        g.gain.setValueAtTime(0.38, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
-        n.connect(bp).connect(g).connect(d);
-        n.start(t);
-        n.stop(t + 0.055);
-      }
-    },
-  },
-
-  /* --- COMEDIA & REACCIÓN --- */
-  {
-    id: 'boing',
-    name: 'Boing Rebote',
-    cat: 'Comedia',
-    dur: 0.62,
-    wet: 0.16,
-    build: (o, d, pm = 1) => {
-      const osc = o.createOscillator();
-      const g = o.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(190 * pm, 0);
-      osc.frequency.exponentialRampToValueAtTime(580 * pm, 0.14);
-      osc.frequency.exponentialRampToValueAtTime(260 * pm, 0.28);
-      osc.frequency.exponentialRampToValueAtTime(490 * pm, 0.42);
-      osc.frequency.exponentialRampToValueAtTime(340 * pm, 0.58);
-      g.gain.setValueAtTime(0.45, 0);
-      g.gain.exponentialRampToValueAtTime(0.001, 0.6);
-      osc.connect(g).connect(d);
-      osc.start(0);
-      osc.stop(0.62);
-    },
-  },
-  {
-    id: 'bruh-down',
-    name: 'Bajón Cómico',
-    cat: 'Comedia',
-    dur: 0.85,
-    wet: 0.18,
-    build: (o, d, pm = 1) => {
-      const lp = o.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(1100 * pm, 0);
-      lp.frequency.exponentialRampToValueAtTime(240 * pm, 0.8);
-      lp.connect(d);
-      tone(o, lp, 0, 196, 92, 0.82, 0.38, 'sawtooth', pm);
-      tone(o, lp, 0, 146.8, 69, 0.82, 0.32, 'sawtooth', pm);
-    },
-  },
-  {
-    id: 'error',
-    name: 'Buzzer Error',
-    cat: 'Comedia',
-    dur: 0.52,
-    wet: 0.12,
-    build: (o, d, pm = 1) => {
-      tone(o, d, 0, 210, 155, 0.46, 0.32, 'sawtooth', pm);
-      tone(o, d, 0.01, 148, 110, 0.46, 0.28, 'square', pm);
-    },
-  },
-];
-
-export const SFX_CATS = ['TikTok & Viral', 'Transiciones', 'Interfaz', 'Notificaciones', 'Impactos', 'Comedia'];
-
 /* ============================================================================
-   STICKERS ANIMADOS HD (TIKTOK, YOUTUBE, REDES, UI)
+sfxLib: biblioteca real servida desde Cloudflare R2 → ver sfxLibrary.tsx
 ============================================================================ */
 
+/* ============================================================================
+STICKERS ANIMADOS HD (TIKTOK, YOUTUBE, REDES, UI)
+============================================================================ */
 export type StickerDef = {
   id: string;
   name: string;
@@ -1717,17 +1190,6 @@ function EmojiTextInput({
    RENDERIZADO DE MEDIOS (WAV MASTERIZADO + SPRITESHEET HD)
 ============================================================================ */
 
-async function renderSfx(def: SfxDef, tune: number, gain: number): Promise<{ blob: Blob; duration: number }> {
-  const oc = new OfflineAudioContext(2, Math.ceil(def.dur * SR), SR);
-  const bus = oc.createGain();
-  bus.gain.value = clamp(gain, 0, 1.5);
-  connectMaster(oc, bus, oc.destination, def.wet ?? 0.16);
-  const pm = Math.pow(2, tune / 12);
-  def.build(oc, bus, pm);
-  const rendered = await oc.startRendering();
-  return { blob: encodeWav(rendered), duration: rendered.duration };
-}
-
 function buildSheet(
   def: StickerDef,
   accent: string,
@@ -1761,83 +1223,6 @@ function buildSheet(
 /* ============================================================================
    MINIATURAS Y VISUALIZADORES DE TARJETAS
 ============================================================================ */
-
-const waveCache = new Map<string, number[]>();
-
-function SfxWaveform({
-  def,
-  active,
-  playing,
-  barsCount = 26,
-  tall = false,
-}: {
-  def: SfxDef;
-  active: boolean;
-  playing: boolean;
-  barsCount?: number;
-  tall?: boolean;
-}) {
-  const cacheKey = `${def.id}_${barsCount}`;
-  const [bars, setBars] = useState<number[]>(() => waveCache.get(cacheKey) || Array(barsCount).fill(0.28));
-
-  useEffect(() => {
-    if (waveCache.has(cacheKey)) {
-      setBars(waveCache.get(cacheKey)!);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const rate = 8000;
-        const oc = new OfflineAudioContext(1, Math.max(barsCount, Math.ceil(def.dur * rate)), rate);
-        def.build(oc, oc.destination, 1);
-        const buf = await oc.startRendering();
-        const ch = buf.getChannelData(0);
-        const step = Math.max(1, Math.floor(ch.length / barsCount));
-        const peaks: number[] = [];
-        let maxPeak = 0.01;
-        for (let i = 0; i < barsCount; i++) {
-          let sum = 0;
-          for (let j = 0; j < step; j++) {
-            const v = Math.abs(ch[i * step + j] || 0);
-            if (v > sum) sum = v;
-          }
-          peaks.push(sum);
-          if (sum > maxPeak) maxPeak = sum;
-        }
-        const norm = peaks.map((v) => clamp(v / maxPeak, 0.14, 1));
-        waveCache.set(cacheKey, norm);
-        if (!cancelled) setBars(norm);
-      } catch {
-        /* fallback */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [def, barsCount, cacheKey]);
-
-  const maxH = tall ? 46 : 28;
-
-  return (
-    <div className={cx('flex items-center justify-center gap-[3px]', tall ? 'h-12' : 'h-8')} aria-hidden="true">
-      {bars.map((v, idx) => (
-        <span
-          key={idx}
-          className={cx(
-            'w-[3px] rounded-full transition-all duration-150',
-            playing
-              ? 'animate-pulse bg-cyan-300 shadow-[0_0_8px_rgba(34,211,238,0.8)]'
-              : active
-              ? 'bg-gradient-to-t from-fuchsia-400 to-cyan-300'
-              : 'bg-slate-600/80 group-hover:bg-cyan-400/70'
-          )}
-          style={{ height: `${Math.max(4, Math.round(v * maxH))}px`, animationDelay: `${idx * 22}ms` }}
-        />
-      ))}
-    </div>
-  );
-}
 
 function StickerCardPreview({ def, accent }: { def: StickerDef; accent: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -1912,8 +1297,13 @@ export function MediaLibraryModal({
   const [sortBy, setSortBy] = useState<SortMode>('default');
   const [catS, setCatS] = useState<string>('Todos');
   const [catK, setCatK] = useState<string>('Todos');
-  const [selS, setSelS] = useState(SFX[1].id);
+const [catQuery, setCatQuery] = useState('');
+  const [selS, setSelS] = useState('');
   const [selK, setSelK] = useState(STICKERS[1].id);
+const { items: sfxLib, cats: sfxCats, loading: sfxLoading, error: sfxError, retry: sfxRetry, manifestUrl: sfxManifestUrl } = useSfxLibrary();
+const [sfxLimit, setSfxLimit] = useState(60);
+useEffect(() => { if (sfxLib.length && !sfxLib.some((s) => s.id === selS)) setSelS(sfxLib[0].id); }, [sfxLib, selS]);
+useEffect(() => { setSfxLimit(60); }, [catS, query, sortBy, tab]);
 
   // Favoritos y Recientes persistentes
   const [favs, setFavs] = useState<string[]>(() => readStoredIds(FAV_STORAGE_KEY));
@@ -1948,7 +1338,7 @@ export function MediaLibraryModal({
   const progRef = useRef(prog);
   progRef.current = prog;
 
-  const sfx = useMemo(() => SFX.find((s) => s.id === selS) || SFX[0], [selS]);
+  const sfx = useMemo(() => sfxLib.find((s) => s.id === selS) || sfxLib[0] || EMPTY_SFX, [sfxLib, selS]);
   const stk = useMemo(() => STICKERS.find((s) => s.id === selK) || STICKERS[0], [selK]);
 
   const toggleFav = useCallback((id: string, e?: React.MouseEvent) => {
@@ -1997,20 +1387,20 @@ export function MediaLibraryModal({
       return map;
     } else {
       const map: Record<string, number> = {
-        Todos: SFX.length,
-        Favoritos: SFX.filter((s) => favs.includes(s.id)).length,
-        Recientes: SFX.filter((s) => recents.includes(s.id)).length,
+        Todos: sfxLib.length,
+        Favoritos: sfxLib.filter((s) => favs.includes(s.id)).length,
+        Recientes: sfxLib.filter((s) => recents.includes(s.id)).length,
       };
-      SFX_CATS.forEach((c) => {
-        map[c] = SFX.filter((s) => s.cat === c).length;
+      sfxCats.forEach((c) => {
+        map[c] = sfxLib.filter((s) => s.cat === c).length;
       });
       return map;
     }
-  }, [tab, favs, recents]);
+  }, [tab, favs, recents, sfxLib, sfxCats]);
 
   const sfxList = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const filtered = SFX.filter((s) => {
+    const filtered = sfxLib.filter((s) => {
       const catOk =
         catS === 'Todos'
           ? true
@@ -2025,7 +1415,7 @@ export function MediaLibraryModal({
     if (sortBy === 'loop') return [...filtered].sort((a, b) => b.dur - a.dur);
     if (sortBy === 'once') return [...filtered].sort((a, b) => a.dur - b.dur);
     return filtered;
-  }, [catS, query, favs, recents, sortBy]);
+  }, [sfxLib, catS, query, favs, recents, sortBy]);
 
   const stkList = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -2129,20 +1519,15 @@ export function MediaLibraryModal({
       if (ac.state === 'suspended') await ac.resume();
       setPlayingAudioId(def.id);
       try {
-        const { blob } = await renderSfx(def, tune, vol);
-        const buf = await ac.decodeAudioData(await blob.arrayBuffer());
-        const s = ac.createBufferSource();
-        s.buffer = buf;
-        s.connect(ac.destination);
-        sfxSourceRef.current = s;
-        s.onended = () => {
-          if (sfxSourceRef.current === s) {
-            sfxSourceRef.current = null;
-            setPlayingAudioId((p) => (p === def.id ? null : p));
-          }
-        };
-        s.start();
-      } catch {
+        const node = await playSfxFile(def, tune, vol);
+sfxSourceRef.current = node;
+node.onended = () => {
+if (sfxSourceRef.current === node) {
+sfxSourceRef.current = null;
+setPlayingAudioId((p) => (p === def.id ? null : p));
+}
+};
+} catch {
         sfxSourceRef.current = null;
         setPlayingAudioId(null);
       }
@@ -2156,7 +1541,7 @@ export function MediaLibraryModal({
     setBusy(true);
     try {
       markRecent(sfx.id);
-      const { blob, duration } = await renderSfx(sfx, tune, 1);
+      const { blob, duration } = await renderSfxFile(sfx, tune, 1);
       onSfx({ blob, name: sfx.name, duration, volume: vol, fadeIn, fadeOut });
     } finally {
       setBusy(false);
@@ -2192,7 +1577,8 @@ export function MediaLibraryModal({
 
   const randomize = () => {
     if (tab === 'sfx') {
-      const p = SFX[Math.floor(Math.random() * SFX.length)];
+      if (!sfxLib.length) return;
+const p = sfxLib[Math.floor(Math.random() * sfxLib.length)];
       setCatS('Todos');
       setSelS(p.id);
       setTune(Math.round(Math.random() * 12 - 6));
@@ -2234,7 +1620,12 @@ export function MediaLibraryModal({
   const sl = 'sfxlib-range w-full';
   const activeCat = tab === 'sfx' ? catS : catK;
   const setActiveCat = tab === 'sfx' ? setCatS : setCatK;
-  const baseCats = tab === 'sfx' ? SFX_CATS : STICKER_CATS;
+  const baseCats = tab === 'sfx' ? sfxCats : STICKER_CATS;
+const catFilteredList = (() => {
+const q = catQuery.trim().toLowerCase();
+const all = ['Todos', ...baseCats];
+return q ? all.filter((c) => c.toLowerCase().includes(q)) : all;
+})();
 
   const renderCatBadgeIcon = (catName: string, active = false) => {
     const hue = CAT_HUE[catName] || '#22d3ee';
@@ -2290,7 +1681,7 @@ export function MediaLibraryModal({
                 Generador de <span className="bg-gradient-to-r from-cyan-300 via-violet-300 to-fuchsia-400 bg-clip-text text-transparent">Medios</span>
               </h2>
               <p className="mt-1 truncate text-[8px] font-bold uppercase tracking-[0.18em] text-slate-400 sm:text-[9px]">
-                Stickers TikTok & SFX HD · 100% local
+                Stickers TikTok & sfxLib HD · 100% local
               </p>
             </div>
           </div>
@@ -2350,76 +1741,96 @@ export function MediaLibraryModal({
         {/* ====================================================================
             CUERPO PRINCIPAL: 3 COLUMNAS EN DESKTOP / FLUJO MÓVIL OPTIMIZADO
         ==================================================================== */}
-        <div className="sfxlib-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 pt-0 lg:grid lg:grid-cols-[195px_minmax(0,1fr)_395px] lg:gap-3.5 lg:overflow-hidden lg:p-3.5">
+        <div className="sfxlib-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 pt-0 lg:grid lg:grid-cols-[212px_minmax(0,1fr)_395px] lg:gap-3.5 lg:overflow-hidden lg:p-3.5">
           {/* ==================================================================
               1. SIDEBAR IZQUIERDO DE CATEGORÍAS (Desktop)
           ================================================================== */}
-          <aside className="hidden flex-col justify-between rounded-2xl border border-[#192f4f] bg-[#071122] p-3 lg:flex">
-            <div>
-              <p className="mb-2.5 px-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Categorías</p>
-              <nav className="space-y-1">
-                {['Todos', ...baseCats].map((cat) => {
-                  const active = activeCat === cat;
-                  return (
-                    <button
-                      key={cat}
-                      onClick={() => setActiveCat(cat)}
-                      className={cx(
-                        'flex w-full items-center justify-between rounded-xl border px-2.5 py-2 text-left text-[12px] font-bold transition',
-                        active
-                          ? 'border-fuchsia-400/60 bg-gradient-to-r from-violet-600/25 to-cyan-500/15 text-white shadow-[0_0_14px_rgba(168,85,247,0.2)]'
-                          : 'border-transparent text-slate-300 hover:bg-[#0d1c34] hover:text-white'
-                      )}
-                    >
-                      <span className="flex items-center gap-2.5 truncate">
-                        {renderCatBadgeIcon(cat, active)}
-                        <span className="truncate">{cat}</span>
-                      </span>
-                      <span className={cx('font-mono text-[11px]', active ? 'text-cyan-300' : 'text-slate-500')}>
-                        {catCounts[cat] ?? 0}
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
-
-              <div className="my-3 border-t border-[#162a47]" />
-
-              <nav className="space-y-1">
-                {(['Favoritos', 'Recientes'] as const).map((special) => {
-                  const active = activeCat === special;
-                  return (
-                    <button
-                      key={special}
-                      onClick={() => setActiveCat(special)}
-                      className={cx(
-                        'flex w-full items-center justify-between rounded-xl border px-2.5 py-2 text-left text-[12px] font-bold transition',
-                        active
-                          ? 'border-fuchsia-400/60 bg-gradient-to-r from-violet-600/25 to-cyan-500/15 text-white'
-                          : 'border-transparent text-slate-300 hover:bg-[#0d1c34] hover:text-white'
-                      )}
-                    >
-                      <span className="flex items-center gap-2.5 truncate">
-                        {renderCatBadgeIcon(special, active)}
-                        <span className="truncate">{special}</span>
-                      </span>
-                      <span className={cx('font-mono text-[11px]', active ? 'text-cyan-300' : 'text-slate-500')}>
-                        {catCounts[special] ?? 0}
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
-            </div>
-
-            {/* Tarjeta inferior 100% LOCAL */}
-            <div className="rounded-xl border border-violet-500/30 bg-gradient-to-br from-[#121633] to-[#0a1326] p-3">
+          <aside className="hidden min-h-0 flex-col overflow-hidden rounded-2xl border border-[#192f4f] bg-[#071122] p-3 lg:flex">
+         <div className="shrink-0">
+           <div className="mb-2 flex items-baseline justify-between gap-2 px-2">
+             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Categorías</p>
+             <span className="shrink-0 font-mono text-[9px] font-bold text-cyan-400/70">{baseCats.length}</span>
+           </div>
+           <div className="relative mb-2">
+             <input
+               type="text"
+               value={catQuery}
+               onChange={(e) => setCatQuery(e.target.value)}
+               placeholder="Filtrar categoría…"
+               className="h-8 w-full rounded-lg border border-[#223f63] bg-[#091527] pl-8 pr-7 text-[11px] text-slate-100 placeholder-slate-500 outline-none transition focus:border-cyan-400"
+             />
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-500" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+             {catQuery && (
+               <button type="button" onClick={() => setCatQuery('')} className="absolute right-2 top-1.5 rounded px-1 text-[11px] font-bold text-slate-400 transition hover:text-white" title="Limpiar filtro">✕</button>
+             )}
+           </div>
+         </div>
+         <div className="sfxlib-scroll -mr-1 min-h-0 flex-1 overflow-y-auto pr-1">
+           <nav className="space-y-1">
+             {catFilteredList.map((cat) => {
+               const active = activeCat === cat;
+               return (
+                 <button
+                   key={cat}
+                   onClick={() => setActiveCat(cat)}
+                   title={cat + ' · ' + (catCounts[cat] ?? 0) + ' elementos'}
+                   className={cx(
+                     'flex w-full items-center justify-between gap-1.5 rounded-xl border px-2 py-1.5 text-left text-[11.5px] font-bold transition',
+                     active
+                       ? 'border-fuchsia-400/60 bg-gradient-to-r from-violet-600/25 to-cyan-500/15 text-white shadow-[0_0_14px_rgba(168,85,247,0.2)]'
+                       : 'border-transparent text-slate-300 hover:bg-[#0d1c34] hover:text-white'
+                   )}
+                 >
+                   <span className="flex min-w-0 items-center gap-2">
+                     {renderCatBadgeIcon(cat, active)}
+                     <span className="truncate">{cat}</span>
+                   </span>
+                   <span className={cx('shrink-0 font-mono text-[10px]', active ? 'text-cyan-300' : 'text-slate-500')}>
+                     {catCounts[cat] ?? 0}
+                   </span>
+                 </button>
+               );
+             })}
+             {catFilteredList.length === 0 && (
+               <p className="px-2 py-5 text-center text-[11px] leading-relaxed text-slate-500">Ninguna categoría coincide con "{catQuery}".</p>
+             )}
+           </nav>
+           <div className="my-2.5 border-t border-[#162a47]" />
+           <nav className="space-y-1 pb-1">
+             {(['Favoritos', 'Recientes'] as const).map((special) => {
+               const active = activeCat === special;
+               return (
+                 <button
+                   key={special}
+                   onClick={() => setActiveCat(special)}
+                   title={special}
+                   className={cx(
+                     'flex w-full items-center justify-between gap-1.5 rounded-xl border px-2 py-1.5 text-left text-[11.5px] font-bold transition',
+                     active
+                       ? 'border-fuchsia-400/60 bg-gradient-to-r from-violet-600/25 to-cyan-500/15 text-white'
+                       : 'border-transparent text-slate-300 hover:bg-[#0d1c34] hover:text-white'
+                   )}
+                 >
+                   <span className="flex min-w-0 items-center gap-2">
+                     {renderCatBadgeIcon(special, active)}
+                     <span className="truncate">{special}</span>
+                   </span>
+                   <span className={cx('shrink-0 font-mono text-[10px]', active ? 'text-cyan-300' : 'text-slate-500')}>
+                     {catCounts[special] ?? 0}
+                   </span>
+                 </button>
+               );
+             })}
+           </nav>
+         </div>
+         {/* Tarjeta inferior 100% LOCAL */}
+            <div className="mt-2 shrink-0 rounded-xl border border-violet-500/30 bg-gradient-to-br from-[#121633] to-[#0a1326] p-3">
               <div className="flex items-center gap-1.5 text-[11px] font-black text-fuchsia-300">
                 <span>⚡</span>
-                <span>100% LOCAL</span>
+                <span>TUS ARCHIVOS, LOCAL</span>
               </div>
               <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
-                Sin conexión. Tus archivos, tu privacidad.
+                Stickers generados en tu navegador. Tus archivos nunca salen de esta pestaña.
               </p>
             </div>
           </aside>
@@ -2437,7 +1848,7 @@ export function MediaLibraryModal({
                 <div className="flex items-center gap-2">
                   <span className="rounded-md bg-[#0e203b] px-2 py-0.5 font-mono text-[9px] font-bold text-cyan-300">
                     {tab === 'sfx'
-                      ? `WAV 44.1kHz · ${sfx.dur.toFixed(2)}s`
+                      ? `WAV 44.1kHz · ${sfxDuration(sfx).toFixed(2)}s`
                       : `HD ${Math.round(stk.fw * HD_SCALE)}×${Math.round(stk.fh * HD_SCALE)}`}
                   </span>
                   {tab === 'sticker' && (
@@ -2521,7 +1932,7 @@ export function MediaLibraryModal({
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[14px] font-black text-white">{sfx.name}</p>
                     <p className="mt-0.5 font-mono text-[10px] text-slate-400">
-                      {sfx.cat} · {sfx.dur.toFixed(2)}s · Tono {tune > 0 ? `+${tune}` : tune} st
+                      {sfx.cat} · {sfxDuration(sfx).toFixed(2)}s · Tono {tune > 0 ? `+${tune}` : tune} st
                     </p>
                     <div className="mt-2.5">
                       <SfxWaveform def={sfx} active={true} playing={playingAudioId === sfx.id} barsCount={34} tall={true} />
@@ -2737,7 +2148,7 @@ export function MediaLibraryModal({
                   <button
                     type="button"
                     onClick={tab === 'sfx' ? insertSfx : insertSticker}
-                    disabled={busy}
+                    disabled={busy || (tab === 'sfx' && !sfx.id)}
                     className="hidden min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-cyan-400 via-sky-400 to-fuchsia-500 px-3 text-[12px] font-black text-[#040b17] shadow-lg shadow-cyan-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 lg:flex"
                   >
                     {busy ? 'Renderizando HD…' : tab === 'sfx' ? '➕ Agregar a pista de audio' : '➕ Agregar a pista de imagen'}
@@ -2746,7 +2157,7 @@ export function MediaLibraryModal({
 
                 <p className="hidden text-center text-[9px] text-slate-500 lg:block">
                   {tab === 'sfx'
-                    ? 'Masterizado con compresor + reverb estéreo · Royalty-free'
+                    ? 'Audio profesional royalty-free · Sin tono ni volumen se entrega el MP3 original'
                     : `${frames} frames PNG alfa (${Math.round(stk.fw * HD_SCALE)}×${Math.round(stk.fh * HD_SCALE)}px) · Lienzo ${refW}×${refH}`}
                 </p>
               </div>
@@ -2758,7 +2169,7 @@ export function MediaLibraryModal({
           ================================================================== */}
           <div className="order-3 flex min-w-0 flex-col rounded-2xl border border-[#192f4f] bg-[#071122] p-3 lg:order-2 lg:min-h-0">
             {/* Barra de búsqueda + Ordenar */}
-            <div className="mb-2.5 flex shrink-0 items-center gap-2">
+            <div className="mb-2.5 flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
               <div className="relative flex-1">
                 <input
                   type="text"
@@ -2787,38 +2198,47 @@ export function MediaLibraryModal({
                 )}
               </div>
 
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as SortMode)}
-                aria-label="Ordenar elementos"
-                className="h-9 shrink-0 rounded-xl border border-[#223f63] bg-[#091527] px-2.5 text-[11px] font-bold text-slate-200 outline-none transition focus:border-cyan-400"
-              >
-                <option value="default">Ordenar</option>
-                <option value="az">Nombre A-Z</option>
-                <option value="loop">{tab === 'sfx' ? 'Más largos' : 'Bucle primero'}</option>
-                <option value="once">{tab === 'sfx' ? 'Más cortos' : 'Animado primero'}</option>
-              </select>
-            </div>
-
-            {/* Chips de categorías horizontales solo en móvil/tablet (< lg) */}
-            <div className="sfxlib-no-bar mb-2.5 flex shrink-0 flex-nowrap gap-1.5 overflow-x-auto py-0.5 lg:hidden">
-              {['Todos', ...baseCats, 'Favoritos', 'Recientes'].map((c) => {
-                const active = activeCat === c;
-                return (
+              <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+                {tab === 'sfx' && sfxList.length > sfxLimit && (
                   <button
-                 key={c}
-                 onClick={() => setActiveCat(c)}
-                 className={cx(
-                   'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide transition active:scale-95',
-                   active ? 'text-white' : 'border-[#223f63] bg-[#0a1729] text-slate-400 hover:text-slate-200'
-                 )}
-                 style={active ? { borderColor: (CAT_HUE[c] || '#22d3ee') + 'cc', background: (CAT_HUE[c] || '#22d3ee') + '26', boxShadow: '0 0 10px ' + (CAT_HUE[c] || '#22d3ee') + '40' } : undefined}
-               >
-                 <span style={{ color: CAT_HUE[c] || '#22d3ee' }} className="flex items-center"><CatIcon cat={c} className="h-3.5 w-3.5" /></span>
-                 {c} ({catCounts[c] ?? 0})
-               </button>
-                );
-              })}
+                    type="button"
+                    onClick={() => setSfxLimit((n) => n + 60)}
+                    className="h-10 shrink-0 rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-3 text-[11px] font-black text-cyan-200 transition hover:bg-cyan-500/20 active:scale-95 sm:h-9"
+                    title={'Mostrando ' + Math.min(sfxLimit, sfxList.length) + ' de ' + sfxList.length}
+                  >
+                    +60
+                  </button>
+                )}
+
+                {/* En móvil priorizamos el filtro por categoría; ordenar queda disponible en escritorio. */}
+                <div className="relative min-w-0 flex-1 sm:hidden">
+                  <select
+                    value={activeCat}
+                    onChange={(e) => setActiveCat(e.target.value)}
+                    aria-label="Filtrar por categoría"
+                    className="h-10 w-full appearance-none rounded-xl border border-cyan-400/35 bg-[#0b1a2e] px-3 pr-9 text-[12px] font-bold text-slate-100 outline-none transition focus:border-cyan-400"
+                  >
+                    {['Todos', ...baseCats, 'Favoritos', 'Recientes'].map((c) => (
+                      <option key={c} value={c}>{c === 'Todos' ? 'Categoría · Todos' : c}</option>
+                    ))}
+                  </select>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-cyan-300">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </div>
+
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortMode)}
+                  aria-label="Ordenar elementos"
+                  className="hidden h-9 min-w-[132px] rounded-xl border border-[#223f63] bg-[#091527] px-2.5 text-[11px] font-bold text-slate-200 outline-none transition focus:border-cyan-400 sm:block"
+                >
+                  <option value="default">Ordenar</option>
+                  <option value="az">Nombre A-Z</option>
+                  <option value="loop">{tab === 'sfx' ? 'Más largos' : 'Bucle primero'}</option>
+                  <option value="once">{tab === 'sfx' ? 'Más cortos' : 'Animado primero'}</option>
+                </select>
+              </div>
             </div>
 
             {/* Grilla visual de tarjetas */}
@@ -2883,7 +2303,7 @@ export function MediaLibraryModal({
                   </p>
                 )
               ) : sfxList.length > 0 ? (
-                sfxList.map((s) => {
+                sfxList.slice(0, sfxLimit).map((s) => {
                   const isSel = selS === s.id;
                   const isPlay = playingAudioId === s.id;
                   const isFav = favs.includes(s.id);
@@ -2911,7 +2331,7 @@ export function MediaLibraryModal({
                     >
                       <div className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-lg border border-[#192f4d] bg-gradient-to-b from-[#08132a] to-[#050d1c] px-2">
                      <SfxWaveform def={s} active={isSel} playing={isPlay} barsCount={26} tall />
-                     <span className="pointer-events-none absolute bottom-1.5 left-2 rounded bg-[#040b17]/85 px-1.5 py-0.5 font-mono text-[9px] font-bold text-cyan-300/90">{s.dur.toFixed(2)}s</span>
+                     <span className="pointer-events-none absolute bottom-1.5 left-2 rounded bg-[#040b17]/85 px-1.5 py-0.5 font-mono text-[9px] font-bold text-cyan-300/90">{sfxDuration(s).toFixed(2)}s</span>
                      <button
                        type="button"
                        onClick={(e) => toggleFav(s.id, e)}
@@ -2956,13 +2376,28 @@ export function MediaLibraryModal({
                   );
                 })
               ) : (
-                <p className="col-span-full py-10 text-center text-[12px] text-slate-500">
-                  No hay sonidos en esta vista.
-                </p>
+                <div className="col-span-full flex flex-col items-center gap-3 py-10 text-center">
+               {sfxLoading ? (
+                 <>
+                   <span className="h-5 w-5 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+                   <p className="text-[12px] font-bold text-cyan-200">Cargando biblioteca de sonidos…</p>
+                 </>
+               ) : sfxError ? (
+                 <>
+                   <p className="text-[12px] font-bold text-rose-300">No se pudo cargar la biblioteca</p>
+                   <p className="max-w-[420px] text-[10px] leading-relaxed text-slate-500">{sfxError}</p>
+                   <p className="max-w-[420px] break-all font-mono text-[9px] text-slate-600">{sfxManifestUrl}</p>
+                   <button type="button" onClick={sfxRetry} className="rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-1.5 text-[11px] font-black text-cyan-200 transition hover:bg-cyan-500/20">↺ Reintentar</button>
+                 </>
+               ) : (
+                 <p className="text-[12px] text-slate-500">No hay sonidos en esta vista.</p>
+               )}
+             </div>
               )}
             </div>
           </div>
         </div>
+
 
         {/* ====================================================================
             BARRA INFERIOR FIJA EN CELULAR (< lg)
@@ -2971,7 +2406,7 @@ export function MediaLibraryModal({
           <button
             type="button"
             onClick={tab === 'sfx' ? insertSfx : insertSticker}
-            disabled={busy}
+            disabled={busy || (tab === 'sfx' && !sfx.id)}
             className="w-full rounded-xl bg-gradient-to-r from-cyan-400 via-sky-400 to-fuchsia-500 py-3 text-[12px] font-black text-[#040b17] shadow-lg shadow-cyan-500/25 transition active:scale-[0.99] disabled:opacity-50"
           >
             {busy

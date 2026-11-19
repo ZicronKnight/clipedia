@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+sfx-source/
+.sfx-upload-state.json
+sfx-manifest.json
