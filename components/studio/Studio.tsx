@@ -3240,7 +3240,29 @@ function toggleProxies() {
   function togglePlay() { if (!playing) videoRef.current?.play().catch(() => {}); setPlaying(!playing); }
   function updateClip(id: string, patch: Partial<Clip>) { setClips((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c))); }
   function updateImageOverlay(id: string, patch: Partial<ImageOverlay>) { setImageOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
-  function updateTextOverlay(id: string, patch: Partial<TextOverlay>) { setTextOverlays((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
+  function updateTextOverlay(id: string, patch: Partial<TextOverlay>) {
+    setTextOverlays((prev) => prev.map((t) => {
+      if (t.id !== id) return t;
+      const nextStart = patch.start ?? t.start;
+      const nextEnd = patch.end ?? t.end;
+      const timingChanged = patch.start !== undefined || patch.end !== undefined;
+      // Los tiempos de las palabras del karaoke se guardan en segundos absolutos.
+      // Al mover el bloque, trasladamos cada palabra con él; al recortarlo,
+      // redistribuimos proporcionalmente sus tiempos dentro de la nueva duración.
+      // Así la animación siempre queda anclada al clip y no al segundo original.
+      let nextWords = patch.words ?? t.words;
+      if (timingChanged && patch.words === undefined && t.words?.length) {
+        const oldDuration = Math.max(0.001, t.end - t.start);
+        const newDuration = Math.max(0.001, nextEnd - nextStart);
+        nextWords = t.words.map((word) => ({
+          ...word,
+          start: nextStart + ((word.start - t.start) / oldDuration) * newDuration,
+          end: nextStart + ((word.end - t.start) / oldDuration) * newDuration,
+        }));
+      }
+      return { ...t, ...patch, ...(timingChanged && patch.words === undefined ? { words: nextWords } : {}) };
+    }));
+  }
 function applyStyleToAllSubtitles(src: TextOverlay) {
 const total = textOverlaysRef.current.filter((t) => t.kind === 'subtitulo').length;
 setTextOverlays((prev) => prev.map((t) => (t.kind === 'subtitulo' ? { ...t, font: src.font, size: src.size, bold: src.bold, color: src.color, fadeIn: src.fadeIn, fadeOut: src.fadeOut, x: src.x, y: src.y, outline: src.outline, subStyle: src.subStyle, highlightColor: src.highlightColor, animIn: src.animIn, animInDur: src.animInDur, animOut: src.animOut, animOutDur: src.animOutDur, shadow: src.shadow, shadowColor: src.shadowColor, shadowOpacity: src.shadowOpacity, shadowX: src.shadowX, shadowY: src.shadowY } : t)));
