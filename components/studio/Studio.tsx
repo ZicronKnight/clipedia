@@ -707,7 +707,8 @@ function buildTextChainFF(
     cyPos: number,
     fSize: number,
     tStart: number,
-    tEnd: number
+    tEnd: number,
+    alignBaseline = false
   ): { chain: string; outLbl: string } => {
     if (!txt.shadow) return { chain: '', outLbl: curLbl };
     const sHex = (txt.shadowColor || '#000000').replace('#', '0x');
@@ -728,7 +729,8 @@ function buildTextChainFF(
     for (const ly of layers) {
       const nxt = `${outPrefix}_sh${shStep++}`;
       const shAlpha = combinedAlpha ? `:alpha='(${combinedAlpha})*${ly.mult}'` : `:alpha='${ly.mult}'`;
-      ch += `[${c}]drawtext=text='${escapedText}':x='${cxPos + sx}-text_w/2+(${anT.dx})':y='${cyPos + sy}-text_h/2+(${anT.dy})':fontsize=${fSize}:fontcolor=${sHex}:fontfile=${fontFile}:borderw=${ly.bw}:bordercolor=${sHex}${shAlpha}:enable='between(t,${tStart.toFixed(6)},${tEnd.toFixed(6)})'[${nxt}];`;
+      const shadowY = alignBaseline ? `${cyPos + sy}-max_glyph_a` : `${cyPos + sy}-text_h/2`;
+      ch += `[${c}]drawtext=text='${escapedText}':x='${cxPos + sx}-text_w/2+(${anT.dx})':y='${shadowY}+(${anT.dy})':fontsize=${fSize}:fontcolor=${sHex}:fontfile=${fontFile}:borderw=${ly.bw}:bordercolor=${sHex}${shAlpha}:enable='between(t,${tStart.toFixed(6)},${tEnd.toFixed(6)})'[${nxt}];`;
       c = nxt;
     }
     return { chain: ch, outLbl: c };
@@ -793,9 +795,24 @@ function buildTextChainFF(
     return { chain, outLabel: cur };
   }
 
-  const charW = txt.size * 0.54;
-  const spaceW = txt.size * 0.28;
-  const wordWidths = words.map((w) => Math.max(txt.size * 0.35, w.word.length * charW));
+  // Medimos cada palabra con Canvas usando la misma familia/tamaño/peso que la
+  // preview. El cálculo anterior (cantidad de caracteres * 0.54) deformaba el
+  // ancho de palabras cortas/largas y acumulaba diferencias en toda la línea.
+  // La preview usa flex gap de 0.28em, por eso mantenemos exactamente esa regla.
+  let wordWidths: number[];
+  let spaceW = txt.size * 0.28;
+  try {
+    const measureCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+    const measureCtx = measureCanvas?.getContext('2d');
+    if (measureCtx) {
+      measureCtx.font = `${txt.bold ? 700 : 400} ${txt.size}px ${FONT_STACKS[txt.font] || 'Arial'}`;
+      wordWidths = words.map((w) => Math.max(txt.size * 0.1, measureCtx.measureText(w.word).width));
+    } else {
+      wordWidths = words.map((w) => Math.max(txt.size * 0.35, w.word.length * txt.size * 0.54));
+    }
+  } catch {
+    wordWidths = words.map((w) => Math.max(txt.size * 0.35, w.word.length * txt.size * 0.54));
+  }
   const totalW = wordWidths.reduce((a, b) => a + b, 0) + Math.max(0, words.length - 1) * spaceW;
   let cursorX = txt.x - totalW / 2;
   const centersX = wordWidths.map((w) => {
@@ -814,17 +831,26 @@ function buildTextChainFF(
     const ws = Math.max(S, w.start - timeOffset);
     const we = Math.min(E, w.end - timeOffset);
     const wEsc = escDrawtext(w.word);
-    const sh = emitShadowLayers(cur, wEsc, wx, txt.y, txt.size, S, E);
+    const sh = emitShadowLayers(cur, wEsc, wx, txt.y, txt.size, S, E, true);
     chain += sh.chain;
     cur = sh.outLbl;
     const baseLbl = `${outPrefix}_b${step++}`;
-    chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='between(t,${S.toFixed(6)},${E.toFixed(6)})'[${baseLbl}];`;
+    // La palabra base no debe quedar visible debajo de la versión ampliada del karaoke.
+    // La mostramos antes y después de su intervalo activo; durante ese intervalo
+    // queda únicamente la capa resaltada de mayor tamaño.
+    const baseWordEnable = `between(t,${S.toFixed(6)},${E.toFixed(6)})*not(between(t,${ws.toFixed(6)},${we.toFixed(6)}))`;
+    chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-max_glyph_a+(${anT.dy})':fontsize=${txt.size}:fontcolor=${baseColor}:fontfile=${fontFile}${outline}${alphaExpr}:enable='${baseWordEnable}'[${baseLbl}];`;
     cur = baseLbl;
     if (we > ws) {
       const actLbl = `${outPrefix}_a${step++}`;
       const boxSpec = style === 'karaoke-box' ? `:box=1:boxcolor=${hiColor}@0.92:boxborderw=8` : '';
       const actColor = style === 'karaoke-box' ? '0x0f1419' : hiColor;
-      chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-text_h/2+(${anT.dy})':fontsize=${txt.size}:fontcolor=${actColor}:fontfile=${fontFile}${style === 'karaoke-box' ? '' : outline}${boxSpec}${alphaExpr}:enable='between(t,${ws.toFixed(6)},${we.toFixed(6)})'[${actLbl}];`;
+      // La palabra activa se vuelve a dibujar centrada, con un tamaño fijo 12% mayor.
+      // Es una escala temporal por intervalo (fontsize no animado frame a frame),
+      // compatible con drawtext y equivalente al scale(1.12) de la preview.
+      const activeFontSize = Math.round(txt.size * (style === 'karaoke-box' ? 1.08 : 1.12));
+      const activeCenterAdjust = (activeFontSize - txt.size) / 2;
+      chain += `[${cur}]drawtext=text='${wEsc}':x='${wx}-text_w/2+(${anT.dx})':y='${txt.y}-max_glyph_a+${activeCenterAdjust.toFixed(2)}+(${anT.dy})':fontsize=${activeFontSize}:fontcolor=${actColor}:fontfile=${fontFile}${style === 'karaoke-box' ? '' : outline}${boxSpec}${alphaExpr}:enable='between(t,${ws.toFixed(6)},${we.toFixed(6)})'[${actLbl}];`;
       cur = actLbl;
     }
   });
@@ -1800,7 +1826,14 @@ videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
     const sx = newR.w / oldR.w;
     const sy = newR.h / oldR.h;
     setImageOverlays((prev) => prev.map((img) => ({ ...img, x: img.x * sx, y: img.y * sy, size: img.size * sx })));
-    setTextOverlays((prev) => prev.map((txt) => ({ ...txt, x: txt.x * sx, y: txt.y * sy, size: Math.round(txt.size * sx) })));
+    setTextOverlays((prev) => prev.map((txt) => ({
+      ...txt,
+      x: txt.x * sx,
+      y: txt.y * sy,
+      // Los subtítulos automáticos mantienen una escala legible respecto de
+      // la altura del lienzo; los textos comunes conservan su escala horizontal.
+      size: Math.round(txt.size * (txt.kind === 'subtitulo' ? sy : sx)),
+    })));
     setVideoOverlays((prev) => prev.map((vo) => ({ ...vo, x: vo.x * sx, y: vo.y * sy, size: vo.size * sx })));
     prevRatioRef.current = exportSettings.ratio;
   }, [exportSettings.ratio]);
@@ -1822,12 +1855,14 @@ videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
     return () => ro.disconnect();
   }, [REF_WIDTH, REF_HEIGHT]);
 
-  // ===== ZOOM DE TIMELINE CON RUEDA (anclado al cursor) =====
+  // ===== RUEDA DE TIMELINE: scroll vertical normal / zoom con CTRL =====
   useEffect(() => {
     const container = timelineScrollRef.current;
     if (!container) return;
     const onWheel = (e: WheelEvent) => {
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      // La rueda normal conserva el scroll nativo vertical para recorrer pistas.
+      // Solo CTRL + rueda intercepta el gesto para modificar el zoom horizontal.
+      if (!e.ctrlKey || Math.abs(e.deltaY) < 0.5 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
       e.preventDefault();
       const rect = container.getBoundingClientRect();
       const offsetX = e.clientX - rect.left;
@@ -1848,6 +1883,21 @@ videoOverlays.reduce((a, t) => Math.max(a, t.end), 0), 0
     container.scrollLeft = anchor.time * pps - anchor.offsetX;
     pendingAnchorRef.current = null;
   }, [pps]);
+
+  // Mantiene el cabezal dentro del área visible sin pelearse con el scroll manual.
+  // Mientras reproduce acompaña suavemente; al hacer seek fuera de pantalla lo revela.
+  useEffect(() => {
+    const container = timelineScrollRef.current;
+    if (!container) return;
+    const x = playhead * pps;
+    const left = container.scrollLeft;
+    const right = left + container.clientWidth;
+    const margin = Math.max(48, container.clientWidth * 0.12);
+    if (x >= left + margin && x <= right - margin) return;
+    const target = Math.max(0, x < left + margin ? x - margin : x - container.clientWidth * 0.72);
+    if (playing) container.scrollLeft = left + (target - left) * 0.28;
+    else container.scrollLeft = target;
+  }, [playhead, playing, pps]);
 
   function zoomBy(factor: number) {
     const container = timelineScrollRef.current;
@@ -2016,6 +2066,13 @@ rt.forEach((t) => { if (t.kind === undefined && t.outline === true) t.kind = 'su
           applyingRef.current = true;
           setClips(rc); setImageOverlays(ri); setTextOverlays(rt); setAudioTracks(ra); setVideoOverlays(rv); setTimelineLanes(restoredLanes);
           setActiveLaneIds({ audio: restoredLanes.find((l) => l.kind === 'audio')?.id || 'audio-1', image: restoredLanes.find((l) => l.kind === 'image')?.id || 'image-1', video: restoredLanes.find((l) => l.kind === 'video')?.id || 'video-1', text: restoredLanes.find((l) => l.kind === 'text')?.id || 'text-1', subtitle: restoredLanes.find((l) => l.kind === 'subtitle')?.id || 'subtitle-1' });
+          // La posición de los overlays ya está guardada en las coordenadas
+          // del formato del proyecto. Sincronizamos la referencia ANTES de
+          // restaurar settings para que el efecto de cambio de aspecto no vuelva
+          // a escalar subtítulos/textos al montar (podían quedar fuera del lienzo).
+          if (proj.settings?.ratio && RATIO_PRESETS[proj.settings.ratio as AspectRatio]) {
+            prevRatioRef.current = proj.settings.ratio as AspectRatio;
+          }
           if (proj.settings) setExportSettings((s) => ({ ...s, ...proj.settings }));
           setTimeout(() => { applyingRef.current = false; }, 80);
           showToast(missing ? `📂 Proyecto restaurado (${missing} elemento(s) sin archivo local)` : '📂 Proyecto restaurado desde tu navegador', 'info');
@@ -3008,6 +3065,9 @@ blankVideoIfPastEnd(clamped);
   async function addFiles(list: FileList | File[]) {
     const files = Array.from(list);
     const videos = files.filter((f) => f.type.startsWith('video/'));
+    // El primer video de un proyecto vacío puede definir el formato inicial.
+    // No cambiamos el formato al agregar material a un proyecto ya editado.
+    let detectInitialRatio = clipsRef.current.length === 0 && exportSettings.ratio === '16:9';
     const images = files.filter((f) => f.type.startsWith('image/'));
     const audios = files.filter((f) => f.type.startsWith('audio/'));
     if (videos.length > 0) {
@@ -3016,6 +3076,12 @@ const f = videos[vi];
 const url = URL.createObjectURL(f);
 setImportProgress({ file: f.name, step: 'Leyendo metadatos…', idx: vi, total: videos.length });
 const meta = await probeVideoMeta(url);
+if (detectInitialRatio && meta.width > 0 && meta.height > 0) {
+  const aspect = meta.width / meta.height;
+  const detected: AspectRatio = aspect > 1.65 ? '16:9' : aspect < 0.62 ? '9:16' : Math.abs(aspect - 1) < 0.08 ? '1:1' : Math.abs(aspect - 4 / 3) < 0.08 ? '4:3' : aspect >= 1 ? '16:9' : '9:16';
+  setExportSettings((prev) => ({ ...prev, ratio: detected }));
+  detectInitialRatio = false;
+}
         const duration = meta.duration;
         if (duration > 0) {
           if (meta.width >= 3000 || meta.height >= 3000) {
